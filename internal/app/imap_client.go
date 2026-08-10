@@ -1100,7 +1100,15 @@ func imapHeaderText(header mail.Header) string {
 }
 
 func decodeMIMEHeader(value string) string {
-	decoded, err := new(mime.WordDecoder).DecodeHeader(value)
+	decoder := &mime.WordDecoder{CharsetReader: func(charset string, input io.Reader) (io.Reader, error) {
+		switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(charset), "-", "")) {
+		case "utf8", "usascii", "ascii":
+			return input, nil
+		default:
+			return nil, fmt.Errorf("unsupported MIME charset %q", charset)
+		}
+	}}
+	decoded, err := decoder.DecodeHeader(value)
 	if err != nil {
 		return strings.TrimSpace(value)
 	}

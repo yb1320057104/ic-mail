@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+func TestDecodeMIMEHeaderAcceptsUTF8Alias(t *testing.T) {
+	got := decodeMIMEHeader(`=?UTF8?B?5p2o5Y2a?= <sender@example.com>`)
+	if got != `杨博 <sender@example.com>` {
+		t.Fatalf("decoded header = %q", got)
+	}
+}
+
 func TestICloudIMAPMessagesByMailboxMatchesRecipientAlias(t *testing.T) {
 	receivedAt := time.Date(2026, 7, 1, 5, 2, 50, 0, time.UTC)
 	mailboxes := []Mailbox{
