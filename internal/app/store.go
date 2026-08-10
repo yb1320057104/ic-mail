@@ -105,6 +105,102 @@ func (s *FileStore) Users() []User {
 	return append([]User(nil), s.state.Users...)
 }
 
+func (s *FileStore) CreateAnnouncement(title, content, createdBy string) (Announcement, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	title = strings.TrimSpace(title)
+	content = strings.TrimSpace(content)
+	if title == "" {
+		return Announcement{}, errCode("announcement_title_required", "请输入公告标题", false)
+	}
+	if content == "" {
+		return Announcement{}, errCode("announcement_content_required", "请输入公告内容", false)
+	}
+	if len([]rune(title)) > 100 || len([]rune(content)) > 5000 {
+		return Announcement{}, errCode("announcement_too_long", "公告标题最多 100 字，内容最多 5000 字", false)
+	}
+	announcement := Announcement{ID: s.nextIDLocked("ann"), Title: title, Content: content, CreatedBy: strings.TrimSpace(createdBy), CreatedAt: time.Now()}
+	s.state.Announcements = append(s.state.Announcements, announcement)
+	return announcement, s.saveLocked()
+}
+
+func (s *FileStore) Announcements() []Announcement {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Announcement(nil), s.state.Announcements...)
+}
+
+func (s *FileStore) UnreadAnnouncements(userID string) []Announcement {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	read := make(map[string]bool)
+	for _, item := range s.state.AnnouncementReads {
+		if item.UserID == userID {
+			read[item.AnnouncementID] = true
+		}
+	}
+	out := make([]Announcement, 0)
+	for _, item := range s.state.Announcements {
+		if !read[item.ID] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *FileStore) MarkAnnouncementRead(userID, announcementID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	userID, announcementID = strings.TrimSpace(userID), strings.TrimSpace(announcementID)
+	found := false
+	for _, item := range s.state.Announcements {
+		if item.ID == announcementID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return errCode("announcement_not_found", "公告不存在", false)
+	}
+	for _, item := range s.state.AnnouncementReads {
+		if item.UserID == userID && item.AnnouncementID == announcementID {
+			return nil
+		}
+	}
+	s.state.AnnouncementReads = append(s.state.AnnouncementReads, AnnouncementRead{AnnouncementID: announcementID, UserID: userID, ReadAt: time.Now()})
+	return s.saveLocked()
+}
+
+func (s *FileStore) SaveAutoLoginBinding(binding AutoLoginBinding) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginBindings {
+		if s.state.AutoLoginBindings[i].OwnerID == binding.OwnerID && s.state.AutoLoginBindings[i].AccountID == binding.AccountID {
+			s.state.AutoLoginBindings[i] = binding
+			return s.saveLocked()
+		}
+	}
+	s.state.AutoLoginBindings = append(s.state.AutoLoginBindings, binding)
+	return s.saveLocked()
+}
+
+func (s *FileStore) AutoLoginBinding(ownerID, accountID string) (AutoLoginBinding, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range s.state.AutoLoginBindings {
+		if item.OwnerID == ownerID && item.AccountID == accountID {
+			return item, true
+		}
+	}
+	return AutoLoginBinding{}, false
+}
+
+func (s *FileStore) AutoLoginBindings() []AutoLoginBinding {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]AutoLoginBinding(nil), s.state.AutoLoginBindings...)
+}
+
 func (s *FileStore) CreateUser(username, password string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -215,11 +311,23 @@ func (s *FileStore) RedeemInvite(raw, userID, ip string) (InviteCode, error) {
 		if invite.UsedCount >= invite.MaxUses {
 			return InviteCode{}, errCode("invite_exhausted", "邀请码使用次数已满", false)
 		}
+		for _, use := range s.state.InviteUses {
+			if use.InviteID == invite.ID && use.UserID == userID {
+				return InviteCode{}, errCode("invite_already_used", "该账号已经使用过这个邀请码，请更换未使用的邀请码", false)
+			}
+		}
 		invite.UsedCount++
 		if invite.ValidDays <= 0 {
 			invite.ValidDays = 30
 		}
-		invite.ExpiresAt = now.AddDate(0, 0, invite.ValidDays)
+		renewBase := now
+		for _, user := range s.state.Users {
+			if user.ID == userID && user.ExpiresAt.After(renewBase) {
+				renewBase = user.ExpiresAt
+				break
+			}
+		}
+		invite.ExpiresAt = renewBase.AddDate(0, 0, invite.ValidDays)
 		s.state.InviteUses = append(s.state.InviteUses, InviteUse{InviteID: invite.ID, UserID: userID, RegisteredIP: ip, RedeemedAt: now})
 		for u := range s.state.Users {
 			if s.state.Users[u].ID == userID {
@@ -1395,6 +1503,9 @@ func cloneState(in State) State {
 	out := in
 	out.Users = append([]User(nil), in.Users...)
 	out.WebSessions = append([]WebSession(nil), in.WebSessions...)
+	out.Announcements = append([]Announcement(nil), in.Announcements...)
+	out.AnnouncementReads = append([]AnnouncementRead(nil), in.AnnouncementReads...)
+	out.AutoLoginBindings = append([]AutoLoginBinding(nil), in.AutoLoginBindings...)
 	out.Accounts = append([]Account(nil), in.Accounts...)
 	for i := range out.Accounts {
 		out.Accounts[i].Tags = append([]string(nil), in.Accounts[i].Tags...)

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>iCloud Privacy Mail</title>
+  <title>iCloud 隐私邮箱管理平台</title>
   <style>
     :root {
       color-scheme: light;
@@ -1297,6 +1297,7 @@
           <div class="account-dock">
             <div class="user-badge"><span id="currentUserBadge">未登录</span><span class="account-expiry" id="currentUserExpiry">到期时间：-</span></div>
             <button onclick="location.href='/manage'">账号数据</button>
+            <button id="renewInviteTopButton" class="ghost" onclick="openRenewInviteModal(true)">邀请码续期</button>
             <button class="ghost" onclick="changePassword()">修改密码</button>
             <button class="ghost" onclick="logout()">退出</button>
           </div>
@@ -1390,6 +1391,13 @@
               <button id="imapCheckButton" type="button" onclick="checkICloudIMAPLogin()">检测取码登录</button>
               <span id="imapLoginStatus" class="muted">取码登录用于 IMAP 收件和快速获取验证码，不参与创建邮箱。</span>
             </div>
+          </div>
+          <div class="notice"><strong>自动接码登录功能</strong><br>仅在新接口或旧接口登录态异常时，通过短信/手机号验证码自动重新登录。Apple 密码和接码地址会在服务器加密保存。</div>
+          <div class="field-grid">
+            <label class="full">手机号----接码地址<input id="autoLoginBinding" autocomplete="off" placeholder="13800138000----https://example.com/code?token=xxx"></label>
+            <label>Apple ID 密码<input id="autoLoginPassword" type="password" autocomplete="new-password" placeholder="首次绑定必填；留空保留已保存密码"></label>
+            <label>启用状态<select id="autoLoginEnabled"><option value="true">启用自动接码登录</option><option value="false">暂停自动接码登录</option></select></label>
+            <div class="full toolbar"><button id="autoLoginSaveButton" type="button" onclick="saveAutoLoginBinding()">保存自动接码登录</button><span id="autoLoginStatus" class="muted">尚未绑定</span></div>
           </div>
           </div>
           <div class="field-grid">
@@ -1530,6 +1538,13 @@
       </section>
     </section>
   </div>
+  <div id="announcementModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="announcementTitle">
+    <section class="modal" onclick="event.stopPropagation()" style="width:min(620px,94vw)">
+      <div class="panel-head"><div><h2 id="announcementTitle">平台公告</h2><p id="announcementTime">管理员发布</p></div></div>
+      <div id="announcementContent" style="padding:20px;white-space:pre-wrap;word-break:break-word;line-height:1.8;color:var(--text)"></div>
+      <div class="toolbar"><button id="announcementReadButton" class="primary" type="button" onclick="markCurrentAnnouncementRead()">我已阅读</button></div>
+    </section>
+  </div>
   <div id="sessionAccountModal" class="modal-backdrop" onclick="closeSessionAccountModal(event)" role="dialog" aria-modal="true" aria-labelledby="sessionAccountModalTitle">
     <section class="modal" onclick="event.stopPropagation()" style="width:min(920px,95vw);max-height:90vh;overflow:auto">
       <div class="panel-head">
@@ -1543,13 +1558,14 @@
     <section class="modal" onclick="event.stopPropagation()" style="width:min(520px,100%)">
       <div class="panel-head">
         <h2 id="renewInviteTitle">账号已到期</h2>
-        <p>账号仍可登录，但需要输入一个新的有效邀请码续期后才能继续使用邮箱功能。</p>
+        <p>输入一个尚未使用的有效邀请码即可续期；未到期时提前续期不会损失当前剩余有效期。</p>
       </div>
       <div class="form" style="display:grid">
         <label>新邀请码<input id="renewInviteCode" autocomplete="off" placeholder="请输入管理员提供的新邀请码" onkeydown="if(event.key==='Enter') renewAccount()"></label>
         <div class="notice" id="renewInviteNotice">当前到期时间：-</div>
         <div class="toolbar" style="padding:0">
           <button class="primary" id="renewInviteButton" onclick="renewAccount()">验证并续期</button>
+          <button id="renewInviteCloseButton" class="ghost" onclick="closeRenewInviteModal()">暂不续期</button>
           <button class="ghost" onclick="logout()">退出登录</button>
         </div>
       </div>
@@ -1609,6 +1625,7 @@
     let lastMailboxGroups = [];
     let lastMailboxPagination = {page: 1, page_size: 10, total: 0, total_all: 0, total_pages: 1};
     let lastICloudSessions = [];
+    let unreadAnnouncements = [];
     let mailboxHistorySyncRunning = false;
     let sessionMailboxRows = [];
     const expandedSessionAccounts = new Set();
@@ -1797,14 +1814,56 @@
 		$('currentUserExpiry').textContent = `到期时间：${expiryText}`;
 		$('currentUserExpiry').classList.toggle('expired', !!currentUser.expired);
 	  }
-	  if (currentUser.expired) openRenewInviteModal();
+	  if ($('renewInviteTopButton')) $('renewInviteTopButton').hidden = !!currentUser.is_admin;
+	  if (currentUser.expired) openRenewInviteModal(false);
       return currentUser;
     }
 
-    function openRenewInviteModal() {
-	  if ($('renewInviteNotice')) $('renewInviteNotice').textContent = `当前到期时间：${currentUser && currentUser.expires_at ? currentUser.expires_at : '已到期'}`;
+    async function checkUnreadAnnouncements() {
+      if (!currentUser || currentUser.is_admin || currentUser.expired) return;
+      const data = await api('/api/announcements/unread');
+      unreadAnnouncements = data.announcements || [];
+      showNextAnnouncement();
+    }
+
+    function showNextAnnouncement() {
+      const item = unreadAnnouncements[0];
+      if (!item) { $('announcementModal').classList.remove('show'); return; }
+      $('announcementTitle').textContent = item.title || '平台公告';
+      $('announcementTime').textContent = item.created_at ? `发布时间：${exactTimeText(item.created_at)}` : '管理员发布';
+      $('announcementContent').textContent = item.content || '';
+      $('announcementModal').classList.add('show');
+    }
+
+    async function markCurrentAnnouncementRead() {
+      const item = unreadAnnouncements[0];
+      if (!item) return;
+      const button = $('announcementReadButton');
+      button.disabled = true; button.textContent = '正在确认...';
+      try {
+        await api(`/api/announcements/${encodeURIComponent(item.id)}/read`, {method:'POST', body:'{}'});
+        unreadAnnouncements.shift();
+        showNextAnnouncement();
+      } catch (err) {
+        log('公告已读确认失败：' + err.message);
+      } finally {
+        button.disabled = false; button.textContent = '我已阅读';
+      }
+    }
+
+    function openRenewInviteModal(voluntary = true) {
+	  const expired = !!(currentUser && currentUser.expired);
+	  if ($('renewInviteTitle')) $('renewInviteTitle').textContent = expired ? '账号已到期' : '邀请码提前续期';
+	  if ($('renewInviteNotice')) $('renewInviteNotice').textContent = `当前到期时间：${currentUser && currentUser.expires_at ? currentUser.expires_at : '未设置'}。新邀请码的有效天数会从当前到期时间之后继续累加。`;
+	  if ($('renewInviteCloseButton')) $('renewInviteCloseButton').hidden = expired || !voluntary;
 	  if ($('renewInviteModal')) $('renewInviteModal').classList.add('show');
 	  setTimeout(() => { if ($('renewInviteCode')) $('renewInviteCode').focus(); }, 0);
+    }
+
+    function closeRenewInviteModal() {
+	  if (currentUser && currentUser.expired) return;
+	  $('renewInviteModal').classList.remove('show');
+	  $('renewInviteCode').value = '';
     }
 
     async function renewAccount() {
@@ -3218,7 +3277,8 @@
         const childCount = Number(session.mailbox_count || children.length || 0);
         const expanded = expandedSessionAccounts.has(key);
         const childHTML = children.length ? children.map(m => `<div class="submailbox-item"><strong>${esc(m.email)}</strong><span>${esc(m.label || '无标签')} · ${esc(statusText(m.status))} · 收件 ${m.receive_count || 0}</span></div>`).join('') : '<span class="muted">该登录态下暂无同步到的子邮箱</span>';
-        return `<tr class="${activeICloudSessionKey === key ? 'selected-session-row' : ''}"><td><div class="session-account">${esc(session.apple_id || `账号 ${index+1}`)}</div><span class="mono muted">${esc(session.account_id || '-')}</span></td>
+        const autoLoginText = session.auto_login_enabled ? (session.auto_login_status || '自动接码登录已启用') : '自动接码登录未启用';
+        return `<tr class="${activeICloudSessionKey === key ? 'selected-session-row' : ''}"><td><div class="session-account">${esc(session.apple_id || `账号 ${index+1}`)}</div><span class="mono muted">${esc(session.account_id || '-')}</span><br><span class="login-chip ${session.auto_login_enabled ? 'on' : 'off'}">${esc(autoLoginText)}</span>${session.auto_login_error ? sessionLoginError(session.auto_login_error) : ''}</td>
           <td>${loginChip('新接口', session.apple_account_login_status || (appleAccountLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(appleAccountLoginSaved(session),session.apple_account_login_checked,session.apple_account_login_ok))}${sessionLoginError(session.apple_account_login_error)}<br>${sessionManageRefreshBadge(session)}</td>
           <td>${loginChip('旧接口', session.icloud_web_login_status || (iCloudWebLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudWebLoginSaved(session),session.icloud_web_login_checked,session.icloud_web_login_ok))}${sessionLoginError(session.icloud_web_login_error)}${sessionOldKeepAliveBadge(session)}</td>
           <td>${loginChip('IMAP', session.icloud_imap_login_status || (iCloudIMAPLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudIMAPLoginSaved(session),session.icloud_imap_login_checked,session.icloud_imap_login_ok))}${sessionLoginError(session.icloud_imap_login_error)}<br><span class="muted">${esc(session.icloud_imap_email || '-')}</span></td>
@@ -3263,6 +3323,10 @@
       $('imapHost').value = 'imap.mail.me.com';
       $('imapPort').value = 993;
       $('imapAppPassword').value = '';
+      $('autoLoginBinding').value = '';
+      $('autoLoginPassword').value = '';
+      $('autoLoginEnabled').value = 'true';
+      $('autoLoginStatus').textContent = '请先完成账号登录，再绑定自动接码登录';
       $('sessionEditInfo').textContent = '当前为新增账号模式。输入 Apple ID 和密码后，可分别完成新接口或旧接口登录；IMAP 取码登录可按需配置。';
       $('imapLoginStatus').textContent = '取码登录用于 IMAP 收件和快速获取验证码，不参与创建邮箱。';
       if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '';
@@ -3290,6 +3354,10 @@
       $('imapProvider').value = normalizedHost === 'imap.mail.me.com' ? 'icloud' : (normalizedHost === 'outlook.office365.com' ? 'outlook' : (normalizedHost === 'imap.gmail.com' ? 'gmail' : 'custom'));
       $('sessionEditInfo').textContent = `正在编辑：${session.apple_id || email || key}。历史账号、IMAP 用户名、服务器和端口已填充；为保护密码安全，请重新输入 Apple ID 密码或邮箱应用密码后再登录。`;
       $('imapLoginStatus').textContent = '已载入该账号历史配置，可重新保存或检测 IMAP 取码登录。';
+      $('autoLoginBinding').value = '';
+      $('autoLoginPassword').value = '';
+      $('autoLoginEnabled').value = session.auto_login_enabled ? 'true' : 'false';
+      $('autoLoginStatus').textContent = session.auto_login_enabled ? `已绑定：${session.auto_login_phone || '-'}----${session.auto_login_url || '-'}；${session.auto_login_status || '等待自动登录'}${session.auto_login_error ? '；错误：'+session.auto_login_error : ''}` : '尚未启用自动接码登录';
       renderICloudSessions(lastICloudSessions);
       showSessionAccountModal(`编辑账号：${session.apple_id || email || key}`);
       $('protocolPassword').focus({preventScroll:true});
@@ -3447,6 +3515,20 @@
       } finally {
         button.disabled = false;
       }
+    }
+
+    async function saveAutoLoginBinding() {
+      if (!activeICloudSessionKey) { $('autoLoginStatus').textContent = '新增账号请先完成新接口或旧接口登录，再点击编辑账号进行绑定'; return; }
+      const session = activeICloudSessionForBinding();
+      if (!session || !session.account_id) { $('autoLoginStatus').textContent = '请先保存账号登录态，再绑定自动接码登录'; return; }
+      const binding = $('autoLoginBinding').value.trim();
+      if (!binding.includes('----')) { $('autoLoginStatus').textContent = '格式错误，必须是：手机号----接码地址'; return; }
+      const button = $('autoLoginSaveButton'); button.disabled=true; button.textContent='正在加密保存...';
+      try {
+        const data = await api('/api/icloud/auto-login/bind',{method:'POST',body:JSON.stringify({account_id:session.account_id,binding,password:$('autoLoginPassword').value,enabled:$('autoLoginEnabled').value==='true'})});
+        $('autoLoginPassword').value=''; $('autoLoginBinding').value=''; $('autoLoginStatus').textContent=data.message || '自动接码登录配置已保存'; await refresh();
+      } catch(err) { $('autoLoginStatus').textContent='保存失败：'+err.message; }
+      finally { button.disabled=false; button.textContent='保存自动接码登录'; }
     }
 
     function applyIMAPPreset() {
@@ -3867,7 +3949,8 @@
     initSessionCheckSettings();
     ensureManageRefreshClockTimer();
     ensureAuth()
-      .then(user => user.expired ? null : loadCreateSettings().catch(err => log('读取创建配置失败：' + err.message)))
+      .then(() => checkUnreadAnnouncements().catch(err => log('读取公告失败：' + err.message)))
+      .then(() => currentUser && currentUser.expired ? null : loadCreateSettings().catch(err => log('读取创建配置失败：' + err.message)))
       .then(() => currentUser && currentUser.expired ? null : Promise.all([refresh(), refreshMailboxScheduler({silent: true})]))
       .then(() => currentUser && currentUser.expired ? null : loadUpdateStatus().catch(err => log('检查更新失败：' + err.message)))
       .then(() => currentUser && currentUser.expired ? null : ensureSchedulerPolling())

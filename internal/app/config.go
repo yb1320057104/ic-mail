@@ -39,6 +39,7 @@ type Config struct {
 	LoginRateLimitWindowSeconds  int    `json:"login_rate_limit_window_seconds"`
 	LoginBackoffMaxSeconds       int    `json:"login_backoff_max_seconds"`
 	LoginCaptchaEnabled          bool   `json:"login_captcha_enabled"`
+	AutoLoginSecret              string `json:"-"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -72,6 +73,7 @@ func LoadConfig(path string) (Config, error) {
 		LoginRateLimitWindowSeconds:  envPositiveInt("IPM_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 600),
 		LoginBackoffMaxSeconds:       envPositiveInt("IPM_LOGIN_BACKOFF_MAX_SECONDS", 600),
 		LoginCaptchaEnabled:          envBool("IPM_LOGIN_CAPTCHA_ENABLED", true),
+		AutoLoginSecret:              strings.TrimSpace(os.Getenv("IPM_AUTO_LOGIN_SECRET")),
 	}
 	if path == "" {
 		return cfg, nil

@@ -22,18 +22,21 @@ const (
 )
 
 type State struct {
-	NextID         int              `json:"next_id"`
-	Users          []User           `json:"users,omitempty"`
-	WebSessions    []WebSession     `json:"web_sessions,omitempty"`
-	Accounts       []Account        `json:"accounts"`
-	Mailboxes      []Mailbox        `json:"mailboxes"`
-	Messages       []Message        `json:"messages"`
-	ICloudSession  *ICloudSession   `json:"icloud_session,omitempty"`
-	ICloudSessions []ICloudSession  `json:"icloud_sessions,omitempty"`
-	CreateSettings []CreateSettings `json:"create_settings,omitempty"`
-	Invites        []InviteCode     `json:"invites,omitempty"`
-	InviteUses     []InviteUse      `json:"invite_uses,omitempty"`
-	AuditEvents    []AuditEvent     `json:"audit_events,omitempty"`
+	NextID            int                `json:"next_id"`
+	Users             []User             `json:"users,omitempty"`
+	WebSessions       []WebSession       `json:"web_sessions,omitempty"`
+	Accounts          []Account          `json:"accounts"`
+	Mailboxes         []Mailbox          `json:"mailboxes"`
+	Messages          []Message          `json:"messages"`
+	ICloudSession     *ICloudSession     `json:"icloud_session,omitempty"`
+	ICloudSessions    []ICloudSession    `json:"icloud_sessions,omitempty"`
+	CreateSettings    []CreateSettings   `json:"create_settings,omitempty"`
+	Invites           []InviteCode       `json:"invites,omitempty"`
+	InviteUses        []InviteUse        `json:"invite_uses,omitempty"`
+	AuditEvents       []AuditEvent       `json:"audit_events,omitempty"`
+	Announcements     []Announcement     `json:"announcements,omitempty"`
+	AnnouncementReads []AnnouncementRead `json:"announcement_reads,omitempty"`
+	AutoLoginBindings []AutoLoginBinding `json:"auto_login_bindings,omitempty"`
 }
 
 const (
@@ -115,6 +118,38 @@ type AuditEvent struct {
 	Role      string    `json:"role,omitempty"`
 	ClientIP  string    `json:"client_ip,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type Announcement struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type AnnouncementRead struct {
+	AnnouncementID string    `json:"announcement_id"`
+	UserID         string    `json:"user_id"`
+	ReadAt         time.Time `json:"read_at"`
+}
+
+type AutoLoginBinding struct {
+	OwnerID        string    `json:"owner_id"`
+	AccountID      string    `json:"account_id"`
+	AppleID        string    `json:"apple_id"`
+	PhoneMasked    string    `json:"phone_masked"`
+	PhoneCipher    string    `json:"phone_cipher"`
+	URLMasked      string    `json:"url_masked"`
+	URLCipher      string    `json:"url_cipher"`
+	PasswordCipher string    `json:"password_cipher"`
+	Enabled        bool      `json:"enabled"`
+	Status         string    `json:"status,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+	LastAttemptAt  time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessAt  time.Time `json:"last_success_at,omitempty"`
+	NextAttemptAt  time.Time `json:"next_attempt_at,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type Mailbox struct {
@@ -482,6 +517,13 @@ type publicICloudSession struct {
 	LastCheckedAt                string `json:"last_checked_at,omitempty"`
 	LastCheckOK                  bool   `json:"last_check_ok"`
 	LastStatusMessage            string `json:"last_status_message,omitempty"`
+	AutoLoginEnabled             bool   `json:"auto_login_enabled"`
+	AutoLoginPhone               string `json:"auto_login_phone,omitempty"`
+	AutoLoginURL                 string `json:"auto_login_url,omitempty"`
+	AutoLoginStatus              string `json:"auto_login_status,omitempty"`
+	AutoLoginError               string `json:"auto_login_error,omitempty"`
+	AutoLoginLastAttemptAt       string `json:"auto_login_last_attempt_at,omitempty"`
+	AutoLoginLastSuccessAt       string `json:"auto_login_last_success_at,omitempty"`
 }
 
 type apiError struct {

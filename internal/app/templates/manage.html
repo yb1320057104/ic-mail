@@ -398,6 +398,7 @@
         <button data-view="accounts" onclick="setActiveView('accounts')"><span class="nav-icon">◎</span>登录账号</button>
         <button data-view="sessions" onclick="setActiveView('sessions')"><span class="nav-icon">◫</span>用户登录态</button>
         <button class="admin-only" data-view="invites" onclick="setActiveView('invites')"><span class="nav-icon">✦</span>注册邀请</button>
+        <button class="admin-only" data-view="announcements" onclick="setActiveView('announcements')"><span class="nav-icon">▤</span>平台公告</button>
         <button class="admin-only" data-view="audit" onclick="setActiveView('audit')"><span class="nav-icon">◉</span>安全审计</button>
         <button data-view="logs" onclick="setActiveView('logs')"><span class="nav-icon">☰</span>运行日志</button>
         <button onclick="refresh()"><span class="nav-icon">↻</span>刷新数据</button>
@@ -538,6 +539,17 @@
           <div class="empty" id="auditEventsEmpty" hidden>暂无审计记录</div>
         </section>
 
+        <section class="panel view-section admin-only" data-view="announcements">
+          <div class="panel-head"><div><h2>平台公告</h2><p>只有管理员可以发布；普通用户登录后会自动弹出未读公告，确认已读后不再重复显示。</p></div></div>
+          <div class="form-grid">
+            <label class="field">公告标题<input id="announcementPublishTitle" maxlength="100" placeholder="请输入公告标题"></label>
+            <label class="field" style="grid-column:1/-1">公告内容<textarea id="announcementPublishContent" maxlength="5000" rows="6" placeholder="请输入公告正文，支持换行"></textarea></label>
+            <button id="announcementPublishButton" class="btn primary" onclick="publishAnnouncement()">发布公告</button>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>发布时间</th><th>标题</th><th>公告内容</th><th>发布人</th><th>已读人数</th></tr></thead><tbody id="announcements"></tbody></table></div>
+          <div class="empty" id="announcementsEmpty" hidden>暂无公告</div>
+        </section>
+
         <section class="panel view-section" data-view="logs">
           <div class="panel-head">
             <div><h2>运行日志</h2><p>最近操作。</p></div>
@@ -570,10 +582,11 @@
       accounts: '登录账号',
       sessions: '用户登录态',
       invites: '注册邀请',
+      announcements: '平台公告',
       audit: '安全审计',
       logs: '运行日志'
     };
-	const viewDescriptions = {overview:'查看平台数据总览。',accountManage:'按平台用户切换数据范围，核对用户与账号、邮箱、邮件的归属。',users:'搜索平台用户，查看角色、注册来源和最后登录。',mailboxes:'按邮箱、Apple账号、状态和收件数组合筛选子邮箱。',accounts:'维护登录账号分类与标签。',sessions:'查看所有用户登录态的新接口、旧接口、IMAP、子邮箱和异常原因。',invites:'仅管理员创建和维护注册邀请码。',audit:'仅管理员查询登录、权限和数据修改记录。',logs:'查看当前浏览器会话中的最近操作结果。'};
+	const viewDescriptions = {overview:'查看平台数据总览。',accountManage:'按平台用户切换数据范围，核对用户与账号、邮箱、邮件的归属。',users:'搜索平台用户，查看角色、注册来源和最后登录。',mailboxes:'按邮箱、Apple账号、状态和收件数组合筛选子邮箱。',accounts:'维护登录账号分类与标签。',sessions:'查看所有用户登录态的新接口、旧接口、IMAP、子邮箱和异常原因。',invites:'仅管理员创建和维护注册邀请码。',announcements:'管理员发布平台公告并查看用户已读人数。',audit:'仅管理员查询登录、权限和数据修改记录。',logs:'查看当前浏览器会话中的最近操作结果。'};
 
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -718,7 +731,7 @@
       if (!data.authenticated) { location.href = '/login'; throw new Error('未登录'); }
       currentUser = data.user;
 	  document.querySelectorAll('.admin-only').forEach(el => { el.hidden = !currentUser.is_admin; });
-	  if (!currentUser.is_admin && ['invites','audit'].includes(localStorage.getItem(viewStorageKey))) setActiveView('overview');
+	  if (!currentUser.is_admin && ['invites','announcements','audit'].includes(localStorage.getItem(viewStorageKey))) setActiveView('overview');
       $('whoami').textContent = `当前账号：${currentUser.username}${currentUser.is_admin ? ' / 管理员，可查看全部数据' : ' / 普通用户，仅查看自己数据'}`;
     }
     function renderEmpty(id, rows) {
@@ -915,6 +928,7 @@
 	  const auditQuery = (($('auditSearch') || {}).value || '').trim(), auditResult = (($('auditResultFilter') || {}).value || '');
 	  auditRows = auditRows.filter(e => includesQuery([e.actor,e.event,e.path,e.method,e.client_ip],auditQuery) && (!auditResult || (auditResult==='success')===!!e.success));
       renderInvites(inviteRows);
+      renderAnnouncements(data.announcements || []);
       renderAudit(auditRows);
       renderMailboxExportAccountOptions(accounts, mailboxes);
     }
@@ -973,6 +987,27 @@
       const rows = [...events].reverse();
       $('auditEvents').innerHTML = rows.map(e => `<tr><td>${esc(displayTime(e.created_at))}</td><td>${esc(e.actor || '匿名')}</td><td>${pill(({admin:'管理员',user:'普通用户',anonymous:'匿名'}[e.role] || e.role || '匿名'),'gray')}</td><td>${esc(e.event)}</td><td class="mono">${esc(e.method)} ${esc(e.path)}</td><td>${esc(e.client_ip || '-')}</td><td>${e.success ? pill('成功') : pill('失败','red')}</td></tr>`).join('');
       renderEmpty('auditEvents', rows);
+    }
+
+    function renderAnnouncements(rows) {
+      if (!$('announcements')) return;
+      $('announcements').innerHTML = rows.map(item => `<tr><td>${esc(displayTime(item.created_at))}</td><td><strong>${esc(item.title)}</strong></td><td style="white-space:pre-wrap;max-width:520px">${esc(item.content)}</td><td>${esc(item.created_by || '-')}</td><td>${Number(item.read_count || 0)} 人</td></tr>`).join('');
+      renderEmpty('announcements', rows);
+    }
+
+    async function publishAnnouncement() {
+      if (!currentUser || !currentUser.is_admin) return;
+      const title = $('announcementPublishTitle').value.trim();
+      const content = $('announcementPublishContent').value.trim();
+      if (!title || !content) { log('请填写公告标题和内容'); return; }
+      if (!confirm(`确认发布公告“${title}”吗？普通用户登录后会自动弹出。`)) return;
+      const button = $('announcementPublishButton'); button.disabled = true; button.textContent = '发布中...';
+      try {
+        const data = await api('/api/admin/announcements', {method:'POST', body:JSON.stringify({title,content})});
+        $('announcementPublishTitle').value = ''; $('announcementPublishContent').value = '';
+        await refresh(); log(data.message || '公告发布成功');
+      } catch (err) { log('公告发布失败：' + err.message); }
+      finally { button.disabled = false; button.textContent = '发布公告'; }
     }
 
     async function editAccountMeta(id) {

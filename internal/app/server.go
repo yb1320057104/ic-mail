@@ -427,6 +427,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /", s.handleHome)
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("GET /register", s.handleRegisterPage)
+	s.mux.HandleFunc("GET /docs", s.handleDocsPage)
 	s.mux.HandleFunc("GET /manage", s.handleManagePage)
 	s.mux.HandleFunc("GET /api/auth/me", s.handleAuthMe)
 	s.mux.HandleFunc("POST /api/auth/register", s.handleAuthRegister)
@@ -440,6 +441,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/admin/invites", s.handleCreateInvite)
 	s.mux.HandleFunc("GET /api/admin/invites/export", s.handleExportInvites)
 	s.mux.HandleFunc("POST /api/admin/invites/{id}/status", s.handleSetInviteStatus)
+	s.mux.HandleFunc("POST /api/admin/announcements", s.handleCreateAnnouncement)
+	s.mux.HandleFunc("GET /api/announcements/unread", s.handleUnreadAnnouncements)
+	s.mux.HandleFunc("POST /api/announcements/{id}/read", s.handleMarkAnnouncementRead)
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/update/status", s.handleUpdateStatus)
 	s.mux.HandleFunc("POST /api/update/apply", s.handleApplyUpdate)
@@ -461,6 +465,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/icloud/web-login/check", s.handleCheckICloudWebLogin)
 	s.mux.HandleFunc("POST /api/icloud/imap-login/save", s.handleSaveICloudIMAPLogin)
 	s.mux.HandleFunc("POST /api/icloud/imap-login/check", s.handleCheckICloudIMAPLogin)
+	s.mux.HandleFunc("POST /api/icloud/auto-login/bind", s.handleBindAutoLogin)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/create", s.handleCreateICloudMailbox)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/sync", s.handleSyncICloudMailboxes)
 	s.mux.HandleFunc("GET /api/icloud/scheduler/status", s.handleMailboxSchedulerStatus)
@@ -497,6 +502,10 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleRegisterPage(w http.ResponseWriter, _ *http.Request) {
 	s.writeTemplate(w, "templates/register.html")
+}
+
+func (s *Server) handleDocsPage(w http.ResponseWriter, _ *http.Request) {
+	s.writeTemplate(w, "templates/docs.html")
 }
 
 func (s *Server) handleManagePage(w http.ResponseWriter, _ *http.Request) {
@@ -956,6 +965,7 @@ func (s *Server) handleManageData(w http.ResponseWriter, r *http.Request) {
 		mailboxes = append(mailboxes, s.publicMailbox(r, mailbox))
 	}
 	publicSessions := s.publicSessionsForRequest(r)
+	announcements := []map[string]any(nil)
 	if s.isAdminRequest(r) {
 		publicSessions = make([]publicICloudSession, 0, len(state.ICloudSessions)+1)
 		if state.ICloudSession != nil {
@@ -964,6 +974,7 @@ func (s *Server) handleManageData(w http.ResponseWriter, r *http.Request) {
 		for index := range state.ICloudSessions {
 			publicSessions = append(publicSessions, s.publicSession(&state.ICloudSessions[index]))
 		}
+		announcements = s.publicAnnouncements(state)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":         true,
@@ -978,7 +989,75 @@ func (s *Server) handleManageData(w http.ResponseWriter, r *http.Request) {
 		"invites":         publicInvites(state.Invites, s.store, s.isAdminRequest(r)),
 		"invite_uses":     state.InviteUses,
 		"audit_events":    recentAuditEvents(state.AuditEvents, 100),
+		"announcements":   announcements,
 	})
+}
+
+func (s *Server) publicAnnouncements(state State) []map[string]any {
+	out := make([]map[string]any, 0, len(state.Announcements))
+	for index := len(state.Announcements) - 1; index >= 0; index-- {
+		item := state.Announcements[index]
+		creator := item.CreatedBy
+		if user, ok := s.store.UserByID(item.CreatedBy); ok {
+			creator = user.Username
+		}
+		readCount := 0
+		for _, read := range state.AnnouncementReads {
+			if read.AnnouncementID == item.ID {
+				readCount++
+			}
+		}
+		out = append(out, map[string]any{"id": item.ID, "title": item.Title, "content": item.Content, "created_by": creator, "created_at": formatTime(item.CreatedAt), "read_count": readCount})
+	}
+	return out
+}
+
+func (s *Server) handleCreateAnnouncement(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := s.currentWebSession(r)
+	if !ok || !user.IsAdmin {
+		writeError(w, http.StatusForbidden, errCode("admin_required", "只有管理员可以发布公告", false))
+		return
+	}
+	var payload struct {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	item, err := s.store.CreateAnnouncement(payload.Title, payload.Content, user.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"success": true, "message": "公告发布成功", "announcement": item})
+}
+
+func (s *Server) handleUnreadAnnouncements(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := s.currentWebSession(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errCode("auth_required", "请先登录账号", false))
+		return
+	}
+	items := []Announcement{}
+	if !user.IsAdmin {
+		items = s.store.UnreadAnnouncements(user.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "announcements": items})
+}
+
+func (s *Server) handleMarkAnnouncementRead(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := s.currentWebSession(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errCode("auth_required", "请先登录账号", false))
+		return
+	}
+	if err := s.store.MarkAnnouncementRead(user.ID, r.PathValue("id")); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "公告已读"})
 }
 
 func publicInvite(invite InviteCode, store *FileStore) map[string]any {
@@ -3440,6 +3519,7 @@ func (s *Server) keepAliveICloudWebRound(ctx context.Context) {
 				state.KeepAliveStatus = "保活失败，等待自动重试"
 				state.KeepAliveNextTry = checkedAt.Add(delays[index])
 				s.saveICloudWebKeepAliveState(session, state)
+				go s.tryAutoLogin(withICloudWebLoginState(session, state))
 				if s.logger != nil {
 					s.logger.Warn("icloud web keepalive failed", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "err", err)
 				}
@@ -3565,6 +3645,7 @@ func (s *Server) keepAliveAppleAccountSession(ctx context.Context, session IClou
 		next.KeepAliveError = keepAliveChineseError(err)
 		next.KeepAliveStatus, next.KeepAliveNextTry = appleAccountKeepAliveRetry(err, next.KeepAliveFailures, time.Now())
 		s.saveAppleAccountKeepAliveState(session, next)
+		go s.tryAutoLogin(withAppleAccountLoginState(session, next))
 		if s.logger != nil {
 			s.logger.Warn("apple account keepalive failed", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "apple_id", session.AppleID, "err", err)
 		}
@@ -4901,6 +4982,12 @@ func (s *Server) allowsUserSession(r *http.Request) bool {
 	if r.Method == http.MethodGet && r.URL.Path == "/api/manage/data" {
 		return true
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/api/announcements/unread" {
+		return true
+	}
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/announcements/") && strings.HasSuffix(r.URL.Path, "/read") {
+		return true
+	}
 	if r.Method == http.MethodGet && r.URL.Path == "/api/runtime/export" {
 		return true
 	}
@@ -4923,6 +5010,7 @@ func (s *Server) allowsUserSession(r *http.Request) bool {
 			"/api/icloud/session/check",
 			"/api/icloud/imap-login/save",
 			"/api/icloud/imap-login/check",
+			"/api/icloud/auto-login/bind",
 			"/api/icloud/mailboxes/create",
 			"/api/icloud/mailboxes/sync",
 			"/api/icloud/scheduler/start",
@@ -5282,6 +5370,15 @@ func (s *Server) publicSession(session *ICloudSession) publicICloudSession {
 			if strings.TrimSpace(session.AccountID) != "" && constantTimeEqual(mailbox.AccountID, session.AccountID) {
 				out.MailboxCount++
 			}
+		}
+		if binding, ok := s.store.AutoLoginBinding(session.OwnerID, session.AccountID); ok {
+			out.AutoLoginEnabled = binding.Enabled
+			out.AutoLoginPhone = binding.PhoneMasked
+			out.AutoLoginURL = binding.URLMasked
+			out.AutoLoginStatus = binding.Status
+			out.AutoLoginError = binding.LastError
+			out.AutoLoginLastAttemptAt = formatTime(binding.LastAttemptAt)
+			out.AutoLoginLastSuccessAt = formatTime(binding.LastSuccessAt)
 		}
 	}
 	return out
