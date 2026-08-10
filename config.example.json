@@ -3,7 +3,7 @@
   "port": 8787,
   "data_path": "data/state.json",
   "api_key": "",
-  "public_base_url": "",
+  "public_base_url": "https://mail.sayt.cloud",
   "icloud_default_host": "www.icloud.com.cn",
   "icloud_client_id": "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d",
   "apple_account_api_key": "",
@@ -15,7 +15,14 @@
   "public_fast_sync_wait_ms": 600,
   "public_sync_min_interval_ms": 3000,
   "update_enabled": true,
-  "update_repository": "q1953258942/iCloud-Privacy-Mail",
+  "update_repository": "yb1320057104/ic-mail",
   "update_manifest_url": "",
-  "update_asset_name": ""
+  "update_asset_name": "",
+  "registration_enabled": false,
+  "registration_invite_code": "",
+  "login_rate_limit_per_ip": 5,
+  "login_rate_limit_per_username": 5,
+  "login_rate_limit_window_seconds": 600,
+  "login_backoff_max_seconds": 600,
+  "login_captcha_enabled": true
 }

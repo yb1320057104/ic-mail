@@ -139,6 +139,174 @@ func (s *FileStore) CreateUser(username, password string) (User, error) {
 	return user, s.saveLocked()
 }
 
+func (s *FileStore) CreateInvite(name, createdBy string, maxUses int, expiresAt time.Time) (InviteCode, string, error) {
+	validDays := 0
+	if !expiresAt.IsZero() {
+		validDays = max(1, int(time.Until(expiresAt).Hours()/24+.999))
+	}
+	invites, codes, err := s.CreateInvites(name, createdBy, 1, maxUses, validDays)
+	if err != nil {
+		return InviteCode{}, "", err
+	}
+	return invites[0], codes[0], nil
+}
+
+func (s *FileStore) CreateInvites(name, createdBy string, count, maxUses, validDays int) ([]InviteCode, []string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil, errCode("invite_name_required", "请输入邀请码名称", false)
+	}
+	if maxUses < 1 {
+		maxUses = 1
+	}
+	if maxUses > 10000 {
+		maxUses = 10000
+	}
+	if count < 1 {
+		count = 1
+	}
+	if count > 1000 {
+		count = 1000
+	}
+	if validDays < 1 {
+		validDays = 30
+	}
+	if validDays > 3650 {
+		validDays = 3650
+	}
+	invites := make([]InviteCode, 0, count)
+	codes := make([]string, 0, count)
+	for index := 0; index < count; index++ {
+		raw, err := randomToken(24)
+		if err != nil {
+			return nil, nil, err
+		}
+		now := time.Now()
+		inviteName := name
+		if count > 1 {
+			inviteName = fmt.Sprintf("%s-%03d", name, index+1)
+		}
+		invite := InviteCode{ID: s.nextIDLocked("inv"), CodeHash: sessionTokenHash(raw), Code: raw, Name: inviteName, CreatedBy: createdBy, Role: "user", MaxUses: maxUses, ValidDays: validDays, Enabled: true, CreatedAt: now}
+		s.state.Invites = append(s.state.Invites, invite)
+		invites = append(invites, invite)
+		codes = append(codes, raw)
+	}
+	return invites, codes, s.saveLocked()
+}
+
+func (s *FileStore) RedeemInvite(raw, userID, ip string) (InviteCode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hash := sessionTokenHash(raw)
+	now := time.Now()
+	for i := range s.state.Invites {
+		invite := &s.state.Invites[i]
+		if !constantTimeEqual(hash, invite.CodeHash) {
+			continue
+		}
+		if !invite.Enabled {
+			return InviteCode{}, errCode("invite_disabled", "邀请码已禁用", false)
+		}
+		if !invite.ExpiresAt.IsZero() && !invite.ExpiresAt.After(now) {
+			return InviteCode{}, errCode("invite_expired", "邀请码已过期", false)
+		}
+		if invite.UsedCount >= invite.MaxUses {
+			return InviteCode{}, errCode("invite_exhausted", "邀请码使用次数已满", false)
+		}
+		invite.UsedCount++
+		if invite.ValidDays <= 0 {
+			invite.ValidDays = 30
+		}
+		invite.ExpiresAt = now.AddDate(0, 0, invite.ValidDays)
+		s.state.InviteUses = append(s.state.InviteUses, InviteUse{InviteID: invite.ID, UserID: userID, RegisteredIP: ip, RedeemedAt: now})
+		for u := range s.state.Users {
+			if s.state.Users[u].ID == userID {
+				s.state.Users[u].InvitedBy = invite.CreatedBy
+				s.state.Users[u].InviteID = invite.ID
+				s.state.Users[u].ExpiresAt = invite.ExpiresAt
+			}
+		}
+		return *invite, s.saveLocked()
+	}
+	return InviteCode{}, errCode("invalid_invite_code", "邀请码无效", false)
+}
+
+func (s *FileStore) ValidateInvite(raw string) (InviteCode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hash, now := sessionTokenHash(raw), time.Now()
+	for _, invite := range s.state.Invites {
+		if !constantTimeEqual(hash, invite.CodeHash) {
+			continue
+		}
+		if !invite.Enabled {
+			return InviteCode{}, errCode("invite_disabled", "邀请码已禁用", false)
+		}
+		if !invite.ExpiresAt.IsZero() && !invite.ExpiresAt.After(now) {
+			return InviteCode{}, errCode("invite_expired", "邀请码已过期", false)
+		}
+		if invite.UsedCount >= invite.MaxUses {
+			return InviteCode{}, errCode("invite_exhausted", "邀请码使用次数已满", false)
+		}
+		return invite, nil
+	}
+	return InviteCode{}, errCode("invalid_invite_code", "邀请码无效", false)
+}
+
+func (s *FileStore) SetInviteEnabled(id string, enabled bool) (InviteCode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Invites {
+		if s.state.Invites[i].ID == id {
+			s.state.Invites[i].Enabled = enabled
+			return s.state.Invites[i], s.saveLocked()
+		}
+	}
+	return InviteCode{}, errCode("invite_not_found", "邀请码不存在", false)
+}
+
+func (s *FileStore) UpdateAccountMetadata(id, category string, tags []string, actorID string) (Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	category = strings.TrimSpace(category)
+	if len(category) > 32 {
+		return Account{}, errCode("invalid_category", "账号分类过长", false)
+	}
+	normalized := make([]string, 0, len(tags))
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag != "" && len(tag) <= 24 && !seen[tag] && len(normalized) < 12 {
+			seen[tag] = true
+			normalized = append(normalized, tag)
+		}
+	}
+	for i := range s.state.Accounts {
+		if s.state.Accounts[i].ID == id {
+			s.state.Accounts[i].Category = category
+			s.state.Accounts[i].Tags = normalized
+			s.state.Accounts[i].AssignedBy = actorID
+			s.state.Accounts[i].UpdatedAt = time.Now()
+			return s.state.Accounts[i], s.saveLocked()
+		}
+	}
+	return Account{}, errCode("account_not_found", "Apple 账号不存在", false)
+}
+
+func (s *FileStore) AddAuditEvent(event AuditEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	event.ID = s.nextIDLocked("aud")
+	event.CreatedAt = time.Now()
+	s.state.AuditEvents = append(s.state.AuditEvents, event)
+	if len(s.state.AuditEvents) > 1000 {
+		s.state.AuditEvents = append([]AuditEvent(nil), s.state.AuditEvents[len(s.state.AuditEvents)-1000:]...)
+	}
+	_ = s.saveLocked()
+}
+
 func (s *FileStore) AuthenticateUser(username, password string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -160,6 +328,38 @@ func (s *FileStore) AuthenticateUser(username, password string) (User, error) {
 		return s.state.Users[i], s.saveLocked()
 	}
 	return User{}, errCode("invalid_login", "账号或密码错误", false)
+}
+
+func (s *FileStore) ChangePassword(userID, currentPassword, newPassword, keepToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
+	for i := range s.state.Users {
+		if s.state.Users[i].ID != userID {
+			continue
+		}
+		if !verifyPassword(currentPassword, s.state.Users[i].PasswordHash) {
+			return errCode("invalid_current_password", "当前密码错误", false)
+		}
+		hash, err := hashPassword(newPassword)
+		if err != nil {
+			return err
+		}
+		s.state.Users[i].PasswordHash = hash
+		s.state.Users[i].UpdatedAt = time.Now()
+		keepHash := sessionTokenHash(keepToken)
+		filtered := s.state.WebSessions[:0]
+		for _, session := range s.state.WebSessions {
+			if session.UserID != userID || constantTimeEqual(session.TokenHash, keepHash) {
+				filtered = append(filtered, session)
+			}
+		}
+		s.state.WebSessions = filtered
+		return s.saveLocked()
+	}
+	return errCode("user_not_found", "账号不存在", false)
 }
 
 func (s *FileStore) UserByID(id string) (User, bool) {
@@ -374,6 +574,9 @@ func (s *FileStore) AddAccountForOwner(ownerID, label, appleID, note string) (Ac
 	account := Account{
 		ID:           s.nextIDLocked("acc"),
 		OwnerID:      strings.TrimSpace(ownerID),
+		CreatedBy:    strings.TrimSpace(ownerID),
+		AssignedBy:   strings.TrimSpace(ownerID),
+		Category:     "未分类",
 		Label:        strings.TrimSpace(label),
 		AppleID:      strings.TrimSpace(appleID),
 		Status:       StatusActive,
@@ -653,6 +856,10 @@ func (s *FileStore) AddMessage(mailboxID, subject, from, body string, receivedAt
 }
 
 func (s *FileStore) UpsertMessage(mailboxID, remoteID, source, subject, from, body string, receivedAt time.Time) (Message, bool, error) {
+	return s.UpsertMessageContent(mailboxID, remoteID, source, subject, from, body, "", receivedAt)
+}
+
+func (s *FileStore) UpsertMessageContent(mailboxID, remoteID, source, subject, from, body, htmlBody string, receivedAt time.Time) (Message, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -669,6 +876,7 @@ func (s *FileStore) UpsertMessage(mailboxID, remoteID, source, subject, from, bo
 				s.state.Messages[i].Subject = strings.TrimSpace(subject)
 				s.state.Messages[i].From = strings.TrimSpace(from)
 				s.state.Messages[i].Body = body
+				s.state.Messages[i].HTMLBody = htmlBody
 				if !receivedAt.IsZero() {
 					s.state.Messages[i].ReceivedAt = receivedAt
 				}
@@ -690,6 +898,7 @@ func (s *FileStore) UpsertMessage(mailboxID, remoteID, source, subject, from, bo
 		Subject:    strings.TrimSpace(subject),
 		From:       strings.TrimSpace(from),
 		Body:       body,
+		HTMLBody:   htmlBody,
 		ReceivedAt: receivedAt,
 		CreatedAt:  time.Now(),
 	}
@@ -863,6 +1072,47 @@ func (s *FileStore) MessagesForMailbox(mailboxID string) []Message {
 		}
 	}
 	return out
+}
+
+func (s *FileStore) MarkMailboxesExported(ids []string, exportedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[strings.TrimSpace(id)] = struct{}{}
+	}
+	for i := range s.state.Mailboxes {
+		if _, ok := wanted[s.state.Mailboxes[i].ID]; ok {
+			s.state.Mailboxes[i].ExportedAt = exportedAt
+			s.state.Mailboxes[i].UpdatedAt = exportedAt
+		}
+	}
+	return s.saveLocked()
+}
+
+func (s *FileStore) DeleteMessagesForMailbox(mailboxID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mailboxID = strings.TrimSpace(mailboxID)
+	next := s.state.Messages[:0]
+	deleted := 0
+	for _, msg := range s.state.Messages {
+		if msg.MailboxID == mailboxID {
+			deleted++
+			continue
+		}
+		next = append(next, msg)
+	}
+	s.state.Messages = next
+	for i := range s.state.Mailboxes {
+		if s.state.Mailboxes[i].ID == mailboxID {
+			s.state.Mailboxes[i].LastCodeMessageID = ""
+			s.state.Mailboxes[i].LastCodeAt = time.Time{}
+			s.state.Mailboxes[i].UpdatedAt = time.Now()
+			break
+		}
+	}
+	return deleted, s.saveLocked()
 }
 
 func (s *FileStore) nextIDLocked(prefix string) string {
@@ -1146,6 +1396,9 @@ func cloneState(in State) State {
 	out.Users = append([]User(nil), in.Users...)
 	out.WebSessions = append([]WebSession(nil), in.WebSessions...)
 	out.Accounts = append([]Account(nil), in.Accounts...)
+	for i := range out.Accounts {
+		out.Accounts[i].Tags = append([]string(nil), in.Accounts[i].Tags...)
+	}
 	out.Mailboxes = append([]Mailbox(nil), in.Mailboxes...)
 	out.Messages = append([]Message(nil), in.Messages...)
 	if in.ICloudSession != nil {
@@ -1154,6 +1407,9 @@ func cloneState(in State) State {
 	}
 	out.ICloudSessions = cloneICloudSessions(in.ICloudSessions)
 	out.CreateSettings = cloneCreateSettings(in.CreateSettings)
+	out.Invites = append([]InviteCode(nil), in.Invites...)
+	out.InviteUses = append([]InviteUse(nil), in.InviteUses...)
+	out.AuditEvents = append([]AuditEvent(nil), in.AuditEvents...)
 	return out
 }
 

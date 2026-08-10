@@ -592,9 +592,17 @@ func (c *AppleAuthClient) authSRP(ctx context.Context, session *appleAuthSession
 		}
 		headers["X-Apple-HC"] = hc
 	}
-	status, _, err := c.do(ctx, session, http.MethodPost, session.Endpoints.Auth+"/signin/complete?isRememberMeEnabled=true", headers, completeBody, nil, true)
+	status, data, err := c.do(ctx, session, http.MethodPost, session.Endpoints.Auth+"/signin/complete?isRememberMeEnabled=true", headers, completeBody, nil, true)
 	if status == http.StatusUnauthorized {
 		return false, errCode("apple_credentials_invalid", "Apple ID 或密码错误，请检查后重新协议登录", false)
+	}
+	if status == http.StatusLocked {
+		if phone, ok := applePhoneNumberFromResponse(data); ok {
+			if encoded, marshalErr := json.Marshal(phone); marshalErr == nil {
+				session.TwoFactorPhone = encoded
+			}
+			return true, nil
+		}
 	}
 	return status == http.StatusConflict, err
 }
@@ -645,7 +653,18 @@ func (c *AppleAuthClient) requestPhoneSecurityCode(ctx context.Context, session 
 		"phoneNumber": phone,
 		"mode":        "sms",
 	}
-	_, _, err = c.do(ctx, session, http.MethodPut, session.Endpoints.Auth+"/verify/phone", session.twoFactorHeaders(), body, nil, false)
+	_, data, err := c.do(ctx, session, http.MethodPut, session.Endpoints.Auth+"/verify/phone", session.twoFactorHeaders(), body, nil, false)
+	if err != nil && len(bytes.TrimSpace(phoneNumber)) == 0 {
+		before := string(bytes.TrimSpace(session.TwoFactorPhone))
+		session.rememberTwoFactorPhoneNumber(data)
+		if after := string(bytes.TrimSpace(session.TwoFactorPhone)); after != "" && after != before {
+			phone, payloadErr := appleAccountPhoneNumberPayload(session.TwoFactorPhone, false)
+			if payloadErr == nil {
+				body["phoneNumber"] = phone
+				_, _, err = c.do(ctx, session, http.MethodPut, session.Endpoints.Auth+"/verify/phone", session.twoFactorHeaders(), body, nil, false)
+			}
+		}
+	}
 	return err
 }
 
@@ -659,9 +678,9 @@ func (c *AppleAuthClient) refreshAuthState(ctx context.Context, session *appleAu
 	delete(headers, "Origin")
 	delete(headers, "X-Apple-App-Id")
 	_, data, err := c.do(ctx, session, http.MethodGet, session.Endpoints.Auth, headers, nil, nil, false)
-	if err == nil {
-		session.rememberTwoFactorPhoneNumber(data)
-	}
+	// Apple sometimes returns the trusted phone list in a 400 response while
+	// transitioning into SMS verification. The payload is still authoritative.
+	session.rememberTwoFactorPhoneNumber(data)
 	return err
 }
 
@@ -710,7 +729,11 @@ func (c *AppleAuthClient) validateTrustedDeviceCode(ctx context.Context, session
 }
 
 func (c *AppleAuthClient) validatePhoneSecurityCode(ctx context.Context, session *appleAuthSession, code string, phoneNumber json.RawMessage) error {
-	phone, err := appleAccountPhoneNumberPayload(appleAccountFallbackPhoneNumber(phoneNumber, session.TwoFactorPhone), true)
+	// Apple currently expects the same compact {id} phone object used when the
+	// SMS is requested. Sending nonFTEU back during code validation can make the
+	// endpoint return the phone-selection payload again instead of checking the
+	// security code.
+	phone, err := appleAccountPhoneNumberPayload(appleAccountFallbackPhoneNumber(phoneNumber, session.TwoFactorPhone), false)
 	if err != nil {
 		return err
 	}
@@ -719,8 +742,28 @@ func (c *AppleAuthClient) validatePhoneSecurityCode(ctx context.Context, session
 		"securityCode": map[string]string{"code": code},
 		"mode":         "sms",
 	}
-	_, _, err = c.do(ctx, session, http.MethodPost, session.Endpoints.Auth+"/verify/phone/securitycode", session.twoFactorHeaders(), body, nil, false)
+	_, data, err := c.do(ctx, session, http.MethodPost, session.Endpoints.Auth+"/verify/phone/securitycode", session.twoFactorHeaders(), body, nil, false)
+	if err != nil && len(bytes.TrimSpace(phoneNumber)) == 0 {
+		before := string(bytes.TrimSpace(session.TwoFactorPhone))
+		session.rememberTwoFactorPhoneNumber(data)
+		if after := string(bytes.TrimSpace(session.TwoFactorPhone)); after != "" && after != before {
+			phone, payloadErr := appleAccountPhoneNumberPayload(session.TwoFactorPhone, false)
+			if payloadErr == nil {
+				body["phoneNumber"] = phone
+				_, data, err = c.do(ctx, session, http.MethodPost, session.Endpoints.Auth+"/verify/phone/securitycode", session.twoFactorHeaders(), body, nil, false)
+			}
+		}
+	}
 	if err != nil {
+		if selectedPhone, ok := applePhoneNumberFromResponse(data); ok {
+			if encoded, marshalErr := json.Marshal(selectedPhone); marshalErr == nil {
+				session.TwoFactorPhone = encoded
+				if sendErr := c.requestPhoneSecurityCode(ctx, session, encoded); sendErr == nil {
+					return errCode("apple_sms_code_resent", "Apple 要求重新确认受信任手机号，已自动向尾号 "+applePhoneLastDigits(data)+" 的手机号发送新验证码；请输入最新短信验证码后再次提交", true)
+				}
+			}
+			return errCode("apple_phone_selection_required", "Apple 要求重新选择受信任手机号，请重新点击登录并获取最新短信验证码", true)
+		}
 		return errCode("apple_2fa_failed", "Apple 短信 2FA 验证失败："+err.Error(), true)
 	}
 	return nil
@@ -758,19 +801,62 @@ func (s *appleAuthSession) rememberTwoFactorPhoneNumber(data []byte) {
 	if s == nil || len(bytes.TrimSpace(s.TwoFactorPhone)) > 0 {
 		return
 	}
+	if phone, ok := applePhoneNumberFromResponse(data); ok {
+		if encoded, err := json.Marshal(phone); err == nil {
+			s.TwoFactorPhone = encoded
+		}
+	}
+}
+
+func applePhoneNumberFromResponse(data []byte) (map[string]any, bool) {
 	payload := extractAppleAppConfigJSON(data)
 	if len(payload) == 0 {
 		payload = bytes.TrimSpace(data)
 	}
 	var root any
 	if err := json.Unmarshal(payload, &root); err != nil {
-		return
+		return nil, false
 	}
-	if phone, ok := firstApplePhoneNumber(root, 0); ok {
-		if data, err := json.Marshal(phone); err == nil {
-			s.TwoFactorPhone = data
+	return firstApplePhoneNumber(root, 0)
+}
+
+func applePhoneLastDigits(data []byte) string {
+	payload := extractAppleAppConfigJSON(data)
+	if len(payload) == 0 {
+		payload = bytes.TrimSpace(data)
+	}
+	var root any
+	if json.Unmarshal(payload, &root) != nil {
+		return "对应"
+	}
+	var visit func(any, int) string
+	visit = func(value any, depth int) string {
+		if depth > 16 {
+			return ""
 		}
+		switch current := value.(type) {
+		case map[string]any:
+			if digits, ok := current["lastTwoDigits"].(string); ok && strings.TrimSpace(digits) != "" {
+				return strings.TrimSpace(digits)
+			}
+			for _, child := range current {
+				if digits := visit(child, depth+1); digits != "" {
+					return digits
+				}
+			}
+		case []any:
+			for _, child := range current {
+				if digits := visit(child, depth+1); digits != "" {
+					return digits
+				}
+			}
+		}
+		return ""
 	}
+	if digits := visit(root, 0); digits != "" {
+		return digits
+	}
+	return "对应"
 }
 
 func extractAppleAppConfigJSON(data []byte) []byte {
@@ -989,7 +1075,9 @@ func (c *AppleAuthClient) do(ctx context.Context, session *appleAuthSession, met
 		return resp.StatusCode, data, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return resp.StatusCode, nil, errCode("apple_protocol_http_error", fmt.Sprintf("Apple 协议 HTTP %d: %s", resp.StatusCode, trimForError(data)), true)
+		// Keep the response body available to higher-level Apple state-machine
+		// handlers. Apple commonly returns trustedPhoneNumbers in 400/423 bodies.
+		return resp.StatusCode, data, errCode("apple_protocol_http_error", fmt.Sprintf("Apple 协议 HTTP %d: %s", resp.StatusCode, trimForError(data)), true)
 	}
 	if out != nil && len(bytes.TrimSpace(data)) > 0 {
 		if err := json.Unmarshal(data, out); err != nil {

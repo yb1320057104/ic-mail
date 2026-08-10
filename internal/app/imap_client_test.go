@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/binary"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,6 +35,25 @@ func TestICloudIMAPMessagesByMailboxMatchesRecipientAlias(t *testing.T) {
 	}
 	if len(got["mbx_other"]) != 0 {
 		t.Fatalf("wrong alias received messages: %+v", got["mbx_other"])
+	}
+}
+
+func TestICloudIMAPMessagePreservesHTMLAndPlainText(t *testing.T) {
+	mailboxes := []Mailbox{{ID: "mbx_html", Email: "alias-html@icloud.com"}}
+	raw := "From: ChatGPT <noreply@example.com>\r\n" +
+		"To: alias-html@icloud.com\r\n" +
+		"Subject: Your temporary ChatGPT login code\r\n" +
+		"Content-Type: multipart/alternative; boundary=mail-boundary\r\n\r\n" +
+		"--mail-boundary\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nYour code is 691288\r\n" +
+		"--mail-boundary\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body><h1>Your code</h1><strong>691288</strong></body></html>\r\n" +
+		"--mail-boundary--\r\n"
+	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{UID: "88", Raw: []byte(raw)}}, mailboxes, time.Time{}, "")
+	messages := got["mbx_html"]
+	if len(messages) != 1 {
+		t.Fatalf("messages=%+v", messages)
+	}
+	if !strings.Contains(messages[0].Body, "691288") || !strings.Contains(messages[0].HTMLBody, "<strong>691288</strong>") {
+		t.Fatalf("plain/html body not preserved: %+v", messages[0])
 	}
 }
 
@@ -148,8 +168,8 @@ func TestIMAPLineHasExistsEvent(t *testing.T) {
 
 func TestIMAPSearchCommandUsesUIDCursorWhenAvailable(t *testing.T) {
 	command := imapSearchCommand(LoginState{}, []Mailbox{
-		{Email: "one@icloud.com", LastSyncUID: "42"},
-		{Email: "two@icloud.com", LastSyncUID: "imap:50"},
+		{Email: "one@icloud.com", LastSyncUID: "542"},
+		{Email: "two@icloud.com", LastSyncUID: "imap:550"},
 	}, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 	if command != "UID SEARCH UID 43:*" {
 		t.Fatalf("imapSearchCommand with cursors = %q, want UID SEARCH UID 43:*", command)
@@ -157,12 +177,25 @@ func TestIMAPSearchCommandUsesUIDCursorWhenAvailable(t *testing.T) {
 }
 
 func TestIMAPSearchCommandPrefersAccountCursor(t *testing.T) {
-	command := imapSearchCommand(LoginState{IMAPLastSyncUID: "100"}, []Mailbox{
+	command := imapSearchCommand(LoginState{IMAPLastSyncUID: "600"}, []Mailbox{
 		{Email: "one@icloud.com"},
 		{Email: "two@icloud.com", LastSyncUID: "42"},
 	}, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 	if command != "UID SEARCH UID 101:*" {
 		t.Fatalf("imapSearchCommand account cursor = %q, want UID SEARCH UID 101:*", command)
+	}
+}
+
+func TestICloudIMAPMessagesByMailboxMatchesForwardedRecipientLine(t *testing.T) {
+	mailboxes := []Mailbox{{ID: "mbx_forwarded", Email: "private-alias@icloud.com"}}
+	raw := "To: destination@qq.com\r\n" +
+		"From: ChatGPT <noreply@example.com>\r\n" +
+		"Subject: Your verification code 123456\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"转发邮件\n收件人：private-alias@icloud.com\n验证码 123456"
+	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{UID: "88", Raw: []byte(raw)}}, mailboxes, time.Time{}, "ChatGPT")
+	if len(got["mbx_forwarded"]) != 1 {
+		t.Fatalf("forwarded recipient should match alias, got=%+v", got)
 	}
 }
 

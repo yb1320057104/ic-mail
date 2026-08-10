@@ -1,0 +1,21 @@
+[Unit]
+Description=iCloud Privacy Mail
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/iCloud-Privacy-Mail
+ExecStart=/data/iCloud-Privacy-Mail/panel --config /data/iCloud-Privacy-Mail/config.json
+Restart=on-failure
+RestartSec=5
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/data/iCloud-Privacy-Mail
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

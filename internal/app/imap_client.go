@@ -59,6 +59,9 @@ func newICloudIMAPDialer(serverName string) tls.Dialer {
 
 func dialICloudIMAPTLS(ctx context.Context, serverName string, port int) (net.Conn, error) {
 	serverName = firstNonEmpty(strings.TrimSpace(serverName), defaultICloudIMAPHost)
+	if !safePublicMailHost(serverName) {
+		return nil, errCode("imap_host_forbidden", "IMAP 服务器地址不允许使用本机、内网或保留地址", false)
+	}
 	if port <= 0 {
 		port = defaultICloudIMAPPort
 	}
@@ -78,6 +81,12 @@ func dialICloudIMAPTLS(ctx context.Context, serverName string, port int) (net.Co
 			lastErr = err
 		}
 	}
+	if !strings.EqualFold(strings.TrimSuffix(serverName, "."), defaultICloudIMAPHost) {
+		if lookupErr != nil {
+			return nil, fmt.Errorf("IMAP 公网地址解析失败：%w", lookupErr)
+		}
+		return nil, errors.New("IMAP 域名没有可用的公网 IPv4 地址")
+	}
 	address := net.JoinHostPort(serverName, strconv.Itoa(port))
 	dialer := newICloudIMAPDialer(serverName)
 	conn, err := dialer.DialContext(ctx, "tcp4", address)
@@ -91,6 +100,21 @@ func dialICloudIMAPTLS(ctx context.Context, serverName string, port int) (net.Co
 		return nil, fmt.Errorf("IMAP DNS-over-TCP 解析失败：%v；域名拨号失败：%w", lookupErr, err)
 	}
 	return nil, err
+}
+
+func safePublicMailHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return safePublicIP(ip)
+	}
+	return true
+}
+
+func safePublicIP(ip net.IP) bool {
+	return ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 func dialICloudIMAPTLSIPs(ctx context.Context, serverName string, port int, ips []net.IP) (net.Conn, error) {
@@ -159,7 +183,7 @@ func appendUniqueIPv4(base []net.IP, extra ...net.IP) []net.IP {
 	seen := make(map[string]struct{}, len(base)+len(extra))
 	out := make([]net.IP, 0, len(base)+len(extra))
 	for _, ip := range base {
-		if ip == nil || ip.To4() == nil {
+		if ip == nil || ip.To4() == nil || !safePublicIP(ip) {
 			continue
 		}
 		key := ip.String()
@@ -170,7 +194,7 @@ func appendUniqueIPv4(base []net.IP, extra ...net.IP) []net.IP {
 		out = append(out, ip)
 	}
 	for _, ip := range extra {
-		if ip == nil || ip.To4() == nil {
+		if ip == nil || ip.To4() == nil || !safePublicIP(ip) {
 			continue
 		}
 		key := ip.String()
@@ -411,20 +435,29 @@ func dnsFallbackNetworks(network string) []string {
 }
 
 func CheckICloudIMAPLogin(ctx context.Context, email, appPassword string) error {
+	return CheckGenericIMAPLogin(ctx, email, email, appPassword, defaultICloudIMAPHost, defaultICloudIMAPPort)
+}
+
+func CheckGenericIMAPLogin(ctx context.Context, email, username, password, host string, port int) error {
 	email = strings.TrimSpace(email)
-	appPassword = strings.TrimSpace(appPassword)
-	if email == "" {
-		return errCode("imap_email_missing", "请输入 iCloud 邮箱账号", false)
+	username = firstNonEmpty(strings.TrimSpace(username), email)
+	password = strings.TrimSpace(password)
+	host = firstNonEmpty(strings.TrimSpace(host), defaultICloudIMAPHost)
+	if port <= 0 {
+		port = defaultICloudIMAPPort
 	}
-	if appPassword == "" {
-		return errCode("imap_app_password_missing", "请输入 App 专用密码", false)
+	if email == "" {
+		return errCode("imap_email_missing", "请输入邮箱账号", false)
+	}
+	if password == "" {
+		return errCode("imap_app_password_missing", "请输入邮箱密码或应用专用密码", false)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	conn, err := dialICloudIMAPTLS(ctx, defaultICloudIMAPHost, defaultICloudIMAPPort)
+	conn, err := dialICloudIMAPTLS(ctx, host, port)
 	if err != nil {
-		return errCode("imap_connect_failed", "连接 iCloud IMAP 失败："+err.Error(), true)
+		return errCode("imap_connect_failed", "连接 IMAP 服务失败："+err.Error(), true)
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(25 * time.Second))
@@ -438,12 +471,12 @@ func CheckICloudIMAPLogin(ctx context.Context, email, appPassword string) error 
 		return errCode("imap_greeting_failed", "iCloud IMAP 未就绪："+imapResponseSummary([]string{greeting}), true)
 	}
 
-	loginLines, err := imapCommand(conn, reader, "A001", "LOGIN "+imapQuote(email)+" "+imapQuote(appPassword))
+	loginLines, err := imapCommand(conn, reader, "A001", "LOGIN "+imapQuote(username)+" "+imapQuote(password))
 	if err != nil {
 		return errCode("imap_login_failed", "iCloud IMAP 登录请求失败："+err.Error(), true)
 	}
 	if !imapTaggedOK(loginLines, "A001") {
-		return errCode("imap_login_failed", "iCloud IMAP 登录失败，请确认 iCloud 邮箱账号和 App 专用密码："+imapResponseSummary(loginLines), false)
+		return errCode("imap_login_failed", "IMAP 登录失败，请确认服务器、用户名和密码："+imapResponseSummary(loginLines), false)
 	}
 
 	selectLines, err := imapCommand(conn, reader, "A002", "SELECT INBOX")
@@ -773,7 +806,7 @@ func SyncICloudIMAPMessagesWithCursor(ctx context.Context, state LoginState, mai
 
 func imapSearchCommand(state LoginState, mailboxes []Mailbox, after time.Time) string {
 	if uid := imapUIDNumber(state.IMAPLastSyncUID); uid > 0 {
-		return "UID SEARCH UID " + strconv.Itoa(uid+1) + ":*"
+		return "UID SEARCH UID " + strconv.Itoa(imapRescanStartUID(uid)) + ":*"
 	}
 	nextUID := 0
 	for _, mailbox := range mailboxes {
@@ -787,13 +820,25 @@ func imapSearchCommand(state LoginState, mailboxes []Mailbox, after time.Time) s
 		}
 	}
 	if nextUID > 0 {
-		return "UID SEARCH UID " + strconv.Itoa(nextUID) + ":*"
+		return "UID SEARCH UID " + strconv.Itoa(imapRescanStartUID(nextUID-1)) + ":*"
 	}
 	searchAfter := after
 	if searchAfter.IsZero() {
 		searchAfter = time.Now().Add(-24 * time.Hour)
 	}
 	return "UID SEARCH SINCE " + searchAfter.Format("2-Jan-2006")
+}
+
+// Re-read a bounded UID window because forwarding providers may rewrite the
+// recipient headers after the first scan. Upserts are idempotent, so the
+// overlap recovers previously unmatched messages without creating duplicates.
+func imapRescanStartUID(lastUID int) int {
+	const overlap = 500
+	start := lastUID - overlap + 1
+	if start < 1 {
+		return 1
+	}
+	return start
 }
 
 func imapSelectLastUID(lines []string) int {
@@ -892,7 +937,8 @@ func parseICloudIMAPMessage(item iCloudIMAPFetchedMessage) (ICloudSyncedMessage,
 		return ICloudSyncedMessage{}, "", false
 	}
 	bodyBytes, _ := io.ReadAll(io.LimitReader(msg.Body, 1<<20))
-	body := decodeICloudIMAPBody(msg.Header, bodyBytes)
+	content := decodeICloudIMAPContent(msg.Header, bodyBytes)
+	body := firstNonEmpty(content.Text, normalizeMailBody(content.HTML))
 	subject := decodeMIMEHeader(msg.Header.Get("Subject"))
 	from := decodeMIMEHeader(msg.Header.Get("From"))
 	receivedAt := time.Now()
@@ -904,15 +950,36 @@ func parseICloudIMAPMessage(item iCloudIMAPFetchedMessage) (ICloudSyncedMessage,
 	if uid != "" {
 		remoteID += ":" + uid
 	}
-	recipients := imapHeaderText(msg.Header)
+	recipients := imapRecipientEvidence(msg.Header, body)
 	return ICloudSyncedMessage{
 		RemoteID:   remoteID,
 		UID:        uid,
 		Subject:    subject,
 		From:       from,
 		Body:       normalizeMailBody(subject + "\n" + body),
+		HTMLBody:   content.HTML,
 		ReceivedAt: receivedAt,
 	}, recipients, true
+}
+
+func imapRecipientEvidence(header mail.Header, body string) string {
+	evidence := imapHeaderText(header)
+	// QQ and some other forwarding services replace the RFC To header with the
+	// destination mailbox and preserve the original recipient in a forwarded
+	// header block inside the decoded body. Only accept labelled recipient lines
+	// to avoid matching an address merely mentioned in normal message content.
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		prefixes := []string{"to:", "original-to:", "x-original-to:", "delivered-to:", "envelope-to:", "收件人:", "收件人：", "原始收件人:", "原始收件人："}
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(lower, prefix) {
+				evidence += "\nForwarded-" + trimmed
+				break
+			}
+		}
+	}
+	return evidence
 }
 
 func normalizeICloudIMAPState(state LoginState) (LoginState, error) {
@@ -1041,6 +1108,16 @@ func decodeMIMEHeader(value string) string {
 }
 
 func decodeICloudIMAPBody(header mail.Header, body []byte) string {
+	content := decodeICloudIMAPContent(header, body)
+	return firstNonEmpty(content.Text, content.HTML)
+}
+
+type imapBodyContent struct {
+	Text string
+	HTML string
+}
+
+func decodeICloudIMAPContent(header mail.Header, body []byte) imapBodyContent {
 	mediaType, params, err := mime.ParseMediaType(header.Get("Content-Type"))
 	if err != nil {
 		mediaType = strings.ToLower(strings.TrimSpace(header.Get("Content-Type")))
@@ -1049,27 +1126,33 @@ func decodeICloudIMAPBody(header mail.Header, body []byte) string {
 	if strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
 		boundary := params["boundary"]
 		if boundary == "" {
-			return string(decoded)
+			return imapBodyContent{Text: string(decoded)}
 		}
 		reader := multipart.NewReader(bytes.NewReader(decoded), boundary)
-		var parts []string
+		var textParts, htmlParts []string
 		for i := 0; i < 30; i++ {
 			part, err := reader.NextPart()
 			if err != nil {
 				break
 			}
 			partBody, _ := io.ReadAll(io.LimitReader(part, 1<<20))
-			text := decodeICloudIMAPBody(mail.Header(part.Header), partBody)
-			if strings.TrimSpace(text) != "" {
-				parts = append(parts, text)
+			partContent := decodeICloudIMAPContent(mail.Header(part.Header), partBody)
+			if strings.TrimSpace(partContent.Text) != "" {
+				textParts = append(textParts, partContent.Text)
+			}
+			if strings.TrimSpace(partContent.HTML) != "" {
+				htmlParts = append(htmlParts, partContent.HTML)
 			}
 		}
-		return strings.Join(parts, "\n")
+		return imapBodyContent{Text: strings.Join(textParts, "\n"), HTML: strings.Join(htmlParts, "\n")}
+	}
+	if strings.EqualFold(mediaType, "text/html") {
+		return imapBodyContent{HTML: string(decoded)}
 	}
 	if strings.HasPrefix(strings.ToLower(mediaType), "text/") || mediaType == "" {
-		return string(decoded)
+		return imapBodyContent{Text: string(decoded)}
 	}
-	return string(decoded)
+	return imapBodyContent{}
 }
 
 func decodeICloudIMAPTransfer(encoding string, body []byte) []byte {

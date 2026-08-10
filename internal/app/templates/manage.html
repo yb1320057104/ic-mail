@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>账号数据管理 - iCloud Privacy Mail</title>
+  <title>账号数据管理 - iCloud 隐私邮箱</title>
   <style>
     :root {
       --bg: #eef8f6;
@@ -117,7 +117,14 @@
     h1 { margin: 0; font-size: 31px; line-height: 1.15; letter-spacing: -.04em; }
     h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
     .subtitle { margin-top: 8px; color: var(--muted); line-height: 1.6; }
-    .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+    .actions {
+      display: flex;
+      flex-wrap: nowrap;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
     .actions select.export-format { width: auto; min-width: 94px; border: 1px solid var(--line-strong); border-radius: 12px; background: rgba(255,255,255,.9); color: var(--text); padding: 10px 12px; font-weight: 850; }
     .actions select.export-account { width: auto; min-width: 190px; max-width: 260px; border: 1px solid var(--line-strong); border-radius: 12px; background: rgba(255,255,255,.9); color: var(--text); padding: 10px 12px; font-weight: 850; }
     .btn {
@@ -240,6 +247,19 @@
       border-color: rgba(19,184,166,.62);
       box-shadow: 0 0 0 4px rgba(19,184,166,.12);
     }
+    .form-grid { display:grid; grid-template-columns:2fr 1fr 1.4fr auto; gap:10px; align-items:end; padding:16px 18px; }
+    .field { display:flex; flex-direction:column; gap:6px; color:var(--muted); font-size:12px; font-weight:800; }
+    .field input, .field select { border:1px solid var(--line-strong); border-radius:10px; padding:9px 10px; background:#fff; color:var(--text); }
+    .ownership { font-weight:900; color:#0f766e; white-space:nowrap; }
+    .tag { display:inline-block; margin:2px; padding:3px 7px; border-radius:7px; background:#eef2ff; color:#4338ca; font-size:11px; font-weight:800; }
+    .admin-only[hidden] { display:none !important; }
+    .table-filter { display:flex; flex-wrap:wrap; gap:10px; align-items:end; padding:13px 18px; border-bottom:1px solid var(--line); background:rgba(247,251,255,.82); }
+    .table-filter label { display:grid; gap:5px; min-width:160px; flex:1; color:var(--muted); font-size:12px; font-weight:800; }
+    .table-filter input,.table-filter select { width:100%; padding:9px 10px; border:1px solid var(--line-strong); border-radius:10px; background:#fff; color:var(--text); }
+    .table-filter button { border:1px solid var(--line-strong); border-radius:10px; padding:9px 12px; background:#fff; font-weight:800; cursor:pointer; }
+    .page-guide { display:flex; gap:12px; align-items:center; margin:0 0 16px; padding:13px 16px; border:1px solid rgba(19,184,166,.24); border-radius:14px; background:#f0fdfa; }
+    .page-guide strong { color:var(--green-dark); white-space:nowrap; }
+    .page-guide span { color:var(--muted); line-height:1.6; }
     .table-wrap { overflow: auto; }
     table { width: 100%; min-width: 900px; border-collapse: collapse; }
     th, td { border-top: 1px solid rgba(118,143,174,.16); padding: 13px 14px; text-align: left; vertical-align: middle; }
@@ -287,10 +307,23 @@
       .nav { grid-template-columns: repeat(4, minmax(0, 1fr)); display: grid; }
       .side-note { display: none; }
     }
+    @media (max-width: 1500px) {
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .actions {
+        width: 100%;
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        scrollbar-width: thin;
+      }
+      .actions .btn { padding-left: 10px; padding-right: 10px; }
+      .actions select.export-format { min-width: 78px; }
+      .actions select.export-account { min-width: 168px; max-width: 210px; }
+    }
     @media (max-width: 760px) {
       .topbar, main { padding-left: 16px; padding-right: 16px; }
       .topbar { align-items: flex-start; flex-direction: column; }
-      .actions { justify-content: flex-start; }
+      .actions { justify-content: flex-start; flex-wrap: nowrap; }
       .panel-head { align-items: flex-start; flex-direction: column; }
       .panel-tools { justify-content: flex-start; width: 100%; }
       .stats { grid-template-columns: repeat(2, 1fr); }
@@ -298,6 +331,56 @@
       h1 { font-size: 28px; }
       .stat-card strong { font-size: 30px; }
     }
+    /* Unified, compact management layout. */
+    main { max-width: 1440px; }
+    .panel { border-radius: 16px; box-shadow: 0 10px 32px rgba(17,70,101,.08); }
+    .panel-head { padding: 18px 20px; min-height: 70px; }
+    .table-wrap { max-height: 620px; }
+    thead th { position: sticky; top: 0; z-index: 2; }
+    tbody tr:nth-child(even) { background: rgba(241,248,247,.55); }
+    th, td { padding: 12px 14px; }
+    .account-grid { grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); gap:14px; }
+    @media(max-width:760px){.form-grid{grid-template-columns:1fr}.table-wrap{max-height:none}}
+
+    /* 黑色深蓝主题 */
+    :root {
+      --bg: #030712;
+      --panel: rgba(4, 17, 42, .98);
+      --panel-soft: rgba(5, 22, 52, .94);
+      --line: rgba(96, 165, 250, .18);
+      --line-strong: rgba(96, 165, 250, .34);
+      --text: #e8f1ff;
+      --muted: #8eb0dd;
+      --faint: #5879a8;
+      --green: #2563eb;
+      --green-dark: #60a5fa;
+      --shadow: 0 28px 90px rgba(0, 0, 0, .42);
+    }
+    body { background: radial-gradient(circle at 8% 0, rgba(29,78,216,.32), transparent 34%), radial-gradient(circle at 100% 20%, rgba(15,61,116,.28), transparent 30%), linear-gradient(145deg,#00030a,#020b1d 55%,#00040d); }
+    .sidebar, header { background: rgba(0,7,20,.97); }
+    .panel, .account-card, .stat-card { background: linear-gradient(145deg,#061630,#020b1d); }
+    .nav button:hover, .nav button.active { color:#fff; background:linear-gradient(135deg,#1d4ed8,#0f3d74); }
+    .table-filter, thead th, tbody tr:nth-child(even), .page-guide { background:rgba(8,22,43,.9); }
+    .table-filter input, .table-filter select, .table-filter button, input, select, textarea, .btn, .actions select.export-format, .actions select.export-account { color:var(--text); background:#091a33; border-color:var(--line-strong); }
+    tbody tr:hover { background:rgba(30,64,175,.16); }
+    .log { color:#c9dcf7; background:#030b18; }
+    .brand-mark, .btn.primary { background:linear-gradient(135deg,#2563eb,#0f3d74); box-shadow:0 12px 26px rgba(37,99,235,.24); }
+    .btn:hover { color:#fff; border-color:rgba(96,165,250,.55); background:#102b52; }
+    .account-card:hover, .account-card.active { border-color:rgba(96,165,250,.62); background:rgba(15,42,78,.96); box-shadow:inset 0 0 0 1px rgba(96,165,250,.16); }
+    input:focus, select:focus, textarea:focus { border-color:rgba(96,165,250,.7); box-shadow:0 0 0 4px rgba(37,99,235,.18); }
+    .page-guide { border-color:rgba(96,165,250,.3); background:#081a34; }
+    .mini-stat, .pill.gray, .pill.red, .pill.amber { background:#071a38; }
+    .pill.gray { color:#9fc2ef; border-color:rgba(59,130,246,.28); }
+    th { background:#04142f; color:#9fc2ef; }
+    tbody tr:nth-child(even) { background:#031027; }
+    .table-filter, .filter-line { background:#04142f; }
+    thead th, th { color:#cfe2ff !important; background:#041735 !important; border-color:rgba(59,130,246,.3) !important; }
+    .table-filter, .panel-head { background:#051936 !important; }
+    .actions select, .table-filter select, .table-filter input { color:#dbeafe; background:#061a3b !important; }
+    select option { color:#eaf2ff; background:#06142d; }
+    input, textarea, select { color:#eef6ff !important; background:#061a3b !important; caret-color:#60a5fa; }
+    input::placeholder, textarea::placeholder { color:#7194c3; opacity:1; }
+    input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus { -webkit-text-fill-color:#eef6ff; -webkit-box-shadow:0 0 0 1000px #061a3b inset; caret-color:#60a5fa; }
   </style>
 </head>
 <body>
@@ -305,7 +388,7 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">✉</div>
-        <div>Privacy Mail</div>
+        <div>iCloud 隐私邮箱</div>
       </div>
       <nav class="nav">
         <button class="active" data-view="overview" onclick="setActiveView('overview')"><span class="nav-icon">⌂</span>仪表盘</button>
@@ -313,6 +396,9 @@
         <button data-view="users" onclick="setActiveView('users')"><span class="nav-icon">◉</span>用户列表</button>
         <button data-view="mailboxes" onclick="setActiveView('mailboxes')"><span class="nav-icon">✉</span>隐私邮箱</button>
         <button data-view="accounts" onclick="setActiveView('accounts')"><span class="nav-icon">◎</span>登录账号</button>
+        <button data-view="sessions" onclick="setActiveView('sessions')"><span class="nav-icon">◫</span>用户登录态</button>
+        <button class="admin-only" data-view="invites" onclick="setActiveView('invites')"><span class="nav-icon">✦</span>注册邀请</button>
+        <button class="admin-only" data-view="audit" onclick="setActiveView('audit')"><span class="nav-icon">◉</span>安全审计</button>
         <button data-view="logs" onclick="setActiveView('logs')"><span class="nav-icon">☰</span>运行日志</button>
         <button onclick="refresh()"><span class="nav-icon">↻</span>刷新数据</button>
       </nav>
@@ -323,7 +409,7 @@
       <header>
         <div class="topbar">
           <div>
-            <div class="eyebrow">Data Manager</div>
+            <div class="eyebrow">账号数据中心</div>
             <h1>账号数据管理</h1>
             <div class="subtitle" id="whoami">正在读取账号...</div>
           </div>
@@ -342,12 +428,14 @@
             </select>
             <button class="btn" onclick="exportMailboxAPIs()">导出邮箱API</button>
             <button class="btn" onclick="exportMailboxEmails()">只导出邮箱</button>
+            <button class="btn" onclick="changePassword()">修改密码</button>
             <button class="btn" onclick="logout()">退出登录</button>
           </div>
         </div>
       </header>
 
       <main>
+        <div id="pageGuide" class="page-guide"></div>
         <section class="stats view-section active" data-view="overview">
           <div class="stat-card"><strong id="userCount">0</strong><span>用户数</span></div>
           <div class="stat-card"><strong id="accountCount">0</strong><span>登录账号</span></div>
@@ -371,9 +459,10 @@
           <div class="panel-head">
             <div><h2>用户列表</h2><p>管理员显示全部用户；普通用户只显示自己。</p></div>
           </div>
+          <div class="table-filter"><label>搜索用户<input id="userSearch" placeholder="用户名、用户ID、邀请ID" oninput="renderData()"></label><label>角色<select id="userRoleFilter" onchange="renderData()"><option value="">全部角色</option><option value="admin">管理员</option><option value="user">普通用户</option></select></label><label>状态<select id="userStatusFilter" onchange="renderData()"><option value="">全部状态</option><option value="active">正常</option><option value="disabled">停用</option></select></label><button onclick="clearManageFilters('user')">清空</button></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>账号</th><th>角色</th><th>状态</th><th>创建时间</th><th>最后登录</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>平台用户</th><th>角色</th><th>注册来源</th><th>状态</th><th>创建时间</th><th>最后登录</th><th>操作</th></tr></thead>
               <tbody id="users"></tbody>
             </table>
           </div>
@@ -395,9 +484,10 @@
               </div>
             </div>
           </div>
+          <div class="table-filter"><label>搜索邮箱<input id="manageMailboxSearch" placeholder="邮箱、标签、ID、Apple ID" oninput="renderData()"></label><label>状态<select id="manageMailboxStatus" onchange="renderData()"><option value="">全部状态</option><option value="available">可用</option><option value="used">已使用</option><option value="failed">失败</option><option value="disabled">停用</option></select></label><label>接码状态<select id="manageMailboxReceiveStatus" onchange="renderData()"><option value="">全部接码状态</option><option value="available">可以接码</option><option value="unavailable">当前不可接码</option></select></label><label>最低收件数<input id="manageMailboxMinReceive" type="number" min="0" placeholder="不限" oninput="renderData()"></label><button onclick="clearManageFilters('mailbox')">清空</button></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>归属</th><th>标签</th><th>邮箱</th><th>状态</th><th>收件</th><th>创建时间</th></tr></thead>
+              <thead><tr><th>ID</th><th>归属路径</th><th>标签</th><th>邮箱</th><th>状态</th><th>收件</th><th>创建时间</th></tr></thead>
               <tbody id="mailboxes"></tbody>
             </table>
           </div>
@@ -408,13 +498,44 @@
           <div class="panel-head">
             <div><h2>登录账号数据</h2><p>已保存的 Apple/iCloud 登录账号标签。</p></div>
           </div>
+          <div class="table-filter"><label>搜索登录账号<input id="manageAccountSearch" placeholder="Apple ID、名称、账号ID、标签、异常原因" oninput="renderData()"></label><label>所属用户<select id="manageAccountOwner" onchange="renderData()"><option value="">全部用户</option></select></label><label>分类<select id="manageAccountCategory" onchange="renderData()"><option value="">全部分类</option><option>未分类</option><option>主账号</option><option>备用账号</option><option>创建专用</option><option>收码专用</option><option>测试账号</option><option>已停用</option></select></label><label>登录接口<select id="manageAccountKind" onchange="renderData()"><option value="">全部接口</option><option value="apple">新接口</option><option value="icloud">旧接口</option><option value="imap">IMAP</option></select></label><label>登录态状态<select id="manageAccountStatus" onchange="renderData()"><option value="">全部状态</option><option value="active">正常</option><option value="need_login">需重新登录</option><option value="failed">异常</option></select></label><button onclick="clearManageFilters('account')">清空</button></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>归属</th><th>标签</th><th>Apple ID</th><th>状态</th><th>备注</th><th>创建时间</th></tr></thead>
+              <thead><tr><th>ID</th><th>所属用户</th><th>名称 / Apple ID</th><th>分类 / 标签</th><th>新接口</th><th>旧接口</th><th>IMAP</th><th>异常原因 / 保活</th><th>管理</th></tr></thead>
               <tbody id="accounts"></tbody>
             </table>
           </div>
           <div class="empty" id="accountsEmpty" hidden>暂无登录账号数据</div>
+        </section>
+
+        <section class="panel view-section" id="sessionsPanel" data-view="sessions">
+          <div class="panel-head">
+            <div><h2>所有用户登录态</h2><p>管理员查看全部平台用户的新接口、旧接口、IMAP、子邮箱数量、检测时间和异常原因。</p></div>
+          </div>
+          <div class="table-filter"><label>搜索登录态<input id="manageSessionSearch" placeholder="所属用户、Apple ID、账号ID、IMAP邮箱、异常原因" oninput="renderData()"></label><label>所属用户<select id="manageSessionOwner" onchange="renderData()"><option value="">全部用户</option></select></label><label>接口类型<select id="manageSessionKind" onchange="renderData()"><option value="">全部接口</option><option value="apple">新接口</option><option value="icloud">旧接口</option><option value="imap">IMAP</option></select></label><label>登录态状态<select id="manageSessionStatus" onchange="renderData()"><option value="">全部状态</option><option value="normal">全部正常</option><option value="partial">部分异常</option><option value="failed">异常</option><option value="unchecked">未检测</option></select></label><button onclick="clearManageFilters('session')">清空</button></div>
+          <div class="table-wrap"><table class="session-table"><thead><tr><th>所属用户</th><th>Apple账号 / ID</th><th>新接口</th><th>旧接口</th><th>IMAP取码</th><th>子邮箱</th><th>最后检测</th><th>异常原因</th></tr></thead><tbody id="manageSessions"></tbody></table></div>
+          <div class="empty" id="manageSessionsEmpty" hidden>没有符合条件的用户登录态</div>
+        </section>
+
+        <section class="panel view-section admin-only" data-view="invites">
+          <div class="panel-head"><div><h2>注册邀请码</h2><p>可批量生成独立邀请码；有效期从用户实际注册兑换当天开始计算。</p></div><button class="btn" onclick="exportInvites()">导出邀请码</button></div>
+          <div class="form-grid" id="inviteForm">
+            <label class="field">用途名称<input id="inviteName" placeholder="例如：团队A八月邀请"></label>
+            <label class="field">生成数量<input id="inviteCount" type="number" min="1" max="1000" value="10"></label>
+            <label class="field">每码可注册次数<input id="inviteMaxUses" type="number" min="1" max="10000" value="1"></label>
+            <label class="field">注册后有效天数<input id="inviteValidDays" type="number" min="1" max="3650" value="30"></label>
+            <button class="btn primary" onclick="createInvite()">批量生成邀请码</button>
+          </div>
+          <div class="table-filter"><label>搜索邀请码<input id="inviteSearch" placeholder="名称、ID、创建人" oninput="renderData()"></label><label>状态<select id="inviteStatusFilter" onchange="renderData()"><option value="">全部状态</option><option value="enabled">有效</option><option value="disabled">已禁用</option><option value="exhausted">已用完</option></select></label><button onclick="clearManageFilters('invite')">清空</button></div>
+          <div class="table-wrap"><table><thead><tr><th>名称 / 邀请码</th><th>有效期</th><th>注册状态</th><th>注册用户</th><th>兑换时间</th><th>到期时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="invites"></tbody></table></div>
+          <div class="empty" id="invitesEmpty" hidden>暂无邀请码</div>
+        </section>
+
+        <section class="panel view-section admin-only" data-view="audit">
+          <div class="panel-head"><div><h2>安全审计</h2><p>最近的登录、注册、管理员和数据修改操作。</p></div></div>
+          <div class="table-filter"><label>搜索审计<input id="auditSearch" placeholder="操作者、事件、路径、IP" oninput="renderData()"></label><label>结果<select id="auditResultFilter" onchange="renderData()"><option value="">全部结果</option><option value="success">成功</option><option value="failed">失败</option></select></label><button onclick="clearManageFilters('audit')">清空</button></div>
+          <div class="table-wrap"><table><thead><tr><th>时间</th><th>操作者</th><th>角色</th><th>事件</th><th>目标</th><th>来源 IP</th><th>结果</th></tr></thead><tbody id="auditEvents"></tbody></table></div>
+          <div class="empty" id="auditEventsEmpty" hidden>暂无审计记录</div>
         </section>
 
         <section class="panel view-section" data-view="logs">
@@ -447,11 +568,22 @@
       users: '用户列表',
       mailboxes: '隐私邮箱',
       accounts: '登录账号',
+      sessions: '用户登录态',
+      invites: '注册邀请',
+      audit: '安全审计',
       logs: '运行日志'
     };
+	const viewDescriptions = {overview:'查看平台数据总览。',accountManage:'按平台用户切换数据范围，核对用户与账号、邮箱、邮件的归属。',users:'搜索平台用户，查看角色、注册来源和最后登录。',mailboxes:'按邮箱、Apple账号、状态和收件数组合筛选子邮箱。',accounts:'维护登录账号分类与标签。',sessions:'查看所有用户登录态的新接口、旧接口、IMAP、子邮箱和异常原因。',invites:'仅管理员创建和维护注册邀请码。',audit:'仅管理员查询登录、权限和数据修改记录。',logs:'查看当前浏览器会话中的最近操作结果。'};
 
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function displayTime(value, fallback = '-') {
+      if (!value) return fallback;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      const pad = number => String(number).padStart(2, '0');
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
     }
     function log(text) {
       const el = $('log');
@@ -496,10 +628,12 @@
     }
     function statusPill(status) {
       const s = String(status || '-');
-      if (['failed','disabled'].includes(s)) return pill(s, 'red');
-      if (['used'].includes(s)) return pill(s, 'amber');
-      if (['active','available'].includes(s)) return pill(s);
-      return pill(s, 'gray');
+      const labels = {active:'正常', available:'可用', used:'已使用', failed:'异常', disabled:'已停用', need_login:'需要登录', pending:'等待处理', success:'成功', anonymous:'匿名'};
+      const label = labels[s] || s;
+      if (['failed','disabled','need_login'].includes(s)) return pill(label, 'red');
+      if (['used','pending'].includes(s)) return pill(label, 'amber');
+      if (['active','available','success'].includes(s)) return pill(label);
+      return pill(label, 'gray');
     }
     function scrollToPanel(id) {
       const el = $(id);
@@ -507,6 +641,7 @@
     }
     function setActiveView(view) {
       const normalized = viewMeta[view] ? view : 'overview';
+	  if ($('pageGuide')) $('pageGuide').innerHTML = `<strong>${esc(viewMeta[normalized])}</strong><span>${esc(viewDescriptions[normalized] || '')}</span>`;
       for (const button of document.querySelectorAll('.nav button[data-view]')) {
         button.classList.toggle('active', button.dataset.view === normalized);
       }
@@ -582,6 +717,8 @@
       const data = await api('/api/auth/me');
       if (!data.authenticated) { location.href = '/login'; throw new Error('未登录'); }
       currentUser = data.user;
+	  document.querySelectorAll('.admin-only').forEach(el => { el.hidden = !currentUser.is_admin; });
+	  if (!currentUser.is_admin && ['invites','audit'].includes(localStorage.getItem(viewStorageKey))) setActiveView('overview');
       $('whoami').textContent = `当前账号：${currentUser.username}${currentUser.is_admin ? ' / 管理员，可查看全部数据' : ' / 普通用户，仅查看自己数据'}`;
     }
     function renderEmpty(id, rows) {
@@ -610,11 +747,49 @@
       const users = data.users || [];
       const summaries = data.user_summaries || [];
       const accountsAll = data.accounts || [];
+      const sessionsAll = data.icloud_sessions || [];
+      const sessionsByAccount = new Map();
+      for (const session of sessionsAll) {
+        if (session.account_id) sessionsByAccount.set(session.account_id, session);
+        if (session.apple_id) sessionsByAccount.set(`apple:${String(session.apple_id).toLowerCase()}`, session);
+      }
       const mailboxesAll = data.mailboxes || [];
       const selectedSummary = summaries.find(s => ownerID(s) === selectedOwner);
-      const usersInScope = selectedOwner === 'all' ? users : users.filter(u => u.id === selectedOwner);
-      const accounts = accountsAll.filter(inScope);
-      const mailboxes = mailboxesAll.filter(inScope);
+	  const includesQuery = (values, query) => !query || values.join(' ').toLowerCase().includes(query.toLowerCase());
+      let usersInScope = selectedOwner === 'all' ? users : users.filter(u => u.id === selectedOwner);
+      let accounts = accountsAll.filter(inScope);
+      let mailboxes = mailboxesAll.filter(inScope);
+	  const userQuery = (($('userSearch') || {}).value || '').trim();
+	  const userRole = (($('userRoleFilter') || {}).value || '');
+	  const userStatus = (($('userStatusFilter') || {}).value || '');
+	  usersInScope = usersInScope.filter(u => includesQuery([u.id,u.username,u.invite_id,u.invited_by],userQuery) && (!userRole || (userRole==='admin')===!!u.is_admin) && (!userStatus || u.status===userStatus));
+	  const accountQuery = (($('manageAccountSearch') || {}).value || '').trim();
+	  const ownerSelect = $('manageAccountOwner');
+	  if (ownerSelect) {
+		const selected = ownerSelect.value || '';
+		ownerSelect.innerHTML = '<option value="">全部用户</option>' + users.map(u => `<option value="${esc(u.id)}">${esc(u.username)}</option>`).join('');
+		ownerSelect.value = [...ownerSelect.options].some(option => option.value === selected) ? selected : '';
+	  }
+	  const accountOwner = (ownerSelect || {}).value || '';
+	  const accountCategory = (($('manageAccountCategory') || {}).value || '');
+	  const accountKind = (($('manageAccountKind') || {}).value || '');
+	  const accountStatus = (($('manageAccountStatus') || {}).value || '');
+	  const sessionForAccount = a => sessionsByAccount.get(a.id) || sessionsByAccount.get(`apple:${String(a.apple_id || '').toLowerCase()}`) || {};
+	  const sessionKindSaved = (s, kind) => kind === 'apple' ? s.apple_account_login_saved : (kind === 'icloud' ? s.icloud_web_login_saved : (kind === 'imap' ? s.icloud_imap_login_saved : true));
+	  const sessionHasFailure = s => !!(s.apple_account_login_error || s.icloud_web_login_error || s.icloud_imap_login_error || s.apple_account_keep_alive_error) || [s.apple_account_login_status,s.icloud_web_login_status,s.icloud_imap_login_status].some(v => String(v || '').includes('异常'));
+	  const sessionIsNormal = s => [s.apple_account_login_saved&&s.apple_account_login_status,s.icloud_web_login_saved&&s.icloud_web_login_status,s.icloud_imap_login_saved&&s.icloud_imap_login_status].filter(Boolean).some(v => String(v).includes('正常')) && !sessionHasFailure(s);
+	  accounts = accounts.filter(a => {
+		const s = sessionForAccount(a);
+		const errors = [s.apple_account_login_error,s.icloud_web_login_error,s.icloud_imap_login_error,s.apple_account_keep_alive_error];
+		const matchesStatus = !accountStatus || (accountStatus==='failed'&&sessionHasFailure(s)) || (accountStatus==='active'&&sessionIsNormal(s)) || (accountStatus==='need_login'&&!s.apple_account_login_saved&&!s.icloud_web_login_saved&&!s.icloud_imap_login_saved);
+		return includesQuery([a.id,a.owner,a.label,a.apple_id,a.category,...(a.tags||[]),...errors],accountQuery) && (!accountOwner || a.owner_id===accountOwner) && (!accountCategory || a.category===accountCategory) && (!accountKind || sessionKindSaved(s,accountKind)) && matchesStatus;
+	  });
+	  const mailboxQuery = (($('manageMailboxSearch') || {}).value || '').trim();
+	  const mailboxStatus = (($('manageMailboxStatus') || {}).value || '');
+	  const mailboxReceiveStatus = (($('manageMailboxReceiveStatus') || {}).value || '');
+	  const mailboxMin = Number((($('manageMailboxMinReceive') || {}).value || 0));
+	  mailboxes = mailboxes.filter(m => includesQuery([m.id,m.owner,m.label,m.email,m.account_label,m.account_apple_id,m.receive_code_status,m.receive_code_error],mailboxQuery) && (!mailboxStatus || m.status===mailboxStatus) && (!mailboxReceiveStatus || (mailboxReceiveStatus==='available')===!!m.can_receive_code) && Number(m.receive_count||0)>=mailboxMin);
+	  const usersByID = new Map(users.map(u => [u.id, u.username]));
       const messageCount = selectedOwner === 'all' ? (data.messages || 0) : (selectedSummary ? selectedSummary.message_count || 0 : 0);
       const scopeName = selectedOwner === 'all' ? '全部账号' : (selectedSummary ? selectedSummary.username : selectedOwner || '管理员/全局');
 
@@ -631,7 +806,7 @@
       cards.push(`
         <div class="account-card ${selectedOwner === 'all' ? 'active' : ''}" data-owner="all">
           <div class="account-card-head">
-            <div><div class="account-name">全部账号</div><div class="account-id">all users</div></div>
+            <div><div class="account-name">全部账号</div><div class="account-id">所有平台用户</div></div>
             ${pill('汇总')}
           </div>
           <div class="mini-stats">
@@ -648,7 +823,7 @@
             <div class="account-card-head">
               <div>
                 <div class="account-name">${esc(s.username || '-')}</div>
-                <div class="account-id">${esc(oid || 'global')}</div>
+                <div class="account-id">${esc(oid || '全局账号')}</div>
               </div>
               ${s.is_admin ? pill('管理员') : pill('普通', 'gray')}
             </div>
@@ -670,26 +845,77 @@
           <td class="mono">${esc(u.id)}</td>
           <td>${esc(u.username)}</td>
           <td>${u.is_admin ? pill('管理员') : pill('普通', 'gray')}</td>
+          <td>${u.invite_id ? `${pill('邀请码')} ${esc(usersByID.get(u.invited_by) || u.invited_by || '-')}` : (u.is_admin ? pill('首位管理员', 'amber') : pill('直接注册', 'gray'))}</td>
           <td>${statusPill(u.status)}</td>
-          <td>${esc(u.created_at || '-')}</td>
-          <td>${esc(u.last_login_at || '-')}</td>
+          <td>${esc(displayTime(u.created_at))}</td>
+          <td>${esc(displayTime(u.last_login_at))}</td>
           <td>${currentUser && currentUser.is_admin && !u.is_admin && u.id !== currentUser.id ? `<button class="btn small danger" onclick="deleteUser('${esc(u.id)}')">删除</button>` : '-'}</td>
         </tr>`).join('');
       renderEmpty('users', usersInScope);
 
       renderMailboxRows(mailboxes);
 
-      $('accounts').innerHTML = accounts.map(a => `
+	  const sessionOwnerSelect = $('manageSessionOwner');
+	  if (sessionOwnerSelect) {
+		const selected = sessionOwnerSelect.value || '';
+		sessionOwnerSelect.innerHTML = '<option value="">全部用户</option>' + users.map(u => `<option value="${esc(u.id)}">${esc(u.username)}</option>`).join('');
+		sessionOwnerSelect.value = [...sessionOwnerSelect.options].some(option => option.value === selected) ? selected : '';
+	  }
+	  const sessionQuery = (($('manageSessionSearch') || {}).value || '').trim();
+	  const sessionOwner = (sessionOwnerSelect || {}).value || '';
+	  const sessionKind = (($('manageSessionKind') || {}).value || '');
+	  const sessionStatus = (($('manageSessionStatus') || {}).value || '');
+	  const sessionState = (saved, status, error) => ({saved:!!saved, checked:!!saved && String(status || '') !== '已登录', ok:!!saved && String(status || '').includes('正常') && !error, failed:!!error || String(status || '').includes('异常')});
+	  const overallSessionState = session => {
+		const states = [sessionState(session.apple_account_login_saved,session.apple_account_login_status,session.apple_account_login_error),sessionState(session.icloud_web_login_saved,session.icloud_web_login_status,session.icloud_web_login_error),sessionState(session.icloud_imap_login_saved,session.icloud_imap_login_status,session.icloud_imap_login_error)].filter(item => item.saved);
+		if (!states.length || !states.some(item => item.checked)) return 'unchecked';
+		const failed = states.filter(item => item.failed).length;
+		if (failed === states.length) return 'failed';
+		if (failed > 0) return 'partial';
+		return 'normal';
+	  };
+	  const sessionCell = (name,saved,status,error) => `${pill(name)} ${saved ? statusPill(String(status || '').includes('异常') ? 'failed' : 'active') : statusPill('need_login')}<br><span class="muted">${esc(status || (saved?'已登录':'未登录'))}</span>${error?`<br><span class="email">${esc(error)}</span>`:''}`;
+	  let sessionRows = sessionsAll.filter(session => {
+		const errors = [session.apple_account_login_error,session.icloud_web_login_error,session.icloud_imap_login_error,session.apple_account_keep_alive_error];
+		const kindOK = !sessionKind || (sessionKind==='apple'&&session.apple_account_login_saved) || (sessionKind==='icloud'&&session.icloud_web_login_saved) || (sessionKind==='imap'&&session.icloud_imap_login_saved);
+		return (!sessionOwner || session.owner_id===sessionOwner) && kindOK && (!sessionStatus || overallSessionState(session)===sessionStatus) && includesQuery([session.owner,session.owner_id,session.apple_id,session.account_id,session.icloud_imap_email,...errors],sessionQuery);
+	  });
+	  $('manageSessions').innerHTML = sessionRows.map(session => {
+		const errors = [session.apple_account_login_error,session.icloud_web_login_error,session.icloud_imap_login_error,session.apple_account_keep_alive_error].filter(Boolean);
+		return `<tr><td><span class="ownership">${esc(session.owner || '-')}</span><br><span class="mono muted">${esc(session.owner_id || '-')}</span></td><td><strong>${esc(session.apple_id || '-')}</strong><br><span class="mono muted">${esc(session.account_id || '-')}</span></td><td>${sessionCell('新接口',session.apple_account_login_saved,session.apple_account_login_status,session.apple_account_login_error)}</td><td>${sessionCell('旧接口',session.icloud_web_login_saved,session.icloud_web_login_status,session.icloud_web_login_error)}</td><td>${sessionCell('IMAP',session.icloud_imap_login_saved,session.icloud_imap_login_status,session.icloud_imap_login_error)}<br><span class="muted">${esc(session.icloud_imap_email || '-')}</span></td><td><strong>${Number(session.mailbox_count || 0)}</strong> 个</td><td>${esc(displayTime(session.last_checked_at,'未检测'))}</td><td>${errors.length?errors.map(error=>`<span class="email">${esc(error)}</span>`).join('<br>'):'<span class="muted">暂无异常</span>'}</td></tr>`;
+	  }).join('');
+	  renderEmpty('manageSessions', sessionRows);
+
+      $('accounts').innerHTML = accounts.map(a => {
+        const s = sessionForAccount(a);
+        const keepStatus = s.apple_account_keep_alive_status || (s.apple_account_login_saved ? '等待首次保活' : '未保存新接口登录态');
+        const keepError = s.apple_account_keep_alive_error || '';
+        const keepNext = s.apple_account_next_refresh_at || '';
+        const keepFailures = Number(s.apple_account_keep_alive_failures || 0);
+		const stateCell = (name, saved, status, error) => `${pill(name)} ${saved ? statusPill(String(status || '').includes('异常') ? 'failed' : 'active') : statusPill('need_login')}<br><span class="muted">${esc(status || (saved ? '已登录' : '未登录'))}</span>${error ? `<br><span class="email">${esc(error)}</span>` : ''}`;
+		const errors = [s.apple_account_login_error,s.icloud_web_login_error,s.icloud_imap_login_error,s.apple_account_keep_alive_error].filter(Boolean);
+        return `
         <tr>
           <td class="mono">${esc(a.id)}</td>
-          <td>${esc(a.owner || '-')}</td>
-          <td>${esc(a.label || '-')}</td>
-          <td>${esc(a.apple_id || '-')}</td>
-          <td>${statusPill(a.status)} ${statusPill(a.icloud_status)}</td>
-          <td>${esc(a.note || '-')}</td>
-          <td>${esc(a.created_at || '-')}</td>
-        </tr>`).join('');
+          <td><span class="ownership">${esc(a.owner || '-')}</span></td>
+          <td><strong>${esc(a.label || '-')}</strong><br><span class="email">${esc(a.apple_id || '-')}</span></td>
+          <td>${pill(a.category || '未分类', a.category === '已停用' ? 'red' : '')}<br>${(a.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="muted">无标签</span>'}</td>
+          <td>${stateCell('新接口',s.apple_account_login_saved,s.apple_account_login_status,s.apple_account_login_error)}</td>
+          <td>${stateCell('旧接口',s.icloud_web_login_saved,s.icloud_web_login_status,s.icloud_web_login_error)}</td>
+          <td>${stateCell('IMAP',s.icloud_imap_login_saved,s.icloud_imap_login_status,s.icloud_imap_login_error)}</td>
+          <td>${errors.length ? errors.map(error => `<span class="email">${esc(error)}</span>`).join('<br>') : '<span class="muted">暂无异常</span>'}<br><strong>${esc(keepStatus)}</strong>${keepFailures ? `<br><span class="muted">连续失败 ${keepFailures} 次</span>` : ''}${keepNext ? `<br><span class="muted">下次：${esc(displayTime(keepNext))}</span>` : ''}</td>
+          <td><button class="btn small" onclick="editAccountMeta('${esc(a.id)}')">分类与标签</button></td>
+        </tr>`;
+      }).join('');
       renderEmpty('accounts', accounts);
+	  let inviteRows = data.invites || [];
+	  const inviteQuery = (($('inviteSearch') || {}).value || '').trim(), inviteStatus = (($('inviteStatusFilter') || {}).value || '');
+	  inviteRows = inviteRows.filter(i => includesQuery([i.id,i.name,i.created_by],inviteQuery) && (!inviteStatus || (inviteStatus==='enabled'&&i.enabled&&i.used_count<i.max_uses) || (inviteStatus==='disabled'&&!i.enabled) || (inviteStatus==='exhausted'&&i.used_count>=i.max_uses)));
+	  let auditRows = data.audit_events || [];
+	  const auditQuery = (($('auditSearch') || {}).value || '').trim(), auditResult = (($('auditResultFilter') || {}).value || '');
+	  auditRows = auditRows.filter(e => includesQuery([e.actor,e.event,e.path,e.method,e.client_ip],auditQuery) && (!auditResult || (auditResult==='success')===!!e.success));
+      renderInvites(inviteRows);
+      renderAudit(auditRows);
       renderMailboxExportAccountOptions(accounts, mailboxes);
     }
     function renderMailboxRows(mailboxes) {
@@ -710,14 +936,67 @@
       $('mailboxes').innerHTML = pageRows.map(m => `
         <tr>
           <td class="mono">${esc(m.id)}</td>
-          <td>${esc(m.owner || '-')}</td>
+          <td><span class="ownership">${esc(m.owner || '-')} / ${esc(m.account_label || m.account_apple_id || '未绑定账号')}</span></td>
           <td>${esc(m.label || '-')}</td>
           <td><span class="email">${esc(m.email || '-')}</span></td>
-          <td>${statusPill(m.status)}</td>
+          <td>${statusPill(m.status)}<br>${m.can_receive_code ? pill(m.receive_code_status || '可以正常接码') : pill(m.receive_code_status || '当前不可接码，请检查取码状态','red')}${m.receive_code_error ? `<br><span class="email">${esc(m.receive_code_error)}</span>` : ''}</td>
           <td>${m.receive_count || 0}</td>
-          <td>${esc(m.created_at || '-')}</td>
+          <td>${esc(displayTime(m.created_at))}</td>
         </tr>`).join('');
       renderEmpty('mailboxes', mailboxes);
+    }
+
+	function clearManageFilters(kind) {
+	  const groups = {user:['userSearch','userRoleFilter','userStatusFilter'],mailbox:['manageMailboxSearch','manageMailboxStatus','manageMailboxReceiveStatus','manageMailboxMinReceive'],account:['manageAccountSearch','manageAccountOwner','manageAccountCategory','manageAccountKind','manageAccountStatus'],session:['manageSessionSearch','manageSessionOwner','manageSessionKind','manageSessionStatus'],invite:['inviteSearch','inviteStatusFilter'],audit:['auditSearch','auditResultFilter']};
+	  for (const id of groups[kind] || []) if ($(id)) $(id).value='';
+	  mailboxPage=1; renderData();
+	}
+
+    function renderInvites(invites) {
+      if (!$('invites')) return;
+      $('inviteForm').hidden = !(currentUser && currentUser.is_admin);
+      $('invites').innerHTML = invites.map(i => `<tr>
+        <td><strong>${esc(i.name)}</strong><br><span class="mono">${esc(i.code || '旧邀请码原文不可恢复')}</span></td>
+        <td>${i.valid_days || 30} 天</td>
+        <td>${i.registered ? pill('已注册') : pill('未注册','gray')}<br><span class="muted">${i.used_count || 0} / ${i.max_uses || 0}</span></td>
+        <td>${esc(i.registered_user || '-')}</td>
+        <td>${esc(displayTime(i.redeemed_at))}</td>
+        <td>${esc(displayTime(i.expires_at, '兑换后计算'))}</td>
+        <td>${i.enabled ? pill('有效') : pill('已禁用','red')}</td>
+        <td><button class="btn small ${i.enabled ? 'danger' : ''}" onclick="setInviteStatus('${esc(i.id)}', ${!i.enabled})">${i.enabled ? '禁用' : '启用'}</button></td>
+      </tr>`).join('');
+      renderEmpty('invites', invites);
+    }
+
+    function renderAudit(events) {
+      if (!$('auditEvents')) return;
+      const rows = [...events].reverse();
+      $('auditEvents').innerHTML = rows.map(e => `<tr><td>${esc(displayTime(e.created_at))}</td><td>${esc(e.actor || '匿名')}</td><td>${pill(({admin:'管理员',user:'普通用户',anonymous:'匿名'}[e.role] || e.role || '匿名'),'gray')}</td><td>${esc(e.event)}</td><td class="mono">${esc(e.method)} ${esc(e.path)}</td><td>${esc(e.client_ip || '-')}</td><td>${e.success ? pill('成功') : pill('失败','red')}</td></tr>`).join('');
+      renderEmpty('auditEvents', rows);
+    }
+
+    async function editAccountMeta(id) {
+      const account = (manageData.accounts || []).find(a => a.id === id); if (!account) return;
+      const category = prompt('账号分类（主账号、备用账号、创建专用、收码专用、测试账号、已停用或自定义）', account.category || '未分类');
+      if (category === null) return;
+      const tags = prompt('标签，使用逗号分隔', (account.tags || []).join(',')); if (tags === null) return;
+      await api('/api/accounts/' + encodeURIComponent(id) + '/metadata', {method:'PATCH', body:JSON.stringify({category, tags:tags.split(/[,，]/)})});
+      await refresh(); log('账号分类和标签已更新');
+    }
+
+    async function createInvite() {
+      const name = $('inviteName').value.trim(); if (!name) { log('请输入邀请码用途名称'); return; }
+      const data = await api('/api/admin/invites', {method:'POST', body:JSON.stringify({name, count:Number($('inviteCount').value || 1), max_uses:Number($('inviteMaxUses').value || 1), valid_days:Number($('inviteValidDays').value || 30)})});
+      await refresh();
+      prompt(`成功生成 ${data.count || 0} 个邀请码，可在列表查看或导出：`, (data.codes || []).join('\n'));
+      log(`已批量生成邀请码：${name}，共 ${data.count || 0} 个`);
+    }
+
+    function exportInvites() { window.location.href = '/api/admin/invites/export'; }
+
+    async function setInviteStatus(id, enabled) {
+      await api('/api/admin/invites/' + encodeURIComponent(id) + '/status', {method:'POST', body:JSON.stringify({enabled})});
+      await refresh(); log(enabled ? '邀请码已启用' : '邀请码已禁用');
     }
     async function exportData() {
       const res = await fetch('/api/runtime/export', {credentials:'same-origin'});
@@ -874,6 +1153,15 @@
     async function logout() {
       await api('/api/auth/logout', {method:'POST', body:'{}'});
       location.href = '/login';
+    }
+
+    async function changePassword() {
+      const current_password = prompt('请输入当前密码'); if (current_password === null) return;
+      const new_password = prompt('请输入新密码（至少 6 位）'); if (new_password === null) return;
+      const confirm_password = prompt('请再次输入新密码');
+      if (new_password !== confirm_password) { log('两次输入的新密码不一致'); return; }
+      try { const data = await api('/api/auth/password', {method:'POST', body:JSON.stringify({current_password,new_password})}); alert(data.message || '密码修改成功'); log('密码已修改，其他设备已退出'); }
+      catch (err) { alert('修改失败：' + err.message); }
     }
 
     initViewNavigation();

@@ -512,7 +512,7 @@ func TestPublicSessionExposesPerLoginStateCheckStatus(t *testing.T) {
 	}
 }
 
-func TestPublicSessionHidesAppleKeepAliveTimeWhenLoginStateFailed(t *testing.T) {
+func TestPublicSessionExposesAppleKeepAliveRetryWhenLoginStateFailed(t *testing.T) {
 	checkedAt := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	got := publicSession(&ICloudSession{
 		SavedAt: time.Now(),
@@ -529,8 +529,8 @@ func TestPublicSessionHidesAppleKeepAliveTimeWhenLoginStateFailed(t *testing.T) 
 	if !got.AppleAccountLoginSaved || !got.AppleAccountLoginChecked || got.AppleAccountLoginOK {
 		t.Fatalf("apple account failed state not exposed correctly: %+v", got)
 	}
-	if got.AppleAccountNextRefreshAt != "" {
-		t.Fatalf("failed apple account state should not expose keepalive time: %+v", got)
+	if got.AppleAccountNextRefreshAt == "" {
+		t.Fatalf("failed apple account state should expose automatic retry time: %+v", got)
 	}
 }
 
@@ -586,7 +586,7 @@ func TestAppleAccountKeepAliveRoundSavesUpdatedState(t *testing.T) {
 	}
 }
 
-func TestAppleAccountKeepAliveRoundSkipsFailedLoginState(t *testing.T) {
+func TestAppleAccountKeepAliveRoundRetriesFailedLoginState(t *testing.T) {
 	store := newTestStore(t)
 	ownerID := "owner-keepalive-failed"
 	account, err := store.AddAccountForOwner(ownerID, "KeepAliveFailed", "failed@example.com", "")
@@ -615,12 +615,17 @@ func TestAppleAccountKeepAliveRoundSkipsFailedLoginState(t *testing.T) {
 	if !ok {
 		t.Fatalf("handler type = %T, want *Server", handler)
 	}
+	var calls int
 	server.keepAliveAppleAccountState = func(ctx context.Context, state LoginState) (LoginState, error) {
-		t.Fatal("failed login state should not be kept alive")
+		calls++
+		markAppleAccountManageOK(&state)
 		return state, nil
 	}
 
 	server.keepAliveAppleAccountRound(context.Background())
+	if calls != 1 {
+		t.Fatalf("failed login state keepalive calls = %d, want 1", calls)
+	}
 }
 
 func TestAppleAccountKeepAliveScanIntervalPollsBeforeBaseInterval(t *testing.T) {
@@ -2183,8 +2188,8 @@ func TestAppleAuthClientValidatePhoneCodeUsesStoredPhoneNumber(t *testing.T) {
 	if !ok {
 		t.Fatalf("phoneNumber = %#v, want object", body["phoneNumber"])
 	}
-	if phone["id"] != float64(4) || phone["nonFTEU"] != true {
-		t.Fatalf("phoneNumber = %#v, want stored id and nonFTEU", phone)
+	if phone["id"] != float64(4) || len(phone) != 1 {
+		t.Fatalf("phoneNumber = %#v, want compact stored id only", phone)
 	}
 	securityCode := body["securityCode"].(map[string]any)
 	if securityCode["code"] != "123456" || body["mode"] != "sms" {
@@ -5827,6 +5832,24 @@ func newTestStore(t *testing.T) *FileStore {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func TestSavedIMAPStateCheckUsesStoredCustomConnectionSettings(t *testing.T) {
+	handler := NewServer(Config{}, newTestStore(t), discardLogger())
+	server := handler.(*Server)
+	var gotEmail, gotUsername, gotPassword, gotHost string
+	var gotPort int
+	server.checkGenericIMAPLogin = func(_ context.Context, email, username, password, host string, port int) error {
+		gotEmail, gotUsername, gotPassword, gotHost, gotPort = email, username, password, host, port
+		return nil
+	}
+	state := LoginState{IMAPEmail: "user@example.com", IMAPUsername: "custom-user", IMAPAppPassword: "secret", IMAPHost: "imap.example.com", IMAPPort: 1993}
+	if err := server.checkSavedIMAPState(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if gotEmail != state.IMAPEmail || gotUsername != state.IMAPUsername || gotPassword != state.IMAPAppPassword || gotHost != state.IMAPHost || gotPort != state.IMAPPort {
+		t.Fatalf("custom IMAP settings = %q %q %q %q %d", gotEmail, gotUsername, gotPassword, gotHost, gotPort)
+	}
 }
 
 func registerTestUser(t *testing.T, handler http.Handler, username, password string) (*http.Cookie, publicUser) {

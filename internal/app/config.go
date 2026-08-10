@@ -32,6 +32,13 @@ type Config struct {
 	UpdateRepository             string `json:"update_repository"`
 	UpdateManifestURL            string `json:"update_manifest_url"`
 	UpdateAssetName              string `json:"update_asset_name"`
+	RegistrationEnabled          bool   `json:"registration_enabled"`
+	RegistrationInviteCode       string `json:"registration_invite_code"`
+	LoginRateLimitPerIP          int    `json:"login_rate_limit_per_ip"`
+	LoginRateLimitPerUsername    int    `json:"login_rate_limit_per_username"`
+	LoginRateLimitWindowSeconds  int    `json:"login_rate_limit_window_seconds"`
+	LoginBackoffMaxSeconds       int    `json:"login_backoff_max_seconds"`
+	LoginCaptchaEnabled          bool   `json:"login_captcha_enabled"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -55,9 +62,16 @@ func LoadConfig(path string) (Config, error) {
 		PublicFastSyncWaitMS:         envPositiveInt("PUBLIC_FAST_SYNC_WAIT_MS", 600),
 		PublicSyncMinIntervalMS:      envPositiveInt("PUBLIC_SYNC_MIN_INTERVAL_MS", 3000),
 		UpdateEnabled:                envBool("IPM_UPDATE_ENABLED", true),
-		UpdateRepository:             firstNonEmptyString(strings.TrimSpace(os.Getenv("IPM_UPDATE_REPOSITORY")), "q1953258942/iCloud-Privacy-Mail"),
+		UpdateRepository:             firstNonEmptyString(strings.TrimSpace(os.Getenv("IPM_UPDATE_REPOSITORY")), "yb1320057104/ic-mail"),
 		UpdateManifestURL:            strings.TrimSpace(os.Getenv("IPM_UPDATE_MANIFEST_URL")),
 		UpdateAssetName:              strings.TrimSpace(os.Getenv("IPM_UPDATE_ASSET_NAME")),
+		RegistrationEnabled:          envBool("IPM_REGISTRATION_ENABLED", false),
+		RegistrationInviteCode:       strings.TrimSpace(os.Getenv("IPM_REGISTRATION_INVITE_CODE")),
+		LoginRateLimitPerIP:          envPositiveInt("IPM_LOGIN_RATE_LIMIT_PER_IP", 5),
+		LoginRateLimitPerUsername:    envPositiveInt("IPM_LOGIN_RATE_LIMIT_PER_USERNAME", 5),
+		LoginRateLimitWindowSeconds:  envPositiveInt("IPM_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 600),
+		LoginBackoffMaxSeconds:       envPositiveInt("IPM_LOGIN_BACKOFF_MAX_SECONDS", 600),
+		LoginCaptchaEnabled:          envBool("IPM_LOGIN_CAPTCHA_ENABLED", true),
 	}
 	if path == "" {
 		return cfg, nil
@@ -151,6 +165,31 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if strings.TrimSpace(fromFile.UpdateAssetName) != "" {
 		cfg.UpdateAssetName = strings.TrimSpace(fromFile.UpdateAssetName)
+	}
+	if rawValue, ok := raw["registration_enabled"]; ok {
+		if err := json.Unmarshal(rawValue, &cfg.RegistrationEnabled); err != nil {
+			return Config{}, err
+		}
+	}
+	if strings.TrimSpace(fromFile.RegistrationInviteCode) != "" {
+		cfg.RegistrationInviteCode = strings.TrimSpace(fromFile.RegistrationInviteCode)
+	}
+	if fromFile.LoginRateLimitPerIP > 0 {
+		cfg.LoginRateLimitPerIP = fromFile.LoginRateLimitPerIP
+	}
+	if fromFile.LoginRateLimitPerUsername > 0 {
+		cfg.LoginRateLimitPerUsername = fromFile.LoginRateLimitPerUsername
+	}
+	if fromFile.LoginRateLimitWindowSeconds > 0 {
+		cfg.LoginRateLimitWindowSeconds = fromFile.LoginRateLimitWindowSeconds
+	}
+	if fromFile.LoginBackoffMaxSeconds > 0 {
+		cfg.LoginBackoffMaxSeconds = fromFile.LoginBackoffMaxSeconds
+	}
+	if rawValue, ok := raw["login_captcha_enabled"]; ok {
+		if err := json.Unmarshal(rawValue, &cfg.LoginCaptchaEnabled); err != nil {
+			return Config{}, err
+		}
 	}
 	return cfg, nil
 }

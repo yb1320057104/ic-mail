@@ -73,7 +73,7 @@ Copy-Item .\config.example.json .\config.json
 | `icloud_default_host` | iCloud 登录态校验 Host，默认 `www.icloud.com.cn` |
 | `icloud_client_id` | iCloud Web 公共 Client ID，通常不用修改 |
 | `update_enabled` | 是否启用面板“检测更新/在线更新”，默认 `true` |
-| `update_repository` | 未配置 manifest 时读取的 GitHub 仓库，默认 `q1953258942/iCloud-Privacy-Mail` |
+| `update_repository` | 未配置 manifest 时读取的 GitHub 仓库，默认 `yb1320057104/ic-mail` |
 | `update_manifest_url` | 可选的更新 manifest 地址；配置后优先按 manifest 选择当前系统架构的二进制和 sha256 |
 | `update_asset_name` | 可选的发布资产文件名；不填时自动匹配当前 `os/arch` |
 
@@ -89,7 +89,7 @@ Copy-Item .\config.example.json .\config.json
   "icloud_default_host": "www.icloud.com.cn",
   "icloud_client_id": "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d",
   "update_enabled": true,
-  "update_repository": "q1953258942/iCloud-Privacy-Mail",
+  "update_repository": "yb1320057104/ic-mail",
   "update_manifest_url": "",
   "update_asset_name": ""
 }
@@ -116,7 +116,7 @@ Copy-Item .\config.example.json .\config.json
       "name": "panel_linux_amd64",
       "os": "linux",
       "arch": "amd64",
-      "url": "https://github.com/q1953258942/iCloud-Privacy-Mail/releases/download/2026.07.02/panel_linux_amd64",
+      "url": "https://github.com/yb1320057104/ic-mail/releases/download/2026.07.02/panel_linux_amd64",
       "sha256": "..."
     }
   ]
@@ -460,6 +460,8 @@ curl -fsSI https://www.example.com/login
 ```
 
 ## 安全注意
+
+登录双维限流、连续失败指数退避、注册开关/邀请码、Nginx 限速和审计日志的部署说明见 [`安全配置说明.md`](安全配置说明.md)。可直接使用 [`deploy/nginx-rate-limit.conf`](deploy/nginx-rate-limit.conf) 作为反向代理限速模板。
 
 - 不要提交或打包 `config.json`、`data/`、`bin/`、`captures/`。
 - 不要在 URL 里放全局 `api_key`；全局 key 只放 `Authorization` 或 `X-API-Key` 请求头。

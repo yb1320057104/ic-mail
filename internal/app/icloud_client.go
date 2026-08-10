@@ -40,6 +40,7 @@ type ICloudSyncedMessage struct {
 	Subject    string
 	From       string
 	Body       string
+	HTMLBody   string
 	ReceivedAt time.Time
 }
 
@@ -56,7 +57,7 @@ func NewICloudClient() *ICloudClient {
 const mailboxSyncCursorOverlap = 2 * time.Minute
 const appleAccountManageRefreshSkew = 0 * time.Second
 const appleAccountKeepAliveDefaultInterval = 4 * time.Minute
-const appleAccountKeepAliveTimeout = 25 * time.Second
+const appleAccountKeepAliveTimeout = 45 * time.Second
 
 var appleAccountManageBaseURL = "https://appleid.apple.com"
 var appleAccountOperationMu sync.Mutex
@@ -414,6 +415,9 @@ func appleAccountJSLogBody() []map[string]any {
 func appleAccountKeepAliveDue(loginState LoginState, now time.Time, interval time.Duration) bool {
 	if interval <= 0 {
 		interval = appleAccountKeepAliveDefaultInterval
+	}
+	if !loginState.KeepAliveNextTry.IsZero() {
+		return !now.Before(loginState.KeepAliveNextTry)
 	}
 	if loginState.LastCheckedAt.IsZero() {
 		return true
@@ -1431,6 +1435,19 @@ func (c *ICloudClient) CheckMailSession(ctx context.Context, session ICloudSessi
 	return err
 }
 
+// CheckICloudWebSession verifies the saved iCloud web (old interface) login
+// against the setup service that issued the session.  Do not use the mailws
+// mailbox endpoint here: an Apple account can have a valid Hide My Email web
+// session without having iCloud Mail enabled, which would produce a false
+// "login state abnormal" result.
+func (c *ICloudClient) CheckICloudWebSession(ctx context.Context, session ICloudSession) error {
+	if len(session.Cookies) == 0 {
+		return errCode("icloud_session_missing", "未保存 iCloud 旧接口登录态，请先重新登录旧接口", true)
+	}
+	_, err := NewICloudSessionValidator().Validate(ctx, session.Cookies, session.Host)
+	return err
+}
+
 type mailFolder struct {
 	ID           string `json:"identifier"`
 	Name         string `json:"name"`
@@ -1588,12 +1605,18 @@ func (c *ICloudClient) threadMessagesForAliases(ctx context.Context, session ICl
 		if len(matchedMailboxIDs) == 0 {
 			continue
 		}
+		rawBody := strings.TrimSpace(bodyText)
+		htmlBody := ""
+		if looksLikeHTMLMail(rawBody) {
+			htmlBody = rawBody
+		}
 		message := ICloudSyncedMessage{
 			RemoteID:   "icloud:" + folderName + ":" + uid,
 			UID:        uid,
 			Subject:    meta.Subject,
 			From:       from,
 			Body:       normalizeMailBody(bodyText),
+			HTMLBody:   htmlBody,
 			ReceivedAt: receivedAt,
 		}
 		for _, mailboxID := range matchedMailboxIDs {
@@ -2041,6 +2064,9 @@ func (c *ICloudClient) callMail(ctx context.Context, session ICloudSession, path
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return errCode("icloud_mail_auth_failed", "iCloud 邮件登录态已失效，请重新完成旧接口登录后再删除远端邮件", false)
+		}
 		return fmt.Errorf("icloud mail %s HTTP %d: %s", path, resp.StatusCode, trimForError(data))
 	}
 	if result != nil {
@@ -2200,6 +2226,11 @@ func containsFold(text, needle string) bool {
 }
 
 var htmlTagRegex = regexp.MustCompile(`<[^>]+>`)
+
+func looksLikeHTMLMail(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.Contains(lower, "<html") || strings.Contains(lower, "<body") || strings.Contains(lower, "<table") || strings.Contains(lower, "<style") || strings.Contains(lower, "<div")
+}
 
 func normalizeMailBody(value string) string {
 	value = html.UnescapeString(value)

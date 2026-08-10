@@ -32,6 +32,11 @@ config.local.json
 # Go
 coverage.out
 *.test
+.codex-cache/
+.codex-deploy/
+.codex-go-cache/
+.codex-run/
+.gocache/
 
 # IDE / OS
 .claude/
