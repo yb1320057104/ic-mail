@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -3023,14 +3024,23 @@ func (s *Server) handleMailboxVisualByEmail(w http.ResponseWriter, r *http.Reque
 	}
 	var cards strings.Builder
 	for _, msg := range messages {
-		fmt.Fprintf(&cards, `<article><h2>%s</h2><div class="meta">发件人：%s · %s</div><pre>%s</pre></article>`, escape(msg.Subject), escape(msg.From), escape(formatTime(msg.ReceivedAt)), escape(msg.Body))
+		fmt.Fprintf(&cards, `<article><h2>%s</h2><div class="meta">发件人：%s · %s</div>%s</article>`, escape(msg.Subject), escape(msg.From), escape(formatTime(msg.ReceivedAt)), mailboxVisualMessageContent(msg))
 	}
 	if len(messages) == 0 {
 		cards.WriteString(`<article><h2>暂未收到邮件</h2><div class="meta">请稍后刷新页面。</div></article>`)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>%s 邮件</title><style>body{margin:0;background:#020817;color:#eaf2ff;font:14px system-ui;padding:24px}main{max-width:980px;margin:auto}header,article{background:#061a3b;border:1px solid #1d4ed8;border-radius:10px;padding:18px;margin-bottom:14px}h1,h2{margin:0 0 10px}.meta{color:#93c5fd;margin-bottom:14px}pre{white-space:pre-wrap;word-break:break-word;font:14px/1.7 system-ui;color:#eaf2ff}</style></head><body><main><header><h1>%s</h1><div class="meta">最近邮件，可刷新页面重新同步</div></header>%s</main></body></html>`, escape(mailbox.Email), escape(mailbox.Email), cards.String())
+	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>%s 邮件</title><style>body{margin:0;background:#020817;color:#eaf2ff;font:14px system-ui;padding:24px}main{max-width:980px;margin:auto}header,article{background:#061a3b;border:1px solid #1d4ed8;border-radius:10px;padding:18px;margin-bottom:14px}h1,h2{margin:0 0 10px}.meta{color:#93c5fd;margin-bottom:14px}pre{white-space:pre-wrap;word-break:break-word;font:14px/1.7 system-ui;color:#eaf2ff}.mail-frame{display:block;width:100%;height:560px;border:0;border-radius:8px;background:#fff}</style></head><body><main><header><h1>%s</h1><div class="meta">最近邮件，可刷新页面重新同步</div></header>%s</main></body></html>`, escape(mailbox.Email), escape(mailbox.Email), cards.String())
+}
+
+func mailboxVisualMessageContent(msg Message) string {
+	if strings.TrimSpace(msg.HTMLBody) != "" {
+		// srcdoc is attribute-escaped and isolated in a sandbox without scripts,
+		// forms, popups or top-level navigation. Email CSS remains available.
+		return `<iframe class="mail-frame" sandbox="" referrerpolicy="no-referrer" loading="lazy" title="邮件正文" srcdoc="` + html.EscapeString(msg.HTMLBody) + `"></iframe>`
+	}
+	return `<pre>` + html.EscapeString(msg.Body) + `</pre>`
 }
 
 func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbox Mailbox) {
