@@ -202,6 +202,18 @@ func (s *FileStore) AutoLoginBindings() []AutoLoginBinding {
 }
 
 func (s *FileStore) CreateUser(username, password string) (User, error) {
+	return s.createUser(username, password, false)
+}
+
+func (s *FileStore) CreateUserByAdmin(username, password string, expiresAt time.Time) (User, error) {
+	user, err := s.createUser(username, password, true)
+	if err != nil {
+		return User{}, err
+	}
+	return s.UpdateUserExpiry(user.ID, expiresAt)
+}
+
+func (s *FileStore) createUser(username, password string, forceNormalUser bool) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -226,13 +238,49 @@ func (s *FileStore) CreateUser(username, password string) (User, error) {
 		ID:           s.nextIDLocked("usr"),
 		Username:     username,
 		PasswordHash: passwordHash,
-		IsAdmin:      len(s.state.Users) == 0,
+		IsAdmin:      !forceNormalUser && len(s.state.Users) == 0,
 		Status:       StatusActive,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
 	s.state.Users = append(s.state.Users, user)
 	return user, s.saveLocked()
+}
+
+func (s *FileStore) UpdateUserExpiry(id string, expiresAt time.Time) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Users {
+		if s.state.Users[i].ID != strings.TrimSpace(id) {
+			continue
+		}
+		if s.state.Users[i].IsAdmin {
+			return User{}, errCode("cannot_expire_admin", "管理员账号不设置到期时间", false)
+		}
+		s.state.Users[i].ExpiresAt = expiresAt
+		s.state.Users[i].UpdatedAt = time.Now()
+		return s.state.Users[i], s.saveLocked()
+	}
+	return User{}, errCode("user_not_found", "账号不存在", false)
+}
+
+func (s *FileStore) InactiveUserIDs(cutoff time.Time) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for _, user := range s.state.Users {
+		if user.IsAdmin {
+			continue
+		}
+		lastUsed := user.LastLoginAt
+		if lastUsed.IsZero() {
+			lastUsed = user.CreatedAt
+		}
+		if !lastUsed.IsZero() && lastUsed.Before(cutoff) {
+			ids = append(ids, user.ID)
+		}
+	}
+	return ids
 }
 
 func (s *FileStore) CreateInvite(name, createdBy string, maxUses int, expiresAt time.Time) (InviteCode, string, error) {
@@ -558,6 +606,35 @@ func (s *FileStore) DeleteUser(id string) (DeleteUserResult, error) {
 		webSessions = append(webSessions, session)
 	}
 	s.state.WebSessions = webSessions
+
+	createSettings := s.state.CreateSettings[:0]
+	for _, item := range s.state.CreateSettings {
+		if item.OwnerID != id {
+			createSettings = append(createSettings, item)
+		}
+	}
+	s.state.CreateSettings = createSettings
+	inviteUses := s.state.InviteUses[:0]
+	for _, item := range s.state.InviteUses {
+		if item.UserID != id {
+			inviteUses = append(inviteUses, item)
+		}
+	}
+	s.state.InviteUses = inviteUses
+	announcementReads := s.state.AnnouncementReads[:0]
+	for _, item := range s.state.AnnouncementReads {
+		if item.UserID != id {
+			announcementReads = append(announcementReads, item)
+		}
+	}
+	s.state.AnnouncementReads = announcementReads
+	autoLoginBindings := s.state.AutoLoginBindings[:0]
+	for _, item := range s.state.AutoLoginBindings {
+		if item.OwnerID != id {
+			autoLoginBindings = append(autoLoginBindings, item)
+		}
+	}
+	s.state.AutoLoginBindings = autoLoginBindings
 
 	return result, s.saveLocked()
 }

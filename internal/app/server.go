@@ -438,6 +438,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/auth/captcha/{id}", s.handleCaptchaImage)
 	s.mux.HandleFunc("POST /api/auth/password", s.handleChangePassword)
 	s.mux.HandleFunc("POST /api/auth/renew-invite", s.handleRenewInvite)
+	s.mux.HandleFunc("POST /api/admin/users", s.handleAdminCreateUser)
+	s.mux.HandleFunc("PATCH /api/admin/users/{id}/expiry", s.handleAdminUpdateUserExpiry)
 	s.mux.HandleFunc("DELETE /api/admin/users/{id}", s.handleAdminDeleteUser)
 	s.mux.HandleFunc("POST /api/admin/invites", s.handleCreateInvite)
 	s.mux.HandleFunc("GET /api/admin/invites/export", s.handleExportInvites)
@@ -919,6 +921,101 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": result})
+}
+
+func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	expiresAt, err := parseAdminExpiry(payload.ExpiresAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	user, err := s.store.CreateUserByAdmin(payload.Username, payload.Password, expiresAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"success": true, "message": "用户添加成功", "user": publicUserFromUser(user)})
+}
+
+func (s *Server) handleAdminUpdateUserExpiry(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	expiresAt, err := parseAdminExpiry(payload.ExpiresAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	user, err := s.store.UpdateUserExpiry(r.PathValue("id"), expiresAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "账号到期时间已更新", "user": publicUserFromUser(user)})
+}
+
+func parseAdminExpiry(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, errCode("invalid_expiry", "到期时间格式错误", false)
+	}
+	return parsed, nil
+}
+
+func (s *Server) StartInactiveUserCleanup(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		s.cleanupInactiveUsers(time.Now())
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				s.cleanupInactiveUsers(now)
+			}
+		}
+	}()
+}
+
+func (s *Server) cleanupInactiveUsers(now time.Time) int {
+	ids := s.store.InactiveUserIDs(now.Add(-30 * 24 * time.Hour))
+	deleted := 0
+	for _, id := range ids {
+		result, err := s.store.DeleteUser(id)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("自动清理长期未登录用户失败", "user_id", id, "err", err)
+			}
+			continue
+		}
+		deleted++
+		s.store.AddAuditEvent(AuditEvent{Event: "自动清理30天未登录用户：" + result.Username, Method: "SYSTEM", Path: "/internal/inactive-user-cleanup", Status: http.StatusOK, Success: true, Role: "admin"})
+	}
+	if deleted > 0 && s.logger != nil {
+		s.logger.Info("自动清理长期未登录用户完成", "deleted", deleted)
+	}
+	return deleted
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

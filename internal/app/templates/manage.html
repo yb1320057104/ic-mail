@@ -459,11 +459,12 @@
         <section class="panel view-section" id="usersPanel" data-view="users">
           <div class="panel-head">
             <div><h2>用户列表</h2><p>管理员显示全部用户；普通用户只显示自己。</p></div>
+			<button class="btn primary admin-only" onclick="openCreateUserDialog()">添加用户</button>
           </div>
           <div class="table-filter"><label>搜索用户<input id="userSearch" placeholder="用户名、用户ID、邀请ID" oninput="renderData()"></label><label>角色<select id="userRoleFilter" onchange="renderData()"><option value="">全部角色</option><option value="admin">管理员</option><option value="user">普通用户</option></select></label><label>状态<select id="userStatusFilter" onchange="renderData()"><option value="">全部状态</option><option value="active">正常</option><option value="disabled">停用</option></select></label><button onclick="clearManageFilters('user')">清空</button></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>平台用户</th><th>角色</th><th>注册来源</th><th>状态</th><th>创建时间</th><th>最后登录</th><th>操作</th></tr></thead>
+			  <thead><tr><th>ID</th><th>平台用户</th><th>角色</th><th>注册来源</th><th>状态</th><th>创建时间</th><th>最后登录</th><th>到期时间</th><th>操作</th></tr></thead>
               <tbody id="users"></tbody>
             </table>
           </div>
@@ -508,6 +509,14 @@
           </div>
           <div class="empty" id="accountsEmpty" hidden>暂无登录账号数据</div>
         </section>
+
+		<dialog id="userDialog" style="width:min(520px,calc(100vw - 32px));background:#061a3b;color:#eaf2ff;border:1px solid #1d4ed8;border-radius:10px;padding:22px">
+		  <form method="dialog" onsubmit="event.preventDefault();submitUserDialog()">
+			<div class="panel-head"><div><h2 id="userDialogTitle">添加用户</h2><p id="userDialogHint">由管理员直接创建普通用户账号。</p></div></div>
+			<div class="form-grid" style="grid-template-columns:1fr"><label class="field" id="adminUsernameField">用户名<input id="adminUsername" autocomplete="off" maxlength="64"></label><label class="field" id="adminPasswordField">初始密码<input id="adminPassword" type="password" autocomplete="new-password"></label><label class="field">账号到期时间<input id="adminUserExpiry" type="datetime-local"><small>留空表示长期有效</small></label></div>
+			<div class="actions" style="margin-top:18px"><button class="btn" type="button" onclick="closeUserDialog()">取消</button><button class="btn primary" id="userDialogSubmit" type="submit">保存</button></div>
+		  </form>
+		</dialog>
 
         <section class="panel view-section" id="sessionsPanel" data-view="sessions">
           <div class="panel-head">
@@ -755,6 +764,46 @@
       const deleted = data.deleted || {};
       log(`已删除账号：${name}；清理邮箱 ${deleted.mailboxes || 0} 个，验证码 ${deleted.messages || 0} 封`);
     }
+	let editingUserID = '';
+	function localDateTimeInput(date) {
+	  const pad = n => String(n).padStart(2, '0');
+	  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+	}
+	function openCreateUserDialog() {
+	  editingUserID = '';
+	  $('userDialogTitle').textContent = '添加用户'; $('userDialogHint').textContent = '由管理员直接创建普通用户账号。';
+	  $('adminUsernameField').hidden = false; $('adminPasswordField').hidden = false;
+	  $('adminUsername').value = ''; $('adminPassword').value = '';
+	  $('adminUserExpiry').value = localDateTimeInput(new Date(Date.now() + 30*86400000));
+	  $('userDialog').showModal();
+	}
+	function openUserExpiryDialog(id) {
+	  const user = (manageData && manageData.users || []).find(item => item.id === id);
+	  if (!user || user.is_admin) return;
+	  editingUserID = id;
+	  $('userDialogTitle').textContent = '修改账号时间'; $('userDialogHint').textContent = `正在修改：${user.username}`;
+	  $('adminUsernameField').hidden = true; $('adminPasswordField').hidden = true;
+	  const expires = user.expires_at ? new Date(String(user.expires_at).replace(' ', 'T')) : null;
+	  $('adminUserExpiry').value = expires && !Number.isNaN(expires.getTime()) ? localDateTimeInput(expires) : '';
+	  $('userDialog').showModal();
+	}
+	function closeUserDialog() { $('userDialog').close(); }
+	async function submitUserDialog() {
+	  const rawExpiry = $('adminUserExpiry').value;
+	  const expires_at = rawExpiry ? new Date(rawExpiry).toISOString() : '';
+	  const button = $('userDialogSubmit'); button.disabled = true;
+	  try {
+		if (editingUserID) {
+		  await api(`/api/admin/users/${encodeURIComponent(editingUserID)}/expiry`, {method:'PATCH', body:JSON.stringify({expires_at})}); log('账号到期时间修改成功');
+		} else {
+		  const username = $('adminUsername').value.trim(), password = $('adminPassword').value;
+		  if (!username || !password) throw new Error('请填写用户名和初始密码');
+		  await api('/api/admin/users', {method:'POST', body:JSON.stringify({username,password,expires_at})}); log(`用户添加成功：${username}`);
+		}
+		closeUserDialog(); await refresh();
+	  } catch (err) { alert(err.message); log('用户保存失败：' + err.message); }
+	  finally { button.disabled = false; }
+	}
     function renderData() {
       const data = manageData || {};
       const users = data.users || [];
@@ -862,7 +911,8 @@
           <td>${statusPill(u.status)}</td>
           <td>${esc(displayTime(u.created_at))}</td>
           <td>${esc(displayTime(u.last_login_at))}</td>
-          <td>${currentUser && currentUser.is_admin && !u.is_admin && u.id !== currentUser.id ? `<button class="btn small danger" onclick="deleteUser('${esc(u.id)}')">删除</button>` : '-'}</td>
+		  <td>${u.is_admin ? '长期有效' : esc(displayTime(u.expires_at, '未设置'))}</td>
+		  <td>${currentUser && currentUser.is_admin && !u.is_admin && u.id !== currentUser.id ? `<button class="btn small" onclick="openUserExpiryDialog('${esc(u.id)}')">修改时间</button> <button class="btn small danger" onclick="deleteUser('${esc(u.id)}')">删除</button>` : '-'}</td>
         </tr>`).join('');
       renderEmpty('users', usersInScope);
 

@@ -53,6 +53,7 @@ func main() {
 		panel.StartMailWatcher(ctx)
 		panel.StartIMAPLoginHealthCheck(ctx)
 		panel.StartAppleAccountKeepAlive(ctx)
+		panel.StartInactiveUserCleanup(ctx)
 		defer panel.StopMailWatcher()
 		defer panel.StopAppleAccountKeepAlive()
 	}
