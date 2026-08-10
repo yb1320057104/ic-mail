@@ -12,9 +12,12 @@ import (
 )
 
 type FileStore struct {
-	mu    sync.Mutex
-	path  string
-	state State
+	mu                    sync.Mutex
+	path                  string
+	dbPath                string
+	state                 State
+	persistedMessages     map[string]string
+	needsMessageMigration bool
 }
 
 type DeleteUserResult struct {
@@ -31,7 +34,10 @@ func NewFileStore(path string) (*FileStore, error) {
 	if path == "" {
 		path = filepath.Join("data", "state.json")
 	}
-	s := &FileStore{path: path, state: State{NextID: 1}}
+	s := &FileStore{path: path, dbPath: strings.TrimSuffix(path, filepath.Ext(path)) + ".db", state: State{NextID: 1}, persistedMessages: make(map[string]string)}
+	if err := s.openSQLite(); err != nil {
+		return nil, err
+	}
 	if err := s.load(); err != nil {
 		return nil, err
 	}
@@ -41,6 +47,17 @@ func NewFileStore(path string) (*FileStore, error) {
 func (s *FileStore) load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if found, err := s.loadSQLiteLocked(); err != nil {
+		return err
+	} else if found {
+		if s.state.NextID <= 0 {
+			s.state.NextID = 1
+		}
+		if s.migrateLegacyMailboxAccountIDsLocked() || s.needsMessageMigration {
+			return s.saveLocked()
+		}
+		return nil
+	}
 
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -58,10 +75,8 @@ func (s *FileStore) load() error {
 	if s.state.NextID <= 0 {
 		s.state.NextID = 1
 	}
-	if s.migrateLegacyMailboxAccountIDsLocked() {
-		return s.saveLocked()
-	}
-	return nil
+	s.migrateLegacyMailboxAccountIDsLocked()
+	return s.saveLocked()
 }
 
 func (s *FileStore) Snapshot() State {
@@ -518,6 +533,17 @@ func (s *FileStore) ChangePassword(userID, currentPassword, newPassword, keepTok
 	return errCode("user_not_found", "账号不存在", false)
 }
 
+func (s *FileStore) VerifyUserPassword(userID, password string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, user := range s.state.Users {
+		if user.ID == strings.TrimSpace(userID) {
+			return verifyPassword(password, user.PasswordHash)
+		}
+	}
+	return false
+}
+
 func (s *FileStore) UserByID(id string) (User, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -525,6 +551,10 @@ func (s *FileStore) UserByID(id string) (User, bool) {
 }
 
 func (s *FileStore) DeleteUser(id string) (DeleteUserResult, error) {
+	return s.DeleteUserWithReason(id, "管理员删除")
+}
+
+func (s *FileStore) DeleteUserWithReason(id, reason string) (DeleteUserResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -547,6 +577,28 @@ func (s *FileStore) DeleteUser(id string) (DeleteUserResult, error) {
 	if user.IsAdmin {
 		return DeleteUserResult{}, errCode("cannot_delete_admin_user", "不能删除管理员账号", false)
 	}
+	recycleState := filterStateByOwnerLocked(s.state, id)
+	for _, item := range s.state.InviteUses {
+		if item.UserID == id {
+			recycleState.InviteUses = append(recycleState.InviteUses, item)
+		}
+	}
+	for _, item := range s.state.AnnouncementReads {
+		if item.UserID == id {
+			recycleState.AnnouncementReads = append(recycleState.AnnouncementReads, item)
+		}
+	}
+	for _, item := range s.state.AutoLoginBindings {
+		if item.OwnerID == id {
+			recycleState.AutoLoginBindings = append(recycleState.AutoLoginBindings, item)
+		}
+	}
+	recycleData, err := json.Marshal(recycleState)
+	if err != nil {
+		return DeleteUserResult{}, err
+	}
+	now := time.Now()
+	s.state.RecycleBin = append(s.state.RecycleBin, RecycleBinItem{ID: s.nextIDLocked("trash"), UserID: id, Username: user.Username, Reason: strings.TrimSpace(reason), Data: recycleData, DeletedAt: now, PurgeAt: now.Add(7 * 24 * time.Hour)})
 
 	result := DeleteUserResult{
 		UserID:   user.ID,
@@ -639,6 +691,74 @@ func (s *FileStore) DeleteUser(id string) (DeleteUserResult, error) {
 	return result, s.saveLocked()
 }
 
+func (s *FileStore) RecycleBin() []RecycleBinItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]RecycleBinItem(nil), s.state.RecycleBin...)
+	for i := range out {
+		out[i].Data = nil
+	}
+	return out
+}
+
+func (s *FileStore) RestoreUserFromRecycleBin(itemID string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := -1
+	for i := range s.state.RecycleBin {
+		if s.state.RecycleBin[i].ID == strings.TrimSpace(itemID) {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return User{}, errCode("recycle_item_not_found", "回收站记录不存在", false)
+	}
+	item := s.state.RecycleBin[index]
+	var restored State
+	if err := json.Unmarshal(item.Data, &restored); err != nil {
+		return User{}, err
+	}
+	if len(restored.Users) != 1 {
+		return User{}, errCode("invalid_recycle_data", "回收站用户数据不完整", false)
+	}
+	for _, existing := range s.state.Users {
+		if existing.ID == restored.Users[0].ID || strings.EqualFold(existing.Username, restored.Users[0].Username) {
+			return User{}, errCode("user_exists", "同名账号或用户ID已存在，无法恢复", false)
+		}
+	}
+	s.state.Users = append(s.state.Users, restored.Users...)
+	s.state.Accounts = append(s.state.Accounts, restored.Accounts...)
+	s.state.Mailboxes = append(s.state.Mailboxes, restored.Mailboxes...)
+	s.state.Messages = append(s.state.Messages, restored.Messages...)
+	s.state.ICloudSessions = append(s.state.ICloudSessions, restored.ICloudSessions...)
+	s.state.CreateSettings = append(s.state.CreateSettings, restored.CreateSettings...)
+	s.state.InviteUses = append(s.state.InviteUses, restored.InviteUses...)
+	s.state.AnnouncementReads = append(s.state.AnnouncementReads, restored.AnnouncementReads...)
+	s.state.AutoLoginBindings = append(s.state.AutoLoginBindings, restored.AutoLoginBindings...)
+	s.state.RecycleBin = append(s.state.RecycleBin[:index], s.state.RecycleBin[index+1:]...)
+	return restored.Users[0], s.saveLocked()
+}
+
+func (s *FileStore) PurgeExpiredRecycleBin(now time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.state.RecycleBin[:0]
+	purged := 0
+	for _, item := range s.state.RecycleBin {
+		if !item.PurgeAt.IsZero() && !item.PurgeAt.After(now) {
+			purged++
+			continue
+		}
+		kept = append(kept, item)
+	}
+	s.state.RecycleBin = kept
+	if purged > 0 {
+		_ = s.saveLocked()
+	}
+	return purged
+}
+
 func (s *FileStore) CreateWebSession(userID string, isAdmin bool, ttl time.Duration) (string, WebSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -720,6 +840,18 @@ func (s *FileStore) SetPath(path string) (State, error) {
 		path = filepath.Clean(path)
 	} else {
 		path = filepath.Join(path, "state.json")
+	}
+	s.dbPath = strings.TrimSuffix(path, filepath.Ext(path)) + ".db"
+	s.persistedMessages = make(map[string]string)
+	s.needsMessageMigration = false
+	if err := s.openSQLite(); err != nil {
+		return State{}, err
+	}
+	if found, err := s.loadSQLiteLocked(); err != nil {
+		return State{}, err
+	} else if found {
+		s.path = path
+		return cloneState(s.state), nil
 	}
 	current := cloneState(s.state)
 	data, err := os.ReadFile(path)
@@ -1535,18 +1667,7 @@ func (s *FileStore) userByIDLocked(id string) (User, bool) {
 }
 
 func (s *FileStore) saveLocked() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(s.state, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return s.saveSQLiteLocked()
 }
 
 func (s *FileStore) migrateLegacyMailboxAccountIDsLocked() bool {
@@ -1598,6 +1719,10 @@ func cloneState(in State) State {
 	out.Invites = append([]InviteCode(nil), in.Invites...)
 	out.InviteUses = append([]InviteUse(nil), in.InviteUses...)
 	out.AuditEvents = append([]AuditEvent(nil), in.AuditEvents...)
+	out.RecycleBin = append([]RecycleBinItem(nil), in.RecycleBin...)
+	for i := range out.RecycleBin {
+		out.RecycleBin[i].Data = append(json.RawMessage(nil), in.RecycleBin[i].Data...)
+	}
 	return out
 }
 

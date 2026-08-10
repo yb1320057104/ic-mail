@@ -3153,6 +3153,7 @@ func TestAdminCanDeleteNormalUserAndOwnedData(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users/"+normalUser.ID, nil)
 	req.AddCookie(adminCookie)
+	req.Header.Set("X-Admin-Confirmation", testAdminConfirmationToken(t, handler, adminCookie, "admin123"))
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("admin delete user = %d body=%s", rr.Code, rr.Body.String())
@@ -3197,6 +3198,8 @@ func TestAdminDeleteUserRejectsSelfAndAdminAccounts(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users/"+adminUser.ID, nil)
 	req.AddCookie(adminCookie)
+	confirmation := testAdminConfirmationToken(t, handler, adminCookie, "admin123")
+	req.Header.Set("X-Admin-Confirmation", confirmation)
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "cannot_delete_self") {
 		t.Fatalf("admin self delete = %d body=%s", rr.Code, rr.Body.String())
@@ -3220,10 +3223,30 @@ func TestAdminDeleteUserRejectsSelfAndAdminAccounts(t *testing.T) {
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodDelete, "/api/admin/users/"+secondAdmin.ID, nil)
 	req.AddCookie(adminCookie)
+	req.Header.Set("X-Admin-Confirmation", confirmation)
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "cannot_delete_admin_user") {
 		t.Fatalf("delete other admin = %d body=%s", rr.Code, rr.Body.String())
 	}
+}
+
+func testAdminConfirmationToken(t *testing.T, handler http.Handler, cookie *http.Cookie, password string) string {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/verify", strings.NewReader(fmt.Sprintf(`{"password":%q}`, password)))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin verification = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil || body.Token == "" {
+		t.Fatalf("admin verification response=%s err=%v", rr.Body.String(), err)
+	}
+	return body.Token
 }
 
 func TestSensitiveKeysAreNotAcceptedFromQueryString(t *testing.T) {

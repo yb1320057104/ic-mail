@@ -37,6 +37,17 @@ type State struct {
 	Announcements     []Announcement     `json:"announcements,omitempty"`
 	AnnouncementReads []AnnouncementRead `json:"announcement_reads,omitempty"`
 	AutoLoginBindings []AutoLoginBinding `json:"auto_login_bindings,omitempty"`
+	RecycleBin        []RecycleBinItem   `json:"recycle_bin,omitempty"`
+}
+
+type RecycleBinItem struct {
+	ID        string          `json:"id"`
+	UserID    string          `json:"user_id"`
+	Username  string          `json:"username"`
+	Reason    string          `json:"reason"`
+	Data      json.RawMessage `json:"data"`
+	DeletedAt time.Time       `json:"deleted_at"`
+	PurgeAt   time.Time       `json:"purge_at"`
 }
 
 const (

@@ -400,6 +400,7 @@
         <button class="admin-only" data-view="invites" onclick="setActiveView('invites')"><span class="nav-icon">✦</span>注册邀请</button>
         <button class="admin-only" data-view="announcements" onclick="setActiveView('announcements')"><span class="nav-icon">▤</span>平台公告</button>
         <button class="admin-only" data-view="audit" onclick="setActiveView('audit')"><span class="nav-icon">◉</span>安全审计</button>
+		<button class="admin-only" data-view="operations" onclick="setActiveView('operations');loadOperations()"><span class="nav-icon">⚙</span>运维中心</button>
         <button data-view="logs" onclick="setActiveView('logs')"><span class="nav-icon">☰</span>运行日志</button>
         <button onclick="refresh()"><span class="nav-icon">↻</span>刷新数据</button>
       </nav>
@@ -486,7 +487,7 @@
               </div>
             </div>
           </div>
-          <div class="table-filter"><label>搜索邮箱<input id="manageMailboxSearch" placeholder="邮箱、标签、ID、Apple ID" oninput="renderData()"></label><label>状态<select id="manageMailboxStatus" onchange="renderData()"><option value="">全部状态</option><option value="available">可用</option><option value="used">已使用</option><option value="failed">失败</option><option value="disabled">停用</option></select></label><label>接码状态<select id="manageMailboxReceiveStatus" onchange="renderData()"><option value="">全部接码状态</option><option value="available">可以接码</option><option value="unavailable">当前不可接码</option></select></label><label>最低收件数<input id="manageMailboxMinReceive" type="number" min="0" placeholder="不限" oninput="renderData()"></label><button onclick="clearManageFilters('mailbox')">清空</button></div>
+		  <div class="table-filter"><label>搜索邮箱<input id="manageMailboxSearch" placeholder="邮箱、标签、ID、Apple ID" oninput="scheduleMailboxPageLoad()"></label><label>状态<select id="manageMailboxStatus" onchange="loadManageMailboxPage(1)"><option value="">全部状态</option><option value="available">可用</option><option value="used">已使用</option><option value="failed">失败</option><option value="disabled">停用</option></select></label><label>接码状态<select id="manageMailboxReceiveStatus" onchange="loadManageMailboxPage(1)"><option value="">全部接码状态</option><option value="available">可以接码</option><option value="unavailable">当前不可接码</option></select></label><label>最低收件数<input id="manageMailboxMinReceive" type="number" min="0" placeholder="不限" oninput="scheduleMailboxPageLoad()"></label><button onclick="clearManageFilters('mailbox')">清空</button></div>
           <div class="table-wrap">
             <table>
               <thead><tr><th>ID</th><th>归属路径</th><th>标签</th><th>邮箱</th><th>状态</th><th>收件</th><th>创建时间</th></tr></thead>
@@ -559,6 +560,15 @@
           <div class="empty" id="announcementsEmpty" hidden>暂无公告</div>
         </section>
 
+		<section class="panel view-section admin-only" data-view="operations">
+		  <div class="panel-head"><div><h2>运维中心</h2><p>查看 SQLite、后台任务、运行告警、数据库备份和用户回收站。</p></div><button class="btn primary" onclick="createDatabaseBackup()">立即备份</button></div>
+		  <div class="stats"><div class="stat-card"><strong id="opsDbSize">-</strong><span>数据库大小</span></div><div class="stat-card"><strong id="opsDiskFree">-</strong><span>磁盘剩余</span></div><div class="stat-card"><strong id="opsUptime">-</strong><span>运行时间</span></div><div class="stat-card"><strong id="opsUnhealthy">0</strong><span>异常登录态</span></div><div class="stat-card"><strong id="opsBackupCount">0</strong><span>可用备份</span></div></div>
+		  <div id="opsAlerts" class="notice" hidden></div>
+		  <div class="panel-head"><div><h2>后台任务</h2><p>自动清理、自动备份等任务的结果与错误。</p></div></div><div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>开始</th><th>完成</th><th>结果</th></tr></thead><tbody id="opsTasks"></tbody></table></div><div class="empty" id="opsTasksEmpty" hidden>暂无任务记录</div>
+		  <div class="panel-head"><div><h2>数据库备份</h2><p>每天自动备份并保留最近 14 份；恢复前会额外备份当前数据库。</p></div></div><div class="table-wrap"><table><thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead><tbody id="opsBackups"></tbody></table></div><div class="empty" id="opsBackupsEmpty" hidden>暂无备份</div>
+		  <div class="panel-head"><div><h2>用户回收站</h2><p>删除的用户及其关联数据保留 7 天，到期后永久清除。</p></div></div><div class="table-wrap"><table><thead><tr><th>用户</th><th>原因</th><th>删除时间</th><th>永久清除时间</th><th>操作</th></tr></thead><tbody id="opsRecycle"></tbody></table></div><div class="empty" id="opsRecycleEmpty" hidden>回收站为空</div>
+		</section>
+
         <section class="panel view-section" data-view="logs">
           <div class="panel-head">
             <div><h2>运行日志</h2><p>最近操作。</p></div>
@@ -583,6 +593,7 @@
     const defaultMailboxPageSize = 10;
     let mailboxPage = 1;
     let mailboxPageSize = defaultMailboxPageSize;
+	let mailboxLoadTimer = 0;
     const viewMeta = {
       overview: '仪表盘',
       accountManage: '账号管理',
@@ -593,9 +604,10 @@
       invites: '注册邀请',
       announcements: '平台公告',
       audit: '安全审计',
+	  operations: '运维中心',
       logs: '运行日志'
     };
-	const viewDescriptions = {overview:'查看平台数据总览。',accountManage:'按平台用户切换数据范围，核对用户与账号、邮箱、邮件的归属。',users:'搜索平台用户，查看角色、注册来源和最后登录。',mailboxes:'按邮箱、Apple账号、状态和收件数组合筛选子邮箱。',accounts:'维护登录账号分类与标签。',sessions:'查看所有用户登录态的新接口、旧接口、IMAP、子邮箱和异常原因。',invites:'仅管理员创建和维护注册邀请码。',announcements:'管理员发布平台公告并查看用户已读人数。',audit:'仅管理员查询登录、权限和数据修改记录。',logs:'查看当前浏览器会话中的最近操作结果。'};
+	const viewDescriptions = {overview:'查看平台数据总览。',accountManage:'按平台用户切换数据范围，核对用户与账号、邮箱、邮件的归属。',users:'搜索平台用户，查看角色、注册来源和最后登录。',mailboxes:'按邮箱、Apple账号、状态和收件数组合筛选子邮箱。',accounts:'维护登录账号分类与标签。',sessions:'查看所有用户登录态的新接口、旧接口、IMAP、子邮箱和异常原因。',invites:'仅管理员创建和维护注册邀请码。',announcements:'管理员发布平台公告并查看用户已读人数。',audit:'仅管理员查询登录、权限和数据修改记录。',operations:'查看任务、告警、备份和用户回收站。',logs:'查看当前浏览器会话中的最近操作结果。'};
 
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -696,7 +708,7 @@
     function selectOwner(owner) {
       selectedOwner = owner;
       mailboxPage = 1;
-      renderData();
+	  if (currentUser && currentUser.is_admin) loadManageMailboxPage(1); else renderData();
       const label = selectedOwner === 'all' ? '全部账号' : ($('currentScope').textContent || selectedOwner);
       log('已切换查看：' + label);
       scrollToPanel('accountManagePanel');
@@ -721,11 +733,11 @@
       try {
         localStorage.setItem(mailboxPageSizeStorage, String(mailboxPageSize));
       } catch (_) {}
-      renderData();
+	  if (currentUser && currentUser.is_admin) loadManageMailboxPage(mailboxPage); else renderData();
     }
     function changeMailboxPage(delta) {
       mailboxPage += delta;
-      renderData();
+	  if (currentUser && currentUser.is_admin) loadManageMailboxPage(mailboxPage); else renderData();
     }
     async function api(path, options={}) {
       const res = await fetch(path, {credentials:'same-origin', headers:{'content-type':'application/json', ...(options.headers || {})}, ...options});
@@ -735,12 +747,18 @@
       if (!data.success) throw new Error(data.message || data.code || `HTTP ${res.status}`);
       return data;
     }
+	async function adminConfirmedApi(path, options={}) {
+	  const password = prompt('该操作需要管理员二次验证，请输入当前管理员密码：');
+	  if (password === null) throw new Error('已取消二次验证');
+	  const verified = await api('/api/admin/verify', {method:'POST', body:JSON.stringify({password})});
+	  return api(path, {...options, headers:{...(options.headers||{}), 'X-Admin-Confirmation':verified.token}});
+	}
     async function ensureAuth() {
       const data = await api('/api/auth/me');
       if (!data.authenticated) { location.href = '/login'; throw new Error('未登录'); }
       currentUser = data.user;
 	  document.querySelectorAll('.admin-only').forEach(el => { el.hidden = !currentUser.is_admin; });
-	  if (!currentUser.is_admin && ['invites','announcements','audit'].includes(localStorage.getItem(viewStorageKey))) setActiveView('overview');
+	  if (!currentUser.is_admin && ['invites','announcements','audit','operations'].includes(localStorage.getItem(viewStorageKey))) setActiveView('overview');
       $('whoami').textContent = `当前账号：${currentUser.username}${currentUser.is_admin ? ' / 管理员，可查看全部数据' : ' / 普通用户，仅查看自己数据'}`;
     }
     function renderEmpty(id, rows) {
@@ -748,8 +766,9 @@
       if (empty) empty.hidden = rows.length > 0;
     }
     async function refresh() {
-      manageData = await api('/api/manage/data');
+	  manageData = await api(currentUser && currentUser.is_admin ? '/api/manage/data?compact=1' : '/api/manage/data');
       renderData();
+	  if (currentUser && currentUser.is_admin) await loadManageMailboxPage(mailboxPage);
       log('数据已刷新');
     }
     async function deleteUser(id) {
@@ -758,7 +777,7 @@
       const user = (manageData && manageData.users || []).find(u => u.id === id) || {};
       const name = user.username || id;
       if (!confirm(`确定删除账号「${name}」吗？该账号的登录态、隐私邮箱和验证码邮件也会一并删除。`)) return;
-      const data = await api('/api/admin/users/' + encodeURIComponent(id), {method:'DELETE'});
+	  const data = await adminConfirmedApi('/api/admin/users/' + encodeURIComponent(id), {method:'DELETE'});
       if (selectedOwner === id) selectedOwner = 'all';
       await refresh();
       const deleted = data.deleted || {};
@@ -794,11 +813,11 @@
 	  const button = $('userDialogSubmit'); button.disabled = true;
 	  try {
 		if (editingUserID) {
-		  await api(`/api/admin/users/${encodeURIComponent(editingUserID)}/expiry`, {method:'PATCH', body:JSON.stringify({expires_at})}); log('账号到期时间修改成功');
+		  await adminConfirmedApi(`/api/admin/users/${encodeURIComponent(editingUserID)}/expiry`, {method:'PATCH', body:JSON.stringify({expires_at})}); log('账号到期时间修改成功');
 		} else {
 		  const username = $('adminUsername').value.trim(), password = $('adminPassword').value;
 		  if (!username || !password) throw new Error('请填写用户名和初始密码');
-		  await api('/api/admin/users', {method:'POST', body:JSON.stringify({username,password,expires_at})}); log(`用户添加成功：${username}`);
+		  await adminConfirmedApi('/api/admin/users', {method:'POST', body:JSON.stringify({username,password,expires_at})}); log(`用户添加成功：${username}`);
 		}
 		closeUserDialog(); await refresh();
 	  } catch (err) { alert(err.message); log('用户保存失败：' + err.message); }
@@ -916,7 +935,7 @@
         </tr>`).join('');
       renderEmpty('users', usersInScope);
 
-      renderMailboxRows(mailboxes);
+	  if (!(currentUser && currentUser.is_admin)) renderMailboxRows(mailboxes);
 
 	  const sessionOwnerSelect = $('manageSessionOwner');
 	  if (sessionOwnerSelect) {
@@ -982,12 +1001,12 @@
       renderAudit(auditRows);
       renderMailboxExportAccountOptions(accounts, mailboxes);
     }
-    function renderMailboxRows(mailboxes) {
-      const totalRows = mailboxes.length;
-      const totalPages = Math.max(1, Math.ceil(totalRows / mailboxPageSize));
+    function renderMailboxRows(mailboxes, serverMeta=null) {
+	  const totalRows = serverMeta ? Number(serverMeta.total||0) : mailboxes.length;
+	  const totalPages = serverMeta ? Number(serverMeta.pages||1) : Math.max(1, Math.ceil(totalRows / mailboxPageSize));
       mailboxPage = Math.max(1, Math.min(mailboxPage, totalPages));
       const start = (mailboxPage - 1) * mailboxPageSize;
-      const pageRows = mailboxes.slice(start, start + mailboxPageSize);
+	  const pageRows = serverMeta ? mailboxes : mailboxes.slice(start, start + mailboxPageSize);
       const rangeStart = totalRows === 0 ? 0 : start + 1;
       const rangeEnd = Math.min(start + mailboxPageSize, totalRows);
 
@@ -1009,11 +1028,21 @@
         </tr>`).join('');
       renderEmpty('mailboxes', mailboxes);
     }
+	function scheduleMailboxPageLoad() { clearTimeout(mailboxLoadTimer); mailboxLoadTimer = setTimeout(() => loadManageMailboxPage(1), 280); }
+	async function loadManageMailboxPage(page=1) {
+	  if (!(currentUser && currentUser.is_admin)) return;
+	  mailboxPage = Math.max(1, Number(page)||1);
+	  const params = new URLSearchParams({page:String(mailboxPage),page_size:String(mailboxPageSize)});
+	  if (selectedOwner !== 'all') params.set('owner_id', selectedOwner);
+	  const values = {q:($('manageMailboxSearch')||{}).value,status:($('manageMailboxStatus')||{}).value,receive_status:($('manageMailboxReceiveStatus')||{}).value,min_receive:($('manageMailboxMinReceive')||{}).value};
+	  for (const [key,value] of Object.entries(values)) if (String(value||'').trim()) params.set(key,String(value).trim());
+	  const data = await api('/api/admin/mailboxes?' + params.toString()); mailboxPage = data.page || mailboxPage; renderMailboxRows(data.items||[],data);
+	}
 
 	function clearManageFilters(kind) {
 	  const groups = {user:['userSearch','userRoleFilter','userStatusFilter'],mailbox:['manageMailboxSearch','manageMailboxStatus','manageMailboxReceiveStatus','manageMailboxMinReceive'],account:['manageAccountSearch','manageAccountOwner','manageAccountCategory','manageAccountKind','manageAccountStatus'],session:['manageSessionSearch','manageSessionOwner','manageSessionKind','manageSessionStatus'],invite:['inviteSearch','inviteStatusFilter'],audit:['auditSearch','auditResultFilter']};
 	  for (const id of groups[kind] || []) if ($(id)) $(id).value='';
-	  mailboxPage=1; renderData();
+	  mailboxPage=1; if (kind==='mailbox' && currentUser && currentUser.is_admin) loadManageMailboxPage(1); else renderData();
 	}
 
     function renderInvites(invites) {
@@ -1053,12 +1082,28 @@
       if (!confirm(`确认发布公告“${title}”吗？普通用户登录后会自动弹出。`)) return;
       const button = $('announcementPublishButton'); button.disabled = true; button.textContent = '发布中...';
       try {
-        const data = await api('/api/admin/announcements', {method:'POST', body:JSON.stringify({title,content})});
+		const data = await adminConfirmedApi('/api/admin/announcements', {method:'POST', body:JSON.stringify({title,content})});
         $('announcementPublishTitle').value = ''; $('announcementPublishContent').value = '';
         await refresh(); log(data.message || '公告发布成功');
       } catch (err) { log('公告发布失败：' + err.message); }
       finally { button.disabled = false; button.textContent = '发布公告'; }
     }
+
+	function formatBytes(value) { const n=Number(value||0); if(n<1024)return n+' B'; if(n<1048576)return (n/1024).toFixed(1)+' KB'; if(n<1073741824)return (n/1048576).toFixed(1)+' MB'; return (n/1073741824).toFixed(2)+' GB'; }
+	function formatDuration(seconds) { const n=Number(seconds||0); const d=Math.floor(n/86400),h=Math.floor(n%86400/3600),m=Math.floor(n%3600/60); return `${d}天 ${h}小时 ${m}分`; }
+	async function loadOperations() {
+	  if (!(currentUser&&currentUser.is_admin)) return;
+	  const data=await api('/api/admin/operations');
+	  $('opsDbSize').textContent=formatBytes(data.database_size); $('opsDiskFree').textContent=formatBytes(data.disk_free); $('opsUptime').textContent=formatDuration(data.uptime_seconds); $('opsUnhealthy').textContent=data.unhealthy_sessions||0; $('opsBackupCount').textContent=data.backup_count||0;
+	  const alerts=data.alerts||[]; $('opsAlerts').hidden=!alerts.length; $('opsAlerts').textContent=alerts.length?'告警：'+alerts.join('；'):'';
+	  const tasks=[...(data.tasks||[])].reverse(); $('opsTasks').innerHTML=tasks.map(row=>`<tr><td>${esc(row.kind)}</td><td>${statusPill(row.status)}</td><td>${esc(displayTime(row.started_at))}</td><td>${esc(displayTime(row.finished_at))}</td><td>${esc(row.message||'-')}</td></tr>`).join(''); renderEmpty('opsTasks',tasks);
+	  const backups=data.backups||[]; $('opsBackups').innerHTML=backups.map(row=>`<tr><td class="mono">${esc(row.name)}</td><td>${formatBytes(row.size)}</td><td>${esc(displayTime(row.created_at))}</td><td><button class="btn small" onclick="downloadDatabaseBackup('${esc(row.name)}')">下载</button> <button class="btn small danger" onclick="restoreDatabaseBackup('${esc(row.name)}')">恢复</button></td></tr>`).join(''); renderEmpty('opsBackups',backups);
+	  const recycle=data.recycle_bin||[]; $('opsRecycle').innerHTML=recycle.map(row=>`<tr><td>${esc(row.username)}<br><span class="mono muted">${esc(row.user_id)}</span></td><td>${esc(row.reason||'-')}</td><td>${esc(displayTime(row.deleted_at))}</td><td>${esc(displayTime(row.purge_at))}</td><td><button class="btn small" onclick="restoreRecycleUser('${esc(row.id)}')">恢复用户</button></td></tr>`).join(''); renderEmpty('opsRecycle',recycle);
+	}
+	async function createDatabaseBackup(){try{await adminConfirmedApi('/api/admin/backups',{method:'POST',body:'{}'});await loadOperations();log('数据库备份创建成功')}catch(err){log('备份失败：'+err.message)}}
+	async function downloadDatabaseBackup(name){try{const password=prompt('下载数据库备份需要二次验证，请输入当前管理员密码：');if(password===null)return;const verified=await api('/api/admin/verify',{method:'POST',body:JSON.stringify({password})});const response=await fetch(`/api/admin/backups/${encodeURIComponent(name)}/download`,{credentials:'same-origin',headers:{'X-Admin-Confirmation':verified.token}});if(!response.ok)throw new Error('下载失败：HTTP '+response.status);const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);log('数据库备份已下载')}catch(err){log(err.message)}}
+	async function restoreDatabaseBackup(name){if(!confirm(`确定恢复备份 ${name} 吗？当前数据库会先自动备份。`))return;try{await adminConfirmedApi(`/api/admin/backups/${encodeURIComponent(name)}/restore`,{method:'POST',body:'{}'});alert('恢复成功，请重新登录确认数据');location.href='/login'}catch(err){log('恢复失败：'+err.message)}}
+	async function restoreRecycleUser(id){if(!confirm('确定恢复该用户及其关联数据吗？'))return;try{await adminConfirmedApi(`/api/admin/recycle-bin/${encodeURIComponent(id)}/restore`,{method:'POST',body:'{}'});await refresh();await loadOperations();log('用户恢复成功')}catch(err){log('恢复用户失败：'+err.message)}}
 
     async function editAccountMeta(id) {
       const account = (manageData.accounts || []).find(a => a.id === id); if (!account) return;
@@ -1071,7 +1116,7 @@
 
     async function createInvite() {
       const name = $('inviteName').value.trim(); if (!name) { log('请输入邀请码用途名称'); return; }
-      const data = await api('/api/admin/invites', {method:'POST', body:JSON.stringify({name, count:Number($('inviteCount').value || 1), max_uses:Number($('inviteMaxUses').value || 1), valid_days:Number($('inviteValidDays').value || 30)})});
+	  const data = await adminConfirmedApi('/api/admin/invites', {method:'POST', body:JSON.stringify({name, count:Number($('inviteCount').value || 1), max_uses:Number($('inviteMaxUses').value || 1), valid_days:Number($('inviteValidDays').value || 30)})});
       await refresh();
       prompt(`成功生成 ${data.count || 0} 个邀请码，可在列表查看或导出：`, (data.codes || []).join('\n'));
       log(`已批量生成邀请码：${name}，共 ${data.count || 0} 个`);

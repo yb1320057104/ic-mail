@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -101,6 +103,24 @@ type Server struct {
 	loginGuard                     *loginGuard
 	registrationMu                 sync.Mutex
 	captchas                       *captchaStore
+	adminConfirmMu                 sync.Mutex
+	adminConfirmations             map[string]adminConfirmation
+	startedAt                      time.Time
+	operationMu                    sync.Mutex
+	operationTasks                 []operationTask
+}
+
+type adminConfirmation struct {
+	UserID    string
+	ExpiresAt time.Time
+}
+type operationTask struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Status     string `json:"status"`
+	Message    string `json:"message"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at"`
 }
 
 type createMailboxFailure struct {
@@ -243,6 +263,8 @@ func NewServer(cfg Config, store *FileStore, logger *slog.Logger) http.Handler {
 		mailboxSchedulers:             make(map[string]*mailboxSchedulerJob),
 		loginGuard:                    newLoginGuard(cfg),
 		captchas:                      newCaptchaStore(),
+		adminConfirmations:            make(map[string]adminConfirmation),
+		startedAt:                     time.Now(),
 	}
 	if cfg.PublicSyncMinIntervalMS > 0 {
 		s.mailboxSyncMinInterval = time.Duration(cfg.PublicSyncMinIntervalMS) * time.Millisecond
@@ -439,8 +461,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/password", s.handleChangePassword)
 	s.mux.HandleFunc("POST /api/auth/renew-invite", s.handleRenewInvite)
 	s.mux.HandleFunc("POST /api/admin/users", s.handleAdminCreateUser)
+	s.mux.HandleFunc("POST /api/admin/verify", s.handleAdminVerify)
 	s.mux.HandleFunc("PATCH /api/admin/users/{id}/expiry", s.handleAdminUpdateUserExpiry)
 	s.mux.HandleFunc("DELETE /api/admin/users/{id}", s.handleAdminDeleteUser)
+	s.mux.HandleFunc("GET /api/admin/recycle-bin", s.handleAdminRecycleBin)
+	s.mux.HandleFunc("POST /api/admin/recycle-bin/{id}/restore", s.handleAdminRestoreRecycleBin)
+	s.mux.HandleFunc("GET /api/admin/backups", s.handleAdminBackups)
+	s.mux.HandleFunc("POST /api/admin/backups", s.handleAdminCreateBackup)
+	s.mux.HandleFunc("GET /api/admin/backups/{name}/download", s.handleAdminDownloadBackup)
+	s.mux.HandleFunc("POST /api/admin/backups/{name}/restore", s.handleAdminRestoreBackup)
+	s.mux.HandleFunc("GET /api/admin/mailboxes", s.handleAdminMailboxPage)
+	s.mux.HandleFunc("GET /api/admin/operations", s.handleAdminOperations)
 	s.mux.HandleFunc("POST /api/admin/invites", s.handleCreateInvite)
 	s.mux.HandleFunc("GET /api/admin/invites/export", s.handleExportInvites)
 	s.mux.HandleFunc("POST /api/admin/invites/{id}/status", s.handleSetInviteStatus)
@@ -792,6 +823,9 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
 	var payload struct {
 		Name      string `json:"name"`
 		MaxUses   int    `json:"max_uses"`
@@ -892,6 +926,9 @@ func (s *Server) handleUpdateAccountMetadata(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
 	session, currentUser, ok := s.currentWebSession(r)
 	if !ok || (!session.IsAdmin && !currentUser.IsAdmin) {
 		writeError(w, http.StatusForbidden, errCode("admin_required", "需要管理员权限", false))
@@ -924,6 +961,9 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
 	var payload struct {
 		Username  string `json:"username"`
 		Password  string `json:"password"`
@@ -947,6 +987,9 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminUpdateUserExpiry(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
 	var payload struct {
 		ExpiresAt string `json:"expires_at"`
 	}
@@ -965,6 +1008,241 @@ func (s *Server) handleAdminUpdateUserExpiry(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "账号到期时间已更新", "user": publicUserFromUser(user)})
+}
+
+func (s *Server) handleAdminRecycleBin(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "items": s.store.RecycleBin()})
+}
+
+func (s *Server) handleAdminRestoreRecycleBin(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
+	user, err := s.store.RestoreUserFromRecycleBin(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "用户及关联数据已恢复", "user": publicUserFromUser(user)})
+}
+
+func (s *Server) handleAdminBackups(w http.ResponseWriter, _ *http.Request) {
+	rows, err := s.store.Backups()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "backups": rows})
+}
+func (s *Server) handleAdminCreateBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
+	row, err := s.store.CreateBackup("manual")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.store.PruneBackups(14)
+	writeJSON(w, http.StatusCreated, map[string]any{"success": true, "message": "备份创建成功", "backup": row})
+}
+func (s *Server) handleAdminDownloadBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
+	path, err := s.store.BackupPath(r.PathValue("name"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filepath.Base(path)))
+	http.ServeFile(w, r, path)
+}
+func (s *Server) handleAdminRestoreBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
+	if err := s.store.RestoreBackup(r.PathValue("name")); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "备份恢复成功，请重新登录确认数据"})
+}
+
+func (s *Server) handleAdminMailboxPage(w http.ResponseWriter, r *http.Request) {
+	state := s.store.Snapshot()
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	ownerID := strings.TrimSpace(r.URL.Query().Get("owner_id"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	receiveStatus := strings.TrimSpace(r.URL.Query().Get("receive_status"))
+	minReceive, _ := strconv.Atoi(r.URL.Query().Get("min_receive"))
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 20
+	}
+	if size > 200 {
+		size = 200
+	}
+	accounts := make(map[string]Account, len(state.Accounts))
+	for _, account := range state.Accounts {
+		accounts[account.ID] = account
+	}
+	filtered := make([]Mailbox, 0)
+	for _, mailbox := range state.Mailboxes {
+		if ownerID != "" && mailbox.OwnerID != ownerID || status != "" && mailbox.Status != status || mailbox.ReceiveCount < minReceive {
+			continue
+		}
+		canReceive, _, _ := s.mailboxReceiveCodeState(mailbox)
+		if receiveStatus == "available" && !canReceive || receiveStatus == "unavailable" && canReceive {
+			continue
+		}
+		account := accounts[mailbox.AccountID]
+		haystack := strings.ToLower(strings.Join([]string{mailbox.ID, mailbox.Email, mailbox.Label, mailbox.Note, account.AppleID, account.Label}, " "))
+		if query != "" && !strings.Contains(haystack, query) {
+			continue
+		}
+		filtered = append(filtered, mailbox)
+	}
+	total := len(filtered)
+	start := (page - 1) * size
+	if start > total {
+		start = total
+	}
+	end := start + size
+	if end > total {
+		end = total
+	}
+	items := make([]publicMailbox, 0, end-start)
+	for _, mailbox := range filtered[start:end] {
+		items = append(items, s.publicMailbox(r, mailbox))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "items": items, "page": page, "page_size": size, "total": total, "pages": max(1, (total+size-1)/size)})
+}
+
+func (s *Server) StartAutomaticBackups(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		timer := time.NewTimer(2 * time.Minute)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				started := time.Now()
+				if row, err := s.store.CreateBackup("auto"); err != nil {
+					s.recordOperation("自动备份", "failed", err.Error(), started)
+					if s.logger != nil {
+						s.logger.Warn("自动备份失败", "err", err)
+					}
+				} else {
+					s.store.PruneBackups(14)
+					s.recordOperation("自动备份", "success", row.Name, started)
+				}
+				timer.Reset(24 * time.Hour)
+			}
+		}
+	}()
+}
+
+func (s *Server) recordOperation(kind, status, message string, started time.Time) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	s.operationTasks = append(s.operationTasks, operationTask{ID: fmt.Sprintf("task-%d", time.Now().UnixNano()), Kind: kind, Status: status, Message: message, StartedAt: formatTime(started), FinishedAt: formatTime(time.Now())})
+	if len(s.operationTasks) > 100 {
+		s.operationTasks = append([]operationTask(nil), s.operationTasks[len(s.operationTasks)-100:]...)
+	}
+}
+
+func (s *Server) handleAdminOperations(w http.ResponseWriter, _ *http.Request) {
+	state := s.store.Snapshot()
+	s.operationMu.Lock()
+	tasks := append([]operationTask(nil), s.operationTasks...)
+	s.operationMu.Unlock()
+	backups, _ := s.store.Backups()
+	dbSize := int64(0)
+	if info, err := os.Stat(s.store.DatabasePath()); err == nil {
+		dbSize = info.Size()
+	}
+	unhealthy := 0
+	for _, session := range state.ICloudSessions {
+		if !session.LastCheckOK && !session.LastCheckedAt.IsZero() {
+			unhealthy++
+		}
+	}
+	alerts := []string{}
+	diskTotal, diskFree, _ := diskUsage(filepath.Dir(s.store.DatabasePath()))
+	if len(backups) == 0 {
+		alerts = append(alerts, "尚无可用数据库备份")
+	}
+	if unhealthy > 0 {
+		alerts = append(alerts, fmt.Sprintf("%d 个登录态最近检测异常", unhealthy))
+	}
+	if dbSize > 500<<20 {
+		alerts = append(alerts, "SQLite 数据库已超过 500MB，建议归档历史邮件")
+	}
+	if diskFree > 0 && (diskFree < 5<<30 || diskTotal > 0 && diskFree*100/diskTotal < 10) {
+		alerts = append(alerts, "数据盘剩余空间不足 10% 或低于 5GB")
+	}
+	if time.Since(s.startedAt) < 5*time.Minute {
+		alerts = append(alerts, "服务在最近 5 分钟内启动或重启")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "uptime_seconds": int64(time.Since(s.startedAt).Seconds()), "database_path": s.store.DatabasePath(), "database_size": dbSize, "disk_total": diskTotal, "disk_free": diskFree, "users": len(state.Users), "accounts": len(state.Accounts), "mailboxes": len(state.Mailboxes), "messages": len(state.Messages), "unhealthy_sessions": unhealthy, "backup_count": len(backups), "recycle_count": len(state.RecycleBin), "alerts": alerts, "tasks": tasks, "backups": backups, "recycle_bin": s.store.RecycleBin()})
+}
+
+func (s *Server) handleAdminVerify(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := s.currentWebSession(r)
+	if !ok || !user.IsAdmin {
+		writeError(w, http.StatusForbidden, errCode("admin_required", "需要管理员权限", false))
+		return
+	}
+	var payload struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !s.store.VerifyUserPassword(user.ID, payload.Password) {
+		writeError(w, http.StatusForbidden, errCode("admin_verification_failed", "管理员密码错误", false))
+		return
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.adminConfirmMu.Lock()
+	s.adminConfirmations[sessionTokenHash(token)] = adminConfirmation{UserID: user.ID, ExpiresAt: time.Now().Add(5 * time.Minute)}
+	s.adminConfirmMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "token": token, "expires_in": 300})
+}
+
+func (s *Server) requireAdminConfirmation(w http.ResponseWriter, r *http.Request) bool {
+	_, user, ok := s.currentWebSession(r)
+	if !ok || !user.IsAdmin {
+		writeError(w, http.StatusForbidden, errCode("admin_required", "需要管理员权限", false))
+		return false
+	}
+	hash := sessionTokenHash(strings.TrimSpace(r.Header.Get("X-Admin-Confirmation")))
+	s.adminConfirmMu.Lock()
+	confirmation, found := s.adminConfirmations[hash]
+	if found && !confirmation.ExpiresAt.After(time.Now()) {
+		delete(s.adminConfirmations, hash)
+		found = false
+	}
+	s.adminConfirmMu.Unlock()
+	if !found || confirmation.UserID != user.ID {
+		writeError(w, http.StatusForbidden, errCode("admin_confirmation_required", "该操作需要管理员二次验证", false))
+		return false
+	}
+	return true
 }
 
 func parseAdminExpiry(value string) (time.Time, error) {
@@ -999,10 +1277,12 @@ func (s *Server) StartInactiveUserCleanup(ctx context.Context) {
 }
 
 func (s *Server) cleanupInactiveUsers(now time.Time) int {
+	started := time.Now()
+	s.store.PurgeExpiredRecycleBin(now)
 	ids := s.store.InactiveUserIDs(now.Add(-30 * 24 * time.Hour))
 	deleted := 0
 	for _, id := range ids {
-		result, err := s.store.DeleteUser(id)
+		result, err := s.store.DeleteUserWithReason(id, "连续30天未登录自动清理")
 		if err != nil {
 			if s.logger != nil {
 				s.logger.Warn("自动清理长期未登录用户失败", "user_id", id, "err", err)
@@ -1015,6 +1295,7 @@ func (s *Server) cleanupInactiveUsers(now time.Time) int {
 	if deleted > 0 && s.logger != nil {
 		s.logger.Info("自动清理长期未登录用户完成", "deleted", deleted)
 	}
+	s.recordOperation("用户自动清理", "success", fmt.Sprintf("进入回收站 %d 个用户", deleted), started)
 	return deleted
 }
 
@@ -1046,6 +1327,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleManageData(w http.ResponseWriter, r *http.Request) {
 	state := s.scopedState(r)
+	compact := s.isAdminRequest(r) && truthy(r.URL.Query().Get("compact"))
 	users := state.Users
 	if s.isAdminRequest(r) {
 		users = s.store.Users()
@@ -1058,9 +1340,12 @@ func (s *Server) handleManageData(w http.ResponseWriter, r *http.Request) {
 	for _, account := range state.Accounts {
 		accounts = append(accounts, s.publicAccount(account))
 	}
-	mailboxes := make([]publicMailbox, 0, len(state.Mailboxes))
-	for _, mailbox := range state.Mailboxes {
-		mailboxes = append(mailboxes, s.publicMailbox(r, mailbox))
+	mailboxes := make([]publicMailbox, 0)
+	if !compact {
+		mailboxes = make([]publicMailbox, 0, len(state.Mailboxes))
+		for _, mailbox := range state.Mailboxes {
+			mailboxes = append(mailboxes, s.publicMailbox(r, mailbox))
+		}
 	}
 	publicSessions := s.publicSessionsForRequest(r)
 	announcements := []map[string]any(nil)
@@ -1111,6 +1396,9 @@ func (s *Server) publicAnnouncements(state State) []map[string]any {
 }
 
 func (s *Server) handleCreateAnnouncement(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminConfirmation(w, r) {
+		return
+	}
 	_, user, ok := s.currentWebSession(r)
 	if !ok || !user.IsAdmin {
 		writeError(w, http.StatusForbidden, errCode("admin_required", "只有管理员可以发布公告", false))
