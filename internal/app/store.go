@@ -1492,6 +1492,23 @@ func (s *FileStore) RedemptionPoolByToken(token string) (RedemptionPool, bool) {
 	return RedemptionPool{}, false
 }
 
+func (s *FileStore) MailboxRedemptionLocked(mailboxID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mailboxID = strings.TrimSpace(mailboxID)
+	for _, mailbox := range s.state.Mailboxes {
+		if mailbox.ID == mailboxID && mailbox.RedemptionLocked {
+			return true
+		}
+	}
+	for _, item := range s.state.RedemptionItems {
+		if item.MailboxID == mailboxID {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *FileStore) AddRedemptionItems(ownerID string, ids []string, healthy map[string]bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1528,6 +1545,13 @@ func (s *FileStore) AddRedemptionItems(ownerID string, ids []string, healthy map
 			continue
 		}
 		s.state.RedemptionItems = append(s.state.RedemptionItems, RedemptionItem{PoolID: pool.ID, OwnerID: ownerID, MailboxID: mailbox.ID, AddedAt: now})
+		for i := range s.state.Mailboxes {
+			if s.state.Mailboxes[i].ID == mailbox.ID {
+				s.state.Mailboxes[i].RedemptionLocked = true
+				s.state.Mailboxes[i].UpdatedAt = now
+				break
+			}
+		}
 		count++
 	}
 	if count == 0 {
@@ -1546,8 +1570,16 @@ func (s *FileStore) RemoveRedemptionItems(ownerID string, ids []string) (int, er
 	}
 	next := s.state.RedemptionItems[:0]
 	count := 0
+	now := time.Now()
 	for _, item := range s.state.RedemptionItems {
 		if constantTimeEqual(item.OwnerID, ownerID) && item.RedeemedAt.IsZero() && wanted[item.MailboxID] {
+			for i := range s.state.Mailboxes {
+				if s.state.Mailboxes[i].ID == item.MailboxID {
+					s.state.Mailboxes[i].RedemptionLocked = true
+					s.state.Mailboxes[i].UpdatedAt = now
+					break
+				}
+			}
 			count++
 			continue
 		}

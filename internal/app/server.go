@@ -1881,6 +1881,9 @@ func (s *Server) handleLookupMailboxes(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExportRuntimeData(w http.ResponseWriter, r *http.Request) {
 	ownerID := scopedOwnerID(r, s.store)
 	state := s.scopedState(r)
+	if !s.isAdminRequest(r) {
+		state.Mailboxes, state.Messages, _ = excludeRedemptionLockedData(state)
+	}
 	payload := struct {
 		ExportedAt      string          `json:"exported_at"`
 		Scope           string          `json:"scope"`
@@ -1958,9 +1961,27 @@ func (s *Server) writeMailboxTextExport(w http.ResponseWriter, r *http.Request, 
 	}
 
 	state := s.mailboxExportState(r)
+	locked := redemptionLockedMailboxIDs(state)
 	accountID := normalizeExportAccountID(r.URL.Query().Get("account_id"))
 	mailboxes := filterMailboxesForExport(state.Mailboxes, accountID)
 	selectedIDs := splitAccountIDTokens(r.URL.Query().Get("mailbox_ids"))
+	if !s.isAdminRequest(r) && len(selectedIDs) > 0 {
+		for _, id := range selectedIDs {
+			if locked[id] {
+				writeError(w, http.StatusForbidden, errCode("redemption_mailbox_export_forbidden", "所选邮箱已加入兑换池，只能通过兑换码兑换导出", false))
+				return
+			}
+		}
+	}
+	if !s.isAdminRequest(r) {
+		filtered := make([]Mailbox, 0, len(mailboxes))
+		for _, mailbox := range mailboxes {
+			if !locked[mailbox.ID] {
+				filtered = append(filtered, mailbox)
+			}
+		}
+		mailboxes = filtered
+	}
 	if len(selectedIDs) > 0 {
 		selected := make(map[string]struct{}, len(selectedIDs))
 		for _, id := range selectedIDs {
@@ -2046,6 +2067,36 @@ func (s *Server) writeMailboxTextExport(w http.ResponseWriter, r *http.Request, 
 	if len(ids) > 0 {
 		_ = s.store.MarkMailboxesExported(ids, time.Now())
 	}
+}
+
+func redemptionLockedMailboxIDs(state State) map[string]bool {
+	locked := make(map[string]bool)
+	for _, mailbox := range state.Mailboxes {
+		if mailbox.RedemptionLocked {
+			locked[mailbox.ID] = true
+		}
+	}
+	for _, item := range state.RedemptionItems {
+		locked[item.MailboxID] = true
+	}
+	return locked
+}
+
+func excludeRedemptionLockedData(state State) ([]Mailbox, []Message, int) {
+	locked := redemptionLockedMailboxIDs(state)
+	mailboxes := make([]Mailbox, 0, len(state.Mailboxes))
+	for _, mailbox := range state.Mailboxes {
+		if !locked[mailbox.ID] {
+			mailboxes = append(mailboxes, mailbox)
+		}
+	}
+	messages := make([]Message, 0, len(state.Messages))
+	for _, message := range state.Messages {
+		if !locked[message.MailboxID] {
+			messages = append(messages, message)
+		}
+	}
+	return mailboxes, messages, len(locked)
 }
 
 func (s *Server) mailboxExportState(r *http.Request) State {
@@ -3386,6 +3437,10 @@ func (s *Server) handleRotateMailboxAPIToken(w http.ResponseWriter, r *http.Requ
 	id := r.PathValue("id")
 	if !s.canAccessMailboxID(r, id) {
 		writeError(w, http.StatusForbidden, errCode("forbidden", "无权操作该邮箱", false))
+		return
+	}
+	if !s.isAdminRequest(r) && s.store.MailboxRedemptionLocked(id) {
+		writeError(w, http.StatusForbidden, errCode("redemption_mailbox_export_forbidden", "该邮箱已加入兑换池，只能通过兑换码兑换导出，不能单独重置或导出 API 地址", false))
 		return
 	}
 	var p struct {
@@ -6084,6 +6139,13 @@ func (s *Server) publicMailbox(r *http.Request, mailbox Mailbox) publicMailbox {
 		}
 	}
 	canReceiveCode, receiveCodeStatus, receiveCodeError := s.mailboxReceiveCodeState(mailbox)
+	redemptionLocked := s.store.MailboxRedemptionLocked(mailbox.ID)
+	apiURL := s.mailboxAPIURL(r, mailbox)
+	apiTokenMask := maskSecret(mailbox.APIToken, 6)
+	if redemptionLocked && !s.isAdminRequest(r) {
+		apiURL = ""
+		apiTokenMask = "兑换池锁定"
+	}
 	return publicMailbox{
 		ID:                mailbox.ID,
 		OwnerID:           mailbox.OwnerID,
@@ -6093,9 +6155,9 @@ func (s *Server) publicMailbox(r *http.Request, mailbox Mailbox) publicMailbox {
 		AccountAppleID:    accountAppleID,
 		Label:             mailbox.Label,
 		Email:             mailbox.Email,
-		APITokenMask:      maskSecret(mailbox.APIToken, 6),
+		APITokenMask:      apiTokenMask,
 		APITokenExpiresAt: formatTime(mailbox.APITokenExpiresAt),
-		APIURL:            s.mailboxAPIURL(r, mailbox),
+		APIURL:            apiURL,
 		APIActive:         mailbox.APIActive,
 		ICloudActive:      mailbox.ICloudActive,
 		CanReceiveCode:    canReceiveCode,
@@ -6109,6 +6171,7 @@ func (s *Server) publicMailbox(r *http.Request, mailbox Mailbox) publicMailbox {
 		CreatedAt:         formatTime(mailbox.CreatedAt),
 		UpdatedAt:         formatTime(mailbox.UpdatedAt),
 		ExportedAt:        formatTime(mailbox.ExportedAt),
+		RedemptionLocked:  redemptionLocked,
 	}
 }
 

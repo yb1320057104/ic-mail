@@ -221,3 +221,41 @@ func TestRedemptionCodePermanentAndNamedBatch(t *testing.T) {
 		t.Fatal("negative validity was accepted")
 	}
 }
+
+func TestRedemptionMailboxStaysExportLockedAfterRemoval(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := store.AddMailboxForOwner("owner", "account", "locked", "locked@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.RedemptionPoolForOwner("owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.AddRedemptionItems("owner", []string{mailbox.ID}, map[string]bool{mailbox.ID: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.MailboxRedemptionLocked(mailbox.ID) {
+		t.Fatal("mailbox was not locked after entering redemption pool")
+	}
+	if _, err = store.RemoveRedemptionItems("owner", []string{mailbox.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.MailboxRedemptionLocked(mailbox.ID) {
+		t.Fatal("mailbox export lock was removed with redemption item")
+	}
+}
+
+func TestExcludeRedemptionLockedData(t *testing.T) {
+	state := State{
+		Mailboxes:       []Mailbox{{ID: "normal"}, {ID: "locked-by-flag", RedemptionLocked: true}, {ID: "locked-by-item"}},
+		Messages:        []Message{{ID: "m1", MailboxID: "normal"}, {ID: "m2", MailboxID: "locked-by-flag"}, {ID: "m3", MailboxID: "locked-by-item"}},
+		RedemptionItems: []RedemptionItem{{MailboxID: "locked-by-item"}},
+	}
+	mailboxes, messages, locked := excludeRedemptionLockedData(state)
+	if locked != 2 || len(mailboxes) != 1 || mailboxes[0].ID != "normal" || len(messages) != 1 || messages[0].ID != "m1" {
+		t.Fatalf("unexpected filtered data: locked=%d mailboxes=%#v messages=%#v", locked, mailboxes, messages)
+	}
+}

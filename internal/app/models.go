@@ -225,6 +225,7 @@ type Mailbox struct {
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 	ExportedAt        time.Time `json:"exported_at,omitempty"`
+	RedemptionLocked  bool      `json:"redemption_locked,omitempty"`
 }
 
 type Message struct {
@@ -458,6 +459,7 @@ type publicMailbox struct {
 	CreatedAt          string `json:"created_at"`
 	UpdatedAt          string `json:"updated_at"`
 	ExportedAt         string `json:"exported_at,omitempty"`
+	RedemptionLocked   bool   `json:"redemption_locked,omitempty"`
 }
 
 type publicMailboxGroup struct {

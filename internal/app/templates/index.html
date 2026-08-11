@@ -3046,18 +3046,18 @@
               <br><span class="pill ${statusClass(row.status)}">${statusText(row.status)}</span>
               <br><span class="pill ${row.can_receive_code ? '' : 'off'}" title="${esc(row.receive_code_error || row.receive_code_status || '')}">${esc(row.receive_code_status || (row.can_receive_code ? '可以正常接码' : '当前不可接码，请检查取码状态'))}</span>
             </td>
-            <td>${row.exported_at ? `<span class="pill">已导出</span><br><span class="muted">${esc(exactTimeText(row.exported_at))}</span>` : '<span class="pill off">未导出</span>'}</td>
+            <td>${row.redemption_locked&&!currentUser.is_admin?'<span class="pill">兑换池锁定</span><br><span class="muted">仅能通过兑换码导出</span>':row.exported_at ? `<span class="pill">已导出</span><br><span class="muted">${esc(exactTimeText(row.exported_at))}</span>` : '<span class="pill off">未导出</span>'}</td>
             <td>${row.receive_count || 0}</td>
             <td>${esc(row.last_sync_at ? exactTimeText(row.last_sync_at) : '尚未同步')}</td>
             <td class="mailbox-code-cell">${renderMailboxCodeCell(row.id)}</td>
             <td><div class="row-actions">
-              <span class="copy-menu-wrap">
+              ${row.redemption_locked&&!currentUser.is_admin?'<span class="pill">API导出已锁定</span>':`<span class="copy-menu-wrap">
                 <button onclick="toggleCopyMenu('${row.id}')">API 地址</button>
                 ${renderMailboxCopyMenu(row.id)}
-              </span>
+              </span>`}
               <button id="verifyButton-${esc(row.id)}" onclick="verifyMailbox('${row.id}')">${verifyButtonText(row.id)}</button>
               <button onclick="viewMailbox('${row.id}')">查看邮箱</button>
-              <button onclick="rotateMailboxAPI('${row.id}')" title="生成新 API key，旧地址立即失效">重置API</button>
+              ${row.redemption_locked&&!currentUser.is_admin?'':`<button onclick="rotateMailboxAPI('${row.id}')" title="生成新 API key，旧地址立即失效">重置API</button>`}
               <button class="${syncButtonClass(row.id)}" onclick="syncMailbox('${row.id}')" ${syncButtonDisabled(row.id)}>${syncButtonText(row.id)}</button>
               <button onclick="cleanRemoteMailbox('${row.id}')" title="把本地已同步过的远端邮件移到废纸篓，并清空当前 iCloud 废纸篓">删除邮件</button>
               <select onchange="setMailboxStatus('${row.id}', this.value)">
