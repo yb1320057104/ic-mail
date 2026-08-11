@@ -300,6 +300,7 @@ func NewServer(cfg Config, store *FileStore, logger *slog.Logger) http.Handler {
 	s.checkIMAPLogin = CheckICloudIMAPLogin
 	s.checkGenericIMAPLogin = CheckGenericIMAPLogin
 	s.routes()
+	_ = s.store.RecoverInterruptedTasks()
 	return s
 }
 
@@ -313,7 +314,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.auditRequest(r, recorder.status, time.Since(started))
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/auth/") {
+	if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/auth/") && !strings.HasPrefix(r.URL.Path, "/api/public/") {
 		if _, user, ok := s.currentWebSession(r); ok && !user.IsAdmin && !user.ExpiresAt.IsZero() && !user.ExpiresAt.After(time.Now()) {
 			writeError(recorder, http.StatusForbidden, errCode("account_expired", "账号已到期，请输入新的邀请码续期", false))
 			s.auditRequest(r, recorder.status, time.Since(started))
@@ -457,6 +458,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("GET /register", s.handleRegisterPage)
 	s.mux.HandleFunc("GET /docs", s.handleDocsPage)
+	s.mux.HandleFunc("GET /redeem/{token}", s.handleRedemptionPage)
 	s.mux.HandleFunc("GET /manage", s.handleManagePage)
 	s.mux.HandleFunc("GET /api/auth/me", s.handleAuthMe)
 	s.mux.HandleFunc("POST /api/auth/register", s.handleAuthRegister)
@@ -496,6 +498,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/runtime/export", s.handleExportRuntimeData)
 	s.mux.HandleFunc("GET /api/runtime/export-mailbox-apis", s.handleExportMailboxAPIs)
 	s.mux.HandleFunc("GET /api/runtime/export-mailbox-emails", s.handleExportMailboxEmails)
+	s.mux.HandleFunc("GET /api/redemption-pool", s.handleGetRedemptionPool)
+	s.mux.HandleFunc("POST /api/redemption-pool/items", s.handleAddRedemptionItems)
+	s.mux.HandleFunc("DELETE /api/redemption-pool/items", s.handleRemoveRedemptionItems)
+	s.mux.HandleFunc("POST /api/redemption-pool/codes", s.handleCreateRedemptionCode)
+	s.mux.HandleFunc("GET /api/redemption-pool/codes/export", s.handleExportRedemptionCodes)
+	s.mux.HandleFunc("POST /api/redemption-pool/codes/rotate", s.handleRotateRedemptionCode)
+	s.mux.HandleFunc("GET /api/public/redemption-pools/{token}", s.handlePublicRedemptionPool)
+	s.mux.HandleFunc("POST /api/public/redemption-pools/{token}/redeem", s.handlePublicRedeem)
 	s.mux.HandleFunc("GET /api/icloud/session", s.handleICloudSession)
 	s.mux.HandleFunc("POST /api/icloud/protocol-login/start", s.handleStartICloudProtocolLogin)
 	s.mux.HandleFunc("POST /api/icloud/protocol-login/2fa", s.handleSubmitICloudProtocol2FA)
@@ -521,6 +531,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/verify", s.handleVerifyMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/disable", s.handleDisableMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/status", s.handleSetMailboxStatus)
+	s.mux.HandleFunc("POST /api/mailboxes/{id}/api-token/rotate", s.handleRotateMailboxAPIToken)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/sync", s.handleSyncMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/remote-clean", s.handleCleanRemoteMailbox)
 	s.mux.HandleFunc("DELETE /api/mailboxes/{id}", s.handleDeleteMailbox)
@@ -546,6 +557,248 @@ func (s *Server) handleRegisterPage(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleDocsPage(w http.ResponseWriter, _ *http.Request) {
 	s.writeTemplate(w, "templates/docs.html")
+}
+
+func (s *Server) handleRedemptionPage(w http.ResponseWriter, _ *http.Request) {
+	s.writeTemplate(w, "templates/redeem.html")
+}
+
+func (s *Server) redemptionHealthyMap(state State) map[string]bool {
+	out := make(map[string]bool, len(state.Mailboxes))
+	for _, m := range state.Mailboxes {
+		imapState, hasIMAP := s.imapStateForMailbox(strings.TrimSpace(m.OwnerID), m)
+		out[m.ID] = hasIMAP && !imapState.LastCheckedAt.IsZero() && imapState.LastCheckOK && m.APIActive && m.ICloudActive && m.Status == StatusAvailable && m.ExportedAt.IsZero()
+	}
+	return out
+}
+
+func (s *Server) redemptionPoolResponse(r *http.Request, ownerID string) (map[string]any, error) {
+	pool, err := s.store.RedemptionPoolForOwner(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	pool, codes, items := s.store.RedemptionDataForOwner(ownerID)
+	state := s.store.SnapshotForOwner(ownerID)
+	healthy := s.redemptionHealthyMap(state)
+	mailboxByID := map[string]Mailbox{}
+	for _, m := range state.Mailboxes {
+		mailboxByID[m.ID] = m
+	}
+	stock := 0
+	redeemed := 0
+	itemRows := []map[string]any{}
+	for _, item := range items {
+		m, ok := mailboxByID[item.MailboxID]
+		if !ok {
+			continue
+		}
+		available := item.RedeemedAt.IsZero() && healthy[item.MailboxID]
+		if available {
+			stock++
+		}
+		if !item.RedeemedAt.IsZero() {
+			redeemed++
+		}
+		itemRows = append(itemRows, map[string]any{"mailbox": s.publicMailbox(r, m), "available": available, "added_at": formatTime(item.AddedAt), "redeemed_at": formatTime(item.RedeemedAt), "code_id": item.CodeID})
+	}
+	codeRows := []map[string]any{}
+	for _, c := range codes {
+		codeRows = append(codeRows, map[string]any{"id": c.ID, "code": c.Code, "quantity": c.Quantity, "batch_name": c.BatchName, "expires_at": formatTime(c.ExpiresAt), "used": c.Used, "invalidated": c.Invalidated, "created_at": formatTime(c.CreatedAt), "used_at": formatTime(c.UsedAt), "rotated_at": formatTime(c.RotatedAt), "invalidated_at": formatTime(c.InvalidatedAt), "rotation_count": c.RotationCount, "redeemed_count": len(c.RedeemedMailboxIDs)})
+	}
+	return map[string]any{"success": true, "pool": map[string]any{"id": pool.ID, "url": strings.TrimRight(firstNonEmpty(s.cfg.PublicBaseURL, requestBaseURL(r)), "/") + "/redeem/" + url.PathEscape(pool.PublicToken), "stock": stock, "redeemed": pool.RedeemedCount, "enabled": pool.Enabled}, "codes": codeRows, "items": itemRows, "eligible_count": func() int {
+		n := 0
+		for _, m := range state.Mailboxes {
+			if healthy[m.ID] {
+				n++
+			}
+		}
+		return n
+	}()}, nil
+}
+
+func (s *Server) handleGetRedemptionPool(w http.ResponseWriter, r *http.Request) {
+	owner := requestOwnerID(r, s.store)
+	data, err := s.redemptionPoolResponse(r, owner)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+func (s *Server) handleAddRedemptionItems(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		MailboxIDs     []string `json:"mailbox_ids"`
+		AddAllEligible bool     `json:"add_all_eligible"`
+	}
+	if err := decodeJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	owner := requestOwnerID(r, s.store)
+	state := s.store.SnapshotForOwner(owner)
+	healthy := s.redemptionHealthyMap(state)
+	if p.AddAllEligible {
+		for _, m := range state.Mailboxes {
+			if healthy[m.ID] {
+				p.MailboxIDs = append(p.MailboxIDs, m.ID)
+			}
+		}
+	}
+	n, err := s.store.AddRedemptionItems(owner, p.MailboxIDs, healthy)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "added": n})
+}
+func (s *Server) handleRemoveRedemptionItems(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		MailboxIDs []string `json:"mailbox_ids"`
+	}
+	if err := decodeJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	n, err := s.store.RemoveRedemptionItems(requestOwnerID(r, s.store), p.MailboxIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "removed": n})
+}
+func (s *Server) handleCreateRedemptionCode(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		Quantity  int    `json:"quantity"`
+		Count     int    `json:"count"`
+		BatchName string `json:"batch_name"`
+		ValidDays int    `json:"valid_days"`
+	}
+	if err := decodeJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if p.Count == 0 {
+		p.Count = 1
+	}
+	rows, err := s.store.CreateRedemptionCodes(requestOwnerID(r, s.store), p.Quantity, p.Count, p.BatchName, p.ValidDays)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	codes := make([]string, 0, len(rows))
+	for _, row := range rows {
+		codes = append(codes, row.Code)
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"success": true, "code": rows[0].Code, "codes": codes, "count": len(rows), "quantity": rows[0].Quantity})
+}
+func (s *Server) handleExportRedemptionCodes(w http.ResponseWriter, r *http.Request) {
+	owner := requestOwnerID(r, s.store)
+	pool, codes, _ := s.store.RedemptionDataForOwner(owner)
+	if strings.TrimSpace(pool.PublicToken) == "" {
+		writeError(w, http.StatusBadRequest, errCode("redemption_pool_missing", "请先创建兑换池", false))
+		return
+	}
+	batchName := strings.TrimSpace(r.URL.Query().Get("batch"))
+	poolURL := strings.TrimRight(firstNonEmpty(s.cfg.PublicBaseURL, requestBaseURL(r)), "/") + "/redeem/" + url.PathEscape(pool.PublicToken)
+	var body strings.Builder
+	for _, code := range codes {
+		if code.Used || code.Invalidated || (batchName != "" && code.BatchName != batchName) {
+			continue
+		}
+		body.WriteString(poolURL + "----" + code.Code + "\n")
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	filename := "redemption-codes.txt"
+	if batchName != "" {
+		filename = "redemption-codes-batch.txt"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	_, _ = io.WriteString(w, body.String())
+}
+func (s *Server) handleRotateRedemptionCode(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		Code    string   `json:"code"`
+		Codes   []string `json:"codes"`
+		APIType string   `json:"api_type"`
+	}
+	if err := decodeJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	row, boxes, err := s.store.RotateRedemptionCode(requestOwnerID(r, s.store), p.Code)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	lines := []string{}
+	for _, m := range boxes {
+		lines = append(lines, m.Email+"----"+s.mailboxExportAPIURL(r, m, p.APIType))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "rotated": len(boxes), "rotation_count": row.RotationCount, "lines": lines})
+}
+
+func (s *Server) publicPoolStats(token string) (RedemptionPool, int, bool) {
+	pool, ok := s.store.RedemptionPoolByToken(token)
+	if !ok {
+		return RedemptionPool{}, 0, false
+	}
+	state := s.store.SnapshotForOwner(pool.OwnerID)
+	healthy := s.redemptionHealthyMap(state)
+	_, _, items := s.store.RedemptionDataForOwner(pool.OwnerID)
+	stock := 0
+	for _, i := range items {
+		if i.PoolID == pool.ID && i.RedeemedAt.IsZero() && healthy[i.MailboxID] {
+			stock++
+		}
+	}
+	return pool, stock, true
+}
+func (s *Server) handlePublicRedemptionPool(w http.ResponseWriter, r *http.Request) {
+	pool, stock, ok := s.publicPoolStats(r.PathValue("token"))
+	if !ok {
+		writeError(w, http.StatusNotFound, errCode("pool_not_found", "兑换池不存在或已停用", false))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "stock": stock, "redeemed": pool.RedeemedCount})
+}
+func (s *Server) handlePublicRedeem(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	key := "redeem:" + token
+	if allowed, retry := s.loginGuard.allow(requestClientIP(r), key); !allowed {
+		writeError(w, http.StatusTooManyRequests, errCode("too_many_attempts", fmt.Sprintf("尝试次数过多，请在 %d 分钟后重试", max(1, int(retry.Minutes()+0.99))), false))
+		return
+	}
+	var p struct {
+		Code    string   `json:"code"`
+		Codes   []string `json:"codes"`
+		APIType string   `json:"api_type"`
+	}
+	if err := decodeJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	pool, ok := s.store.RedemptionPoolByToken(token)
+	if !ok {
+		writeError(w, http.StatusNotFound, errCode("pool_not_found", "兑换池不存在或已停用", false))
+		return
+	}
+	state := s.store.SnapshotForOwner(pool.OwnerID)
+	codes := append([]string(nil), p.Codes...)
+	codes = append(codes, strings.FieldsFunc(p.Code, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == '\uFF0C' || r == ';' || r == '\uFF1B' || r == '\t' || r == ' '
+	})...)
+	rows, boxes, err := s.store.RedeemMultipleCodes(token, codes, s.redemptionHealthyMap(state))
+	if err != nil {
+		s.loginGuard.failure(requestClientIP(r), key)
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.loginGuard.success(requestClientIP(r), key)
+	lines := []string{}
+	for _, m := range boxes {
+		lines = append(lines, m.Email+"----"+s.mailboxExportAPIURL(r, m, p.APIType))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "quantity": len(boxes), "code_count": len(rows), "lines": lines})
 }
 
 func (s *Server) handleManagePage(w http.ResponseWriter, _ *http.Request) {
@@ -1142,6 +1395,12 @@ func (s *Server) StartAutomaticBackups(ctx context.Context) {
 				return
 			case <-timer.C:
 				started := time.Now()
+				if removed, err := s.store.PruneMessages(s.cfg.MailRetentionDays, s.cfg.MailMaxPerMailbox); err != nil {
+					s.recordOperation("邮件自动清理", "failed", err.Error(), started)
+				} else if removed > 0 {
+					_ = s.store.VacuumDatabase()
+					s.recordOperation("邮件自动清理", "success", fmt.Sprintf("清理 %d 封过期或超量邮件", removed), started)
+				}
 				if row, err := s.store.CreateBackup("auto"); err != nil {
 					s.recordOperation("自动备份", "failed", err.Error(), started)
 					if s.logger != nil {
@@ -1160,7 +1419,9 @@ func (s *Server) StartAutomaticBackups(ctx context.Context) {
 func (s *Server) recordOperation(kind, status, message string, started time.Time) {
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
-	s.operationTasks = append(s.operationTasks, operationTask{ID: fmt.Sprintf("task-%d", time.Now().UnixNano()), Kind: kind, Status: status, Message: message, StartedAt: formatTime(started), FinishedAt: formatTime(time.Now())})
+	task := operationTask{ID: fmt.Sprintf("task-%d", time.Now().UnixNano()), Kind: kind, Status: status, Message: message, StartedAt: formatTime(started), FinishedAt: formatTime(time.Now())}
+	s.operationTasks = append(s.operationTasks, task)
+	_ = s.store.SaveTaskRun(task)
 	if len(s.operationTasks) > 100 {
 		s.operationTasks = append([]operationTask(nil), s.operationTasks[len(s.operationTasks)-100:]...)
 	}
@@ -1168,9 +1429,7 @@ func (s *Server) recordOperation(kind, status, message string, started time.Time
 
 func (s *Server) handleAdminOperations(w http.ResponseWriter, _ *http.Request) {
 	state := s.store.Snapshot()
-	s.operationMu.Lock()
-	tasks := append([]operationTask(nil), s.operationTasks...)
-	s.operationMu.Unlock()
+	tasks, _ := s.store.TaskRuns(100)
 	backups, _ := s.store.Backups()
 	metrics, _ := s.store.RuntimeMetrics()
 	dbSize := int64(0)
@@ -1193,6 +1452,14 @@ func (s *Server) handleAdminOperations(w http.ResponseWriter, _ *http.Request) {
 	}
 	if dbSize > 500<<20 {
 		alerts = append(alerts, "SQLite 数据库已超过 500MB，建议归档历史邮件")
+	}
+	for _, metric := range metrics {
+		if metric.Last1H.Total >= 5 && metric.Last1H.FailureRate >= 20 {
+			alerts = append(alerts, fmt.Sprintf("%s 最近1小时异常率 %.1f%%", metric.Kind, metric.Last1H.FailureRate))
+		}
+		if metric.Kind == "code" && metric.Last1H.P95MS > 10000 {
+			alerts = append(alerts, fmt.Sprintf("取码最近1小时 P95 耗时 %.2f 秒", float64(metric.Last1H.P95MS)/1000))
+		}
 	}
 	if diskFree > 0 && (diskFree < 5<<30 || diskTotal > 0 && diskFree*100/diskTotal < 10) {
 		alerts = append(alerts, "数据盘剩余空间不足 10% 或低于 5GB")
@@ -3115,6 +3382,30 @@ func (s *Server) handleSetMailboxStatus(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "mailbox": s.publicMailbox(r, mailbox)})
 }
 
+func (s *Server) handleRotateMailboxAPIToken(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.canAccessMailboxID(r, id) {
+		writeError(w, http.StatusForbidden, errCode("forbidden", "无权操作该邮箱", false))
+		return
+	}
+	var p struct {
+		ValidDays int `json:"valid_days"`
+	}
+	if err := decodeJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if p.ValidDays == 0 {
+		p.ValidDays = 180
+	}
+	m, err := s.store.RotateMailboxAPIToken(id, p.ValidDays)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "mailbox": s.publicMailbox(r, m), "message": "API 地址已重置，旧地址立即失效"})
+}
+
 func (s *Server) handleSyncMailbox(w http.ResponseWriter, r *http.Request) {
 	mailbox, ok := s.store.FindMailboxByID(r.PathValue("id"))
 	if !ok {
@@ -3445,7 +3736,7 @@ func (s *Server) handleMailboxVisualByEmail(w http.ResponseWriter, r *http.Reque
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>%s 邮件</title><style>body{margin:0;background:#020817;color:#eaf2ff;font:14px system-ui;padding:24px}main{max-width:980px;margin:auto}header,article{background:#061a3b;border:1px solid #1d4ed8;border-radius:10px;padding:18px;margin-bottom:14px}h1,h2{margin:0 0 10px}.meta{color:#93c5fd;margin-bottom:14px}pre{white-space:pre-wrap;word-break:break-word;font:14px/1.7 system-ui;color:#eaf2ff}.mail-frame{display:block;width:100%;height:560px;border:0;border-radius:8px;background:#fff}.mail-plain{background:#fff;color:#172033;border-radius:8px;padding:30px;line-height:1.75}.mail-code{display:inline-block;margin:8px 0 20px;padding:10px 20px;border-radius:8px;background:#e8f0ff;color:#0b3a82;font:700 28px/1.2 ui-monospace,monospace;letter-spacing:5px}.mail-text{white-space:pre-wrap;word-break:break-word}</style></head><body><main><header><h1>%s</h1><div class="meta">最近邮件，可刷新页面重新同步</div></header>%s</main></body></html>`, escape(mailbox.Email), escape(mailbox.Email), cards.String())
+	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>%s 邮件</title><style>body{margin:0;background:#020817;color:#eaf2ff;font:14px system-ui;padding:24px}main{max-width:980px;margin:auto}header,article{background:#061a3b;border:1px solid #1d4ed8;border-radius:10px;padding:18px;margin-bottom:14px}h1,h2{margin:0 0 10px}.meta{color:#93c5fd;margin-bottom:14px}pre{white-space:pre-wrap;word-break:break-word;font:14px/1.7 system-ui;color:#eaf2ff}.mail-frame{display:block;width:100%%;height:560px;border:0;border-radius:8px;background:#fff}.mail-plain{background:#fff;color:#172033;border-radius:8px;padding:30px;line-height:1.75}.mail-code{display:inline-block;margin:8px 0 20px;padding:10px 20px;border-radius:8px;background:#e8f0ff;color:#0b3a82;font:700 28px/1.2 ui-monospace,monospace;letter-spacing:5px}.mail-text{white-space:pre-wrap;word-break:break-word}</style></head><body><main><header><h1>%s</h1><div class="meta">最近邮件，可刷新页面重新同步</div></header>%s</main></body></html>`, escape(mailbox.Email), escape(mailbox.Email), cards.String())
 }
 
 func mailboxVisualMessageContent(msg Message) string {
@@ -5146,6 +5437,9 @@ func (s *Server) logICloudCreateError(ownerID string, err error) {
 }
 
 func (s *Server) authorized(r *http.Request, mailbox Mailbox) bool {
+	if !mailbox.APITokenExpiresAt.IsZero() && !mailbox.APITokenExpiresAt.After(time.Now()) {
+		return false
+	}
 	queryKey := strings.TrimSpace(r.URL.Query().Get("key"))
 	if constantTimeEqual(queryKey, mailbox.APIToken) {
 		return true
@@ -5471,6 +5765,9 @@ func (s *Server) allowsUserSession(r *http.Request) bool {
 	if r.Method == http.MethodGet && r.URL.Path == "/api/runtime/export-mailbox-emails" {
 		return true
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/redemption-pool") {
+		return true
+	}
 	if r.Method == http.MethodGet && r.URL.Path == "/api/icloud/session" {
 		return true
 	}
@@ -5589,6 +5886,9 @@ func (s *Server) requiresAdmin(r *http.Request) bool {
 		return false
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/api/v1/health" {
+		return false
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/public/redemption-pools/") {
 		return false
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/api/v1/mailboxes/claim" {
@@ -5794,6 +6094,7 @@ func (s *Server) publicMailbox(r *http.Request, mailbox Mailbox) publicMailbox {
 		Label:             mailbox.Label,
 		Email:             mailbox.Email,
 		APITokenMask:      maskSecret(mailbox.APIToken, 6),
+		APITokenExpiresAt: formatTime(mailbox.APITokenExpiresAt),
 		APIURL:            s.mailboxAPIURL(r, mailbox),
 		APIActive:         mailbox.APIActive,
 		ICloudActive:      mailbox.ICloudActive,

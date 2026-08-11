@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -494,6 +495,11 @@ func (s *FileStore) AuthenticateUser(username, password string) (User, error) {
 			return User{}, errCode("invalid_login", "账号或密码错误", false)
 		}
 		now := time.Now()
+		if !strings.HasPrefix(user.PasswordHash, passwordHashVersion+"$") {
+			if upgraded, upgradeErr := hashPassword(password); upgradeErr == nil {
+				s.state.Users[i].PasswordHash = upgraded
+			}
+		}
 		s.state.Users[i].LastLoginAt = now
 		s.state.Users[i].UpdatedAt = now
 		return s.state.Users[i], s.saveLocked()
@@ -687,6 +693,27 @@ func (s *FileStore) DeleteUserWithReason(id, reason string) (DeleteUserResult, e
 		}
 	}
 	s.state.AutoLoginBindings = autoLoginBindings
+	redemptionPools := s.state.RedemptionPools[:0]
+	for _, item := range s.state.RedemptionPools {
+		if item.OwnerID != id {
+			redemptionPools = append(redemptionPools, item)
+		}
+	}
+	s.state.RedemptionPools = redemptionPools
+	redemptionCodes := s.state.RedemptionCodes[:0]
+	for _, item := range s.state.RedemptionCodes {
+		if item.OwnerID != id {
+			redemptionCodes = append(redemptionCodes, item)
+		}
+	}
+	s.state.RedemptionCodes = redemptionCodes
+	redemptionItems := s.state.RedemptionItems[:0]
+	for _, item := range s.state.RedemptionItems {
+		if item.OwnerID != id {
+			redemptionItems = append(redemptionItems, item)
+		}
+	}
+	s.state.RedemptionItems = redemptionItems
 
 	return result, s.saveLocked()
 }
@@ -736,6 +763,9 @@ func (s *FileStore) RestoreUserFromRecycleBin(itemID string) (User, error) {
 	s.state.InviteUses = append(s.state.InviteUses, restored.InviteUses...)
 	s.state.AnnouncementReads = append(s.state.AnnouncementReads, restored.AnnouncementReads...)
 	s.state.AutoLoginBindings = append(s.state.AutoLoginBindings, restored.AutoLoginBindings...)
+	s.state.RedemptionPools = append(s.state.RedemptionPools, restored.RedemptionPools...)
+	s.state.RedemptionCodes = append(s.state.RedemptionCodes, restored.RedemptionCodes...)
+	s.state.RedemptionItems = append(s.state.RedemptionItems, restored.RedemptionItems...)
 	s.state.RecycleBin = append(s.state.RecycleBin[:index], s.state.RecycleBin[index+1:]...)
 	return restored.Users[0], s.saveLocked()
 }
@@ -936,17 +966,18 @@ func (s *FileStore) AddMailboxForOwner(ownerID, accountID, label, email string) 
 		label = fmt.Sprintf("UPI-%s", time.Now().Format("0102-150405"))
 	}
 	mailbox := Mailbox{
-		ID:           s.nextIDLocked("mbx"),
-		OwnerID:      strings.TrimSpace(ownerID),
-		AccountID:    strings.TrimSpace(accountID),
-		Label:        strings.TrimSpace(label),
-		Email:        email,
-		APIToken:     token,
-		APIActive:    true,
-		ICloudActive: true,
-		Status:       StatusAvailable,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:                s.nextIDLocked("mbx"),
+		OwnerID:           strings.TrimSpace(ownerID),
+		AccountID:         strings.TrimSpace(accountID),
+		Label:             strings.TrimSpace(label),
+		Email:             email,
+		APIToken:          token,
+		APITokenExpiresAt: now.Add(180 * 24 * time.Hour),
+		APIActive:         true,
+		ICloudActive:      true,
+		Status:            StatusAvailable,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	s.state.Mailboxes = append(s.state.Mailboxes, mailbox)
 	return mailbox, s.saveLocked()
@@ -1005,18 +1036,19 @@ func (s *FileStore) UpsertMailboxFromRemote(ownerID, accountID string, remote IC
 		status = StatusDisabled
 	}
 	mailbox := Mailbox{
-		ID:           s.nextIDLocked("mbx"),
-		OwnerID:      ownerID,
-		AccountID:    accountID,
-		Label:        label,
-		Email:        email,
-		APIToken:     token,
-		APIActive:    true,
-		ICloudActive: remote.IsActive,
-		Status:       status,
-		Note:         note,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:                s.nextIDLocked("mbx"),
+		OwnerID:           ownerID,
+		AccountID:         accountID,
+		Label:             label,
+		Email:             email,
+		APIToken:          token,
+		APITokenExpiresAt: now.Add(180 * 24 * time.Hour),
+		APIActive:         true,
+		ICloudActive:      remote.IsActive,
+		Status:            status,
+		Note:              note,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	s.state.Mailboxes = append(s.state.Mailboxes, mailbox)
 	return mailbox, true, s.saveLocked()
@@ -1249,6 +1281,29 @@ func (s *FileStore) SetMailboxStatus(id string, apiActive *bool, icloudActive *b
 	return s.state.Mailboxes[idx], s.saveLocked()
 }
 
+func (s *FileStore) RotateMailboxAPIToken(id string, validDays int) (Mailbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if validDays < 1 || validDays > 3650 {
+		return Mailbox{}, errCode("invalid_api_expiry", "API 有效期必须在 1 到 3650 天之间", false)
+	}
+	for i := range s.state.Mailboxes {
+		if s.state.Mailboxes[i].ID == strings.TrimSpace(id) {
+			token, err := randomToken(24)
+			if err != nil {
+				return Mailbox{}, err
+			}
+			now := time.Now()
+			s.state.Mailboxes[i].APIToken = token
+			s.state.Mailboxes[i].APITokenExpiresAt = now.Add(time.Duration(validDays) * 24 * time.Hour)
+			s.state.Mailboxes[i].APIActive = true
+			s.state.Mailboxes[i].UpdatedAt = now
+			return s.state.Mailboxes[i], s.saveLocked()
+		}
+	}
+	return Mailbox{}, errCode("mailbox_not_found", "邮箱不存在", false)
+}
+
 func (s *FileStore) SetMailboxSyncCursor(id string, syncedAt time.Time, lastUID string) (Mailbox, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1407,6 +1462,426 @@ func (s *FileStore) MarkMailboxesExported(ids []string, exportedAt time.Time) er
 	return s.saveLocked()
 }
 
+func (s *FileStore) RedemptionPoolForOwner(ownerID string) (RedemptionPool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID = strings.TrimSpace(ownerID)
+	for _, pool := range s.state.RedemptionPools {
+		if constantTimeEqual(pool.OwnerID, ownerID) {
+			return pool, nil
+		}
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		return RedemptionPool{}, err
+	}
+	now := time.Now()
+	pool := RedemptionPool{ID: s.nextIDLocked("pool"), OwnerID: ownerID, PublicToken: token, Enabled: true, CreatedAt: now, UpdatedAt: now}
+	s.state.RedemptionPools = append(s.state.RedemptionPools, pool)
+	return pool, s.saveLocked()
+}
+
+func (s *FileStore) RedemptionPoolByToken(token string) (RedemptionPool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, pool := range s.state.RedemptionPools {
+		if pool.Enabled && constantTimeEqual(pool.PublicToken, token) {
+			return pool, true
+		}
+	}
+	return RedemptionPool{}, false
+}
+
+func (s *FileStore) AddRedemptionItems(ownerID string, ids []string, healthy map[string]bool) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pool *RedemptionPool
+	for i := range s.state.RedemptionPools {
+		if constantTimeEqual(s.state.RedemptionPools[i].OwnerID, ownerID) {
+			pool = &s.state.RedemptionPools[i]
+			break
+		}
+	}
+	if pool == nil {
+		token, err := randomToken(32)
+		if err != nil {
+			return 0, err
+		}
+		now := time.Now()
+		s.state.RedemptionPools = append(s.state.RedemptionPools, RedemptionPool{ID: s.nextIDLocked("pool"), OwnerID: ownerID, PublicToken: token, Enabled: true, CreatedAt: now, UpdatedAt: now})
+		pool = &s.state.RedemptionPools[len(s.state.RedemptionPools)-1]
+	}
+	existing := map[string]bool{}
+	for _, item := range s.state.RedemptionItems {
+		if item.RedeemedAt.IsZero() {
+			existing[item.MailboxID] = true
+		}
+	}
+	wanted := map[string]bool{}
+	for _, id := range ids {
+		wanted[strings.TrimSpace(id)] = true
+	}
+	count := 0
+	now := time.Now()
+	for _, mailbox := range s.state.Mailboxes {
+		if !wanted[mailbox.ID] || existing[mailbox.ID] || !constantTimeEqual(mailbox.OwnerID, ownerID) || !mailbox.ExportedAt.IsZero() || !mailbox.APIActive || !mailbox.ICloudActive || mailbox.Status != StatusAvailable || !healthy[mailbox.ID] {
+			continue
+		}
+		s.state.RedemptionItems = append(s.state.RedemptionItems, RedemptionItem{PoolID: pool.ID, OwnerID: ownerID, MailboxID: mailbox.ID, AddedAt: now})
+		count++
+	}
+	if count == 0 {
+		return 0, errCode("no_eligible_mailboxes", "没有可加入的邮箱；仅支持未导出、状态可用且可正常接码的邮箱", false)
+	}
+	pool.UpdatedAt = now
+	return count, s.saveLocked()
+}
+
+func (s *FileStore) RemoveRedemptionItems(ownerID string, ids []string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wanted := map[string]bool{}
+	for _, id := range ids {
+		wanted[strings.TrimSpace(id)] = true
+	}
+	next := s.state.RedemptionItems[:0]
+	count := 0
+	for _, item := range s.state.RedemptionItems {
+		if constantTimeEqual(item.OwnerID, ownerID) && item.RedeemedAt.IsZero() && wanted[item.MailboxID] {
+			count++
+			continue
+		}
+		next = append(next, item)
+	}
+	s.state.RedemptionItems = next
+	if count == 0 {
+		return 0, nil
+	}
+	return count, s.saveLocked()
+}
+
+func (s *FileStore) CreateRedemptionCode(ownerID string, quantity int) (RedemptionCode, error) {
+	rows, err := s.CreateRedemptionCodes(ownerID, quantity, 1, "", 0)
+	if err != nil {
+		return RedemptionCode{}, err
+	}
+	return rows[0], nil
+}
+
+func (s *FileStore) CreateRedemptionCodes(ownerID string, quantity, count int, batchName string, validDays int) ([]RedemptionCode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if quantity < 1 || quantity > 500 {
+		return nil, errCode("invalid_quantity", "单个兑换码数量必须在 1 到 500 之间", false)
+	}
+	if count < 1 || count > 1000 {
+		return nil, errCode("invalid_code_count", "每批兑换码数量必须在 1 到 1000 之间", false)
+	}
+	if validDays < 0 || validDays > 3650 {
+		return nil, errCode("invalid_valid_days", "有效天数必须为 0 到 3650，0 表示永久有效", false)
+	}
+	poolID := ""
+	for _, p := range s.state.RedemptionPools {
+		if constantTimeEqual(p.OwnerID, ownerID) {
+			poolID = p.ID
+			break
+		}
+	}
+	if poolID == "" {
+		return nil, errCode("redemption_pool_missing", "请先创建兑换池", false)
+	}
+	now := time.Now()
+	result := make([]RedemptionCode, 0, count)
+	for i := 0; i < count; i++ {
+		raw, err := randomToken(12)
+		if err != nil {
+			return nil, err
+		}
+		code := "MAIL-" + strings.ToUpper(raw)
+		row := RedemptionCode{ID: s.nextIDLocked("redeem"), PoolID: poolID, OwnerID: ownerID, Code: code, CodeHash: sessionTokenHash(code), Quantity: quantity, BatchName: strings.TrimSpace(batchName), CreatedAt: now}
+		if validDays > 0 {
+			row.ExpiresAt = now.Add(time.Duration(validDays) * 24 * time.Hour)
+		}
+		s.state.RedemptionCodes = append(s.state.RedemptionCodes, row)
+		result = append(result, row)
+	}
+	return result, s.saveLocked()
+}
+
+func (s *FileStore) RedemptionDataForOwner(ownerID string) (RedemptionPool, []RedemptionCode, []RedemptionItem) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pool RedemptionPool
+	var codes []RedemptionCode
+	var items []RedemptionItem
+	for _, p := range s.state.RedemptionPools {
+		if constantTimeEqual(p.OwnerID, ownerID) {
+			pool = p
+		}
+	}
+	for _, c := range s.state.RedemptionCodes {
+		if constantTimeEqual(c.OwnerID, ownerID) {
+			c.RedeemedMailboxIDs = append([]string(nil), c.RedeemedMailboxIDs...)
+			codes = append(codes, c)
+		}
+	}
+	for _, i := range s.state.RedemptionItems {
+		if constantTimeEqual(i.OwnerID, ownerID) {
+			items = append(items, i)
+		}
+	}
+	return pool, codes, items
+}
+
+func (s *FileStore) RedeemMailboxes(poolToken, code string, healthy map[string]bool) (RedemptionCode, []Mailbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pool *RedemptionPool
+	for i := range s.state.RedemptionPools {
+		if s.state.RedemptionPools[i].Enabled && constantTimeEqual(s.state.RedemptionPools[i].PublicToken, poolToken) {
+			pool = &s.state.RedemptionPools[i]
+			break
+		}
+	}
+	if pool == nil {
+		return RedemptionCode{}, nil, errCode("pool_not_found", "兑换池不存在或已停用", false)
+	}
+	codeHash := sessionTokenHash(strings.TrimSpace(code))
+	var row *RedemptionCode
+	for i := range s.state.RedemptionCodes {
+		if s.state.RedemptionCodes[i].PoolID == pool.ID && constantTimeEqual(s.state.RedemptionCodes[i].CodeHash, codeHash) {
+			row = &s.state.RedemptionCodes[i]
+			break
+		}
+	}
+	if row == nil {
+		return RedemptionCode{}, nil, errCode("invalid_redemption_code", "兑换码不正确", false)
+	}
+	if row.Invalidated {
+		return RedemptionCode{}, nil, errCode("redemption_code_invalidated", "该兑换码已经失效", false)
+	}
+	if !row.ExpiresAt.IsZero() && !row.ExpiresAt.After(time.Now()) {
+		return RedemptionCode{}, nil, errCode("redemption_code_expired", "该兑换码已经过期", false)
+	}
+	if row.Used {
+		return RedemptionCode{}, nil, errCode("redemption_code_used", "该兑换码已经使用过", false)
+	}
+	mailboxByID := map[string]int{}
+	for i := range s.state.Mailboxes {
+		mailboxByID[s.state.Mailboxes[i].ID] = i
+	}
+	candidates := []int{}
+	for i, item := range s.state.RedemptionItems {
+		if item.PoolID != pool.ID || !item.RedeemedAt.IsZero() || !healthy[item.MailboxID] {
+			continue
+		}
+		mi, ok := mailboxByID[item.MailboxID]
+		if !ok {
+			continue
+		}
+		m := s.state.Mailboxes[mi]
+		if !m.ExportedAt.IsZero() || !m.APIActive || !m.ICloudActive || m.Status != StatusAvailable {
+			continue
+		}
+		candidates = append(candidates, i)
+		if len(candidates) == row.Quantity {
+			break
+		}
+	}
+	if len(candidates) < row.Quantity {
+		return RedemptionCode{}, nil, errCode("insufficient_pool_stock", fmt.Sprintf("兑换池当前只有 %d 个可兑换邮箱，少于兑换码要求的 %d 个", len(candidates), row.Quantity), false)
+	}
+	now := time.Now()
+	result := make([]Mailbox, 0, len(candidates))
+	ids := make([]string, 0, len(candidates))
+	for _, ii := range candidates {
+		item := &s.state.RedemptionItems[ii]
+		mi := mailboxByID[item.MailboxID]
+		s.state.Mailboxes[mi].ExportedAt = now
+		s.state.Mailboxes[mi].UpdatedAt = now
+		item.RedeemedAt = now
+		item.CodeID = row.ID
+		result = append(result, s.state.Mailboxes[mi])
+		ids = append(ids, item.MailboxID)
+	}
+	row.Used = true
+	row.UsedAt = now
+	row.RedeemedMailboxIDs = ids
+	pool.RedeemedCount += len(ids)
+	pool.UpdatedAt = now
+	if err := s.saveLocked(); err != nil {
+		return RedemptionCode{}, nil, err
+	}
+	return *row, result, nil
+}
+
+func (s *FileStore) RedeemMultipleCodes(poolToken string, codes []string, healthy map[string]bool) ([]RedemptionCode, []Mailbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pool *RedemptionPool
+	for i := range s.state.RedemptionPools {
+		if s.state.RedemptionPools[i].Enabled && constantTimeEqual(s.state.RedemptionPools[i].PublicToken, poolToken) {
+			pool = &s.state.RedemptionPools[i]
+			break
+		}
+	}
+	if pool == nil {
+		return nil, nil, errCode("pool_not_found", "兑换池不存在或已停用", false)
+	}
+	if len(codes) < 1 || len(codes) > 100 {
+		return nil, nil, errCode("invalid_redemption_code_count", "每次可同时兑换 1 到 100 个兑换码", false)
+	}
+
+	seen := map[string]bool{}
+	selected := make([]int, 0, len(codes))
+	required := 0
+	now := time.Now()
+	for _, raw := range codes {
+		hash := sessionTokenHash(strings.TrimSpace(raw))
+		if seen[hash] {
+			return nil, nil, errCode("duplicate_redemption_code", "提交内容中存在重复兑换码", false)
+		}
+		seen[hash] = true
+		idx := -1
+		for i := range s.state.RedemptionCodes {
+			if s.state.RedemptionCodes[i].PoolID == pool.ID && constantTimeEqual(s.state.RedemptionCodes[i].CodeHash, hash) {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return nil, nil, errCode("invalid_redemption_code", "存在不正确的兑换码，整批未兑换", false)
+		}
+		row := s.state.RedemptionCodes[idx]
+		if row.Invalidated {
+			return nil, nil, errCode("redemption_code_invalidated", "存在已经失效的兑换码，整批未兑换", false)
+		}
+		if row.Used {
+			return nil, nil, errCode("redemption_code_used", "存在已经使用过的兑换码，整批未兑换", false)
+		}
+		if !row.ExpiresAt.IsZero() && !row.ExpiresAt.After(now) {
+			return nil, nil, errCode("redemption_code_expired", "存在已经过期的兑换码，整批未兑换", false)
+		}
+		selected = append(selected, idx)
+		required += row.Quantity
+	}
+
+	mailboxByID := map[string]int{}
+	for i := range s.state.Mailboxes {
+		mailboxByID[s.state.Mailboxes[i].ID] = i
+	}
+	candidates := make([]int, 0, required)
+	for i, item := range s.state.RedemptionItems {
+		if item.PoolID != pool.ID || !item.RedeemedAt.IsZero() || !healthy[item.MailboxID] {
+			continue
+		}
+		mi, ok := mailboxByID[item.MailboxID]
+		if !ok {
+			continue
+		}
+		m := s.state.Mailboxes[mi]
+		if !m.ExportedAt.IsZero() || !m.APIActive || !m.ICloudActive || m.Status != StatusAvailable {
+			continue
+		}
+		candidates = append(candidates, i)
+		if len(candidates) == required {
+			break
+		}
+	}
+	if len(candidates) < required {
+		return nil, nil, errCode("insufficient_pool_stock", fmt.Sprintf("兑换池当前只有 %d 个可兑换邮箱，本批兑换码共需要 %d 个", len(candidates), required), false)
+	}
+
+	resultCodes := make([]RedemptionCode, 0, len(selected))
+	resultBoxes := make([]Mailbox, 0, required)
+	cursor := 0
+	for _, ci := range selected {
+		row := &s.state.RedemptionCodes[ci]
+		ids := make([]string, 0, row.Quantity)
+		for j := 0; j < row.Quantity; j++ {
+			item := &s.state.RedemptionItems[candidates[cursor]]
+			cursor++
+			mi := mailboxByID[item.MailboxID]
+			s.state.Mailboxes[mi].ExportedAt = now
+			s.state.Mailboxes[mi].UpdatedAt = now
+			item.RedeemedAt = now
+			item.CodeID = row.ID
+			ids = append(ids, item.MailboxID)
+			resultBoxes = append(resultBoxes, s.state.Mailboxes[mi])
+		}
+		row.Used = true
+		row.UsedAt = now
+		row.RedeemedMailboxIDs = ids
+		resultCodes = append(resultCodes, *row)
+	}
+	pool.RedeemedCount += required
+	pool.UpdatedAt = now
+	if err := s.saveLocked(); err != nil {
+		return nil, nil, err
+	}
+	return resultCodes, resultBoxes, nil
+}
+
+func (s *FileStore) RotateRedemptionCode(ownerID, code string) (RedemptionCode, []Mailbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hash := sessionTokenHash(strings.TrimSpace(code))
+	var row *RedemptionCode
+	for i := range s.state.RedemptionCodes {
+		if constantTimeEqual(s.state.RedemptionCodes[i].OwnerID, ownerID) && constantTimeEqual(s.state.RedemptionCodes[i].CodeHash, hash) {
+			row = &s.state.RedemptionCodes[i]
+			break
+		}
+	}
+	if row == nil {
+		return RedemptionCode{}, nil, errCode("invalid_redemption_code", "兑换码不存在", false)
+	}
+	if !row.Used {
+		return RedemptionCode{}, nil, errCode("redemption_code_unused", "兑换码尚未使用，不能重置取码地址", false)
+	}
+	if row.Invalidated {
+		return RedemptionCode{}, nil, errCode("redemption_code_invalidated", "该兑换码已经失效", false)
+	}
+	now := time.Now()
+	result := []Mailbox{}
+	for _, id := range row.RedeemedMailboxIDs {
+		for i := range s.state.Mailboxes {
+			if s.state.Mailboxes[i].ID == id {
+				token, err := randomToken(24)
+				if err != nil {
+					return RedemptionCode{}, nil, err
+				}
+				s.state.Mailboxes[i].APIToken = token
+				s.state.Mailboxes[i].ExportedAt = time.Time{}
+				s.state.Mailboxes[i].UpdatedAt = now
+				result = append(result, s.state.Mailboxes[i])
+				break
+			}
+		}
+	}
+	for i := range s.state.RedemptionItems {
+		if s.state.RedemptionItems[i].CodeID == row.ID {
+			s.state.RedemptionItems[i].RedeemedAt = time.Time{}
+			s.state.RedemptionItems[i].CodeID = ""
+		}
+	}
+	row.RotatedAt = now
+	row.RotationCount++
+	row.Invalidated = true
+	row.InvalidatedAt = now
+	for i := range s.state.RedemptionPools {
+		if s.state.RedemptionPools[i].ID == row.PoolID {
+			s.state.RedemptionPools[i].RedeemedCount = max(0, s.state.RedemptionPools[i].RedeemedCount-len(result))
+			s.state.RedemptionPools[i].UpdatedAt = now
+			break
+		}
+	}
+	if err := s.saveLocked(); err != nil {
+		return RedemptionCode{}, nil, err
+	}
+	return *row, result, nil
+}
+
 func (s *FileStore) DeleteMessagesForMailbox(mailboxID string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1430,6 +1905,55 @@ func (s *FileStore) DeleteMessagesForMailbox(mailboxID string) (int, error) {
 		}
 	}
 	return deleted, s.saveLocked()
+}
+
+func (s *FileStore) PruneMessages(retentionDays, maxPerMailbox int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if retentionDays < 1 {
+		retentionDays = 60
+	}
+	if maxPerMailbox < 1 {
+		maxPerMailbox = 200
+	}
+	cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	byMailbox := map[string][]Message{}
+	for _, m := range s.state.Messages {
+		byMailbox[m.MailboxID] = append(byMailbox[m.MailboxID], m)
+	}
+	keep := map[string]bool{}
+	for _, rows := range byMailbox {
+		sort.Slice(rows, func(i, j int) bool { return rows[i].ReceivedAt.After(rows[j].ReceivedAt) })
+		for i, m := range rows {
+			if i < maxPerMailbox && !m.ReceivedAt.Before(cutoff) {
+				keep[m.ID] = true
+			}
+		}
+	}
+	next := s.state.Messages[:0]
+	removed := 0
+	for _, m := range s.state.Messages {
+		if keep[m.ID] {
+			next = append(next, m)
+		} else {
+			removed++
+		}
+	}
+	s.state.Messages = next
+	if removed == 0 {
+		return 0, nil
+	}
+	return removed, s.saveLocked()
+}
+
+func (s *FileStore) VacuumDatabase() error {
+	db, err := s.sqliteConnection()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = db.Exec(`VACUUM`)
+	return err
 }
 
 func (s *FileStore) nextIDLocked(prefix string) string {
@@ -1704,6 +2228,12 @@ func cloneState(in State) State {
 	out.Announcements = append([]Announcement(nil), in.Announcements...)
 	out.AnnouncementReads = append([]AnnouncementRead(nil), in.AnnouncementReads...)
 	out.AutoLoginBindings = append([]AutoLoginBinding(nil), in.AutoLoginBindings...)
+	out.RedemptionPools = append([]RedemptionPool(nil), in.RedemptionPools...)
+	out.RedemptionCodes = append([]RedemptionCode(nil), in.RedemptionCodes...)
+	for i := range out.RedemptionCodes {
+		out.RedemptionCodes[i].RedeemedMailboxIDs = append([]string(nil), in.RedemptionCodes[i].RedeemedMailboxIDs...)
+	}
+	out.RedemptionItems = append([]RedemptionItem(nil), in.RedemptionItems...)
 	out.Accounts = append([]Account(nil), in.Accounts...)
 	for i := range out.Accounts {
 		out.Accounts[i].Tags = append([]string(nil), in.Accounts[i].Tags...)
@@ -1859,6 +2389,22 @@ func filterStateByOwnerLocked(in State, ownerID string) State {
 			next := settings
 			next.AccountIDs = append([]string(nil), settings.AccountIDs...)
 			out.CreateSettings = append(out.CreateSettings, next)
+		}
+	}
+	for _, pool := range in.RedemptionPools {
+		if constantTimeEqual(ownerID, pool.OwnerID) {
+			out.RedemptionPools = append(out.RedemptionPools, pool)
+		}
+	}
+	for _, code := range in.RedemptionCodes {
+		if constantTimeEqual(ownerID, code.OwnerID) {
+			code.RedeemedMailboxIDs = append([]string(nil), code.RedeemedMailboxIDs...)
+			out.RedemptionCodes = append(out.RedemptionCodes, code)
+		}
+	}
+	for _, item := range in.RedemptionItems {
+		if constantTimeEqual(ownerID, item.OwnerID) {
+			out.RedemptionItems = append(out.RedemptionItems, item)
 		}
 	}
 	return out

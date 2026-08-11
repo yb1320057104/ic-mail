@@ -14,11 +14,12 @@ import (
 )
 
 const (
-	sessionCookieName   = "ipm_session"
-	passwordHashVersion = "pbkdf2_sha256"
-	passwordIterations  = 120000
-	passwordSaltBytes   = 16
-	passwordKeyBytes    = 32
+	sessionCookieName         = "ipm_session"
+	passwordHashVersion       = "pbkdf2_sha256_v2"
+	legacyPasswordHashVersion = "pbkdf2_sha256"
+	passwordIterations        = 310000
+	passwordSaltBytes         = 16
+	passwordKeyBytes          = 32
 )
 
 var usernameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_.@-]{2,63}$`)
@@ -60,7 +61,7 @@ func hashPassword(password string) (string, error) {
 
 func verifyPassword(password, encoded string) bool {
 	parts := strings.Split(encoded, "$")
-	if len(parts) != 4 || parts[0] != passwordHashVersion {
+	if len(parts) != 4 || (parts[0] != passwordHashVersion && parts[0] != legacyPasswordHashVersion) {
 		return false
 	}
 	iterations, err := strconv.Atoi(parts[1])

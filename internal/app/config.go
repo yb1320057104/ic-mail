@@ -26,6 +26,8 @@ type Config struct {
 	MailWatcherFetchLimit        int    `json:"mail_watcher_fetch_limit"`
 	MailWatcherInitialFetchLimit int    `json:"mail_watcher_initial_fetch_limit"`
 	MailWatcherLookbackHours     int    `json:"mail_watcher_lookback_hours"`
+	MailRetentionDays            int    `json:"mail_retention_days"`
+	MailMaxPerMailbox            int    `json:"mail_max_per_mailbox"`
 	PublicFastSyncWaitMS         int    `json:"public_fast_sync_wait_ms"`
 	PublicSyncMinIntervalMS      int    `json:"public_sync_min_interval_ms"`
 	UpdateEnabled                bool   `json:"update_enabled"`
@@ -60,6 +62,8 @@ func LoadConfig(path string) (Config, error) {
 		MailWatcherFetchLimit:        envPositiveInt("MAIL_WATCHER_FETCH_LIMIT", 8),
 		MailWatcherInitialFetchLimit: envPositiveInt("MAIL_WATCHER_INITIAL_FETCH_LIMIT", 20),
 		MailWatcherLookbackHours:     envPositiveInt("MAIL_WATCHER_LOOKBACK_HOURS", 24),
+		MailRetentionDays:            envPositiveInt("MAIL_RETENTION_DAYS", 60),
+		MailMaxPerMailbox:            envPositiveInt("MAIL_MAX_PER_MAILBOX", 200),
 		PublicFastSyncWaitMS:         envPositiveInt("PUBLIC_FAST_SYNC_WAIT_MS", 600),
 		PublicSyncMinIntervalMS:      envPositiveInt("PUBLIC_SYNC_MIN_INTERVAL_MS", 3000),
 		UpdateEnabled:                envBool("IPM_UPDATE_ENABLED", true),
@@ -145,6 +149,12 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if fromFile.MailWatcherLookbackHours > 0 {
 		cfg.MailWatcherLookbackHours = fromFile.MailWatcherLookbackHours
+	}
+	if fromFile.MailRetentionDays > 0 {
+		cfg.MailRetentionDays = fromFile.MailRetentionDays
+	}
+	if fromFile.MailMaxPerMailbox > 0 {
+		cfg.MailMaxPerMailbox = fromFile.MailMaxPerMailbox
 	}
 	if fromFile.PublicFastSyncWaitMS > 0 {
 		cfg.PublicFastSyncWaitMS = fromFile.PublicFastSyncWaitMS

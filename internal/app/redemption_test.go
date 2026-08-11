@@ -1,0 +1,223 @@
+package app
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestRedemptionPoolRedeemAndRotate(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "user-1"
+	first, err := store.AddMailboxForOwner(owner, "acc-1", "one", "one@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.AddMailboxForOwner(owner, "acc-1", "two", "two@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := store.RedemptionPoolForOwner(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy := map[string]bool{first.ID: true, second.ID: true}
+	if n, err := store.AddRedemptionItems(owner, []string{first.ID, second.ID}, healthy); err != nil || n != 2 {
+		t.Fatalf("add=%d err=%v", n, err)
+	}
+	code, err := store.CreateRedemptionCode(owner, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	used, boxes, err := store.RedeemMailboxes(pool.PublicToken, code.Code, healthy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !used.Used || len(boxes) != 2 {
+		t.Fatalf("unexpected redeem: %#v %d", used, len(boxes))
+	}
+	if _, _, err = store.RedeemMailboxes(pool.PublicToken, code.Code, healthy); err == nil {
+		t.Fatal("one-time code was accepted twice")
+	}
+	old := map[string]string{}
+	for _, m := range boxes {
+		old[m.ID] = m.APIToken
+		if m.ExportedAt.IsZero() {
+			t.Fatal("redeemed mailbox was not marked exported")
+		}
+	}
+	rotated, newBoxes, err := store.RotateRedemptionCode(owner, code.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.RotationCount != 1 || !rotated.Invalidated || len(newBoxes) != 2 {
+		t.Fatalf("unexpected rotation: %#v %d", rotated, len(newBoxes))
+	}
+	for _, m := range newBoxes {
+		if constantTimeEqual(old[m.ID], m.APIToken) {
+			t.Fatalf("token did not rotate for %s", m.ID)
+		}
+		if !m.ExportedAt.IsZero() {
+			t.Fatalf("mailbox %s was not restored to unexported stock", m.ID)
+		}
+	}
+	if _, _, err = store.RedeemMailboxes(pool.PublicToken, code.Code, healthy); err == nil {
+		t.Fatal("invalidated code was accepted")
+	}
+	updatedPool, codes, items := store.RedemptionDataForOwner(owner)
+	if updatedPool.RedeemedCount != 0 || !codes[0].Invalidated {
+		t.Fatalf("pool/code not restored: %#v %#v", updatedPool, codes[0])
+	}
+	for _, item := range items {
+		if !item.RedeemedAt.IsZero() || item.CodeID != "" {
+			t.Fatalf("item not returned to pool: %#v", item)
+		}
+	}
+}
+
+func TestRedemptionPoolDoesNotPartiallyRedeem(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := store.AddMailboxForOwner("u", "a", "one", "one@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.RedemptionPoolForOwner("u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy := map[string]bool{m.ID: true}
+	if _, err = store.AddRedemptionItems("u", []string{m.ID}, healthy); err != nil {
+		t.Fatal(err)
+	}
+	c, err := store.CreateRedemptionCode("u", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = store.RedeemMailboxes(p.PublicToken, c.Code, healthy); err == nil {
+		t.Fatal("expected insufficient stock")
+	}
+	updated, _ := store.FindMailboxByID(m.ID)
+	if !updated.ExportedAt.IsZero() {
+		t.Fatal("partial redemption marked mailbox exported")
+	}
+}
+
+func TestRedeemMultipleCodesAtomically(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "batch-user"
+	healthy := map[string]bool{}
+	mailboxIDs := make([]string, 0, 3)
+	for i, address := range []string{"batch1@icloud.com", "batch2@icloud.com", "batch3@icloud.com"} {
+		m, addErr := store.AddMailboxForOwner(owner, "batch-account", string(rune('a'+i)), address)
+		if addErr != nil {
+			t.Fatal(addErr)
+		}
+		healthy[m.ID] = true
+		mailboxIDs = append(mailboxIDs, m.ID)
+	}
+	pool, err := store.RedemptionPoolForOwner(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, addErr := store.AddRedemptionItems(owner, mailboxIDs, healthy); addErr != nil || n != 3 {
+		t.Fatalf("add=%d err=%v", n, addErr)
+	}
+	first, err := store.CreateRedemptionCode(owner, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateRedemptionCode(owner, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, boxes, err := store.RedeemMultipleCodes(pool.PublicToken, []string{first.Code, second.Code}, healthy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || len(boxes) != 3 {
+		t.Fatalf("codes=%d boxes=%d", len(rows), len(boxes))
+	}
+	seen := map[string]bool{}
+	for _, box := range boxes {
+		if seen[box.ID] || box.ExportedAt.IsZero() {
+			t.Fatalf("invalid batch mailbox: %#v", box)
+		}
+		seen[box.ID] = true
+	}
+}
+
+func TestRedeemMultipleCodesRejectsWholeInvalidBatch(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := store.AddMailboxForOwner("batch-user", "account", "one", "one@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy := map[string]bool{m.ID: true}
+	pool, err := store.RedemptionPoolForOwner("batch-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.AddRedemptionItems("batch-user", []string{m.ID}, healthy); err != nil {
+		t.Fatal(err)
+	}
+	code, err := store.CreateRedemptionCode("batch-user", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = store.RedeemMultipleCodes(pool.PublicToken, []string{code.Code, "not-a-code"}, healthy); err == nil {
+		t.Fatal("expected invalid batch to fail")
+	}
+	updated, _ := store.FindMailboxByID(m.ID)
+	if !updated.ExportedAt.IsZero() {
+		t.Fatal("invalid batch partially exported a mailbox")
+	}
+	_, codes, _ := store.RedemptionDataForOwner("batch-user")
+	if codes[0].Used {
+		t.Fatal("invalid batch partially consumed a code")
+	}
+	if _, _, err = store.RedeemMultipleCodes(pool.PublicToken, []string{code.Code, code.Code}, healthy); err == nil {
+		t.Fatal("expected duplicate code batch to fail")
+	}
+}
+
+func TestRedemptionCodePermanentAndNamedBatch(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.RedemptionPoolForOwner("owner"); err != nil {
+		t.Fatal(err)
+	}
+	permanent, err := store.CreateRedemptionCodes("owner", 1, 2, "永久批次", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range permanent {
+		if code.BatchName != "永久批次" || !code.ExpiresAt.IsZero() {
+			t.Fatalf("unexpected permanent code: %#v", code)
+		}
+	}
+	timed, err := store.CreateRedemptionCodes("owner", 1, 1, "30天批次", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timed[0].ExpiresAt.Before(time.Now().Add(29 * 24 * time.Hour)) {
+		t.Fatalf("timed code expiry is too early: %v", timed[0].ExpiresAt)
+	}
+	if _, err = store.CreateRedemptionCodes("owner", 1, 1, "错误批次", -1); err == nil {
+		t.Fatal("negative validity was accepted")
+	}
+}

@@ -1252,6 +1252,7 @@
         <button class="nav-item" data-view="session" onclick="setActiveView('session')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="4.6"/><path d="m12.4 12.4 7.6 7.6"/><path d="m16.6 16.6 2-2"/></svg></span><span>登录态</span><span class="count-dot" id="navSessionCount">0</span></button>
         <button class="nav-item" data-view="create" onclick="setActiveView('create')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg></span><span>创建邮箱</span></button>
         <button class="nav-item" data-view="mailboxes" onclick="setActiveView('mailboxes')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.4 6.3 6.7A2 2 0 0 1 8.2 5.4h7.6a2 2 0 0 1 1.9 1.3L20 13.4"/><path d="M4 13.4h4.2l1.3 2.2h5l1.3-2.2H20v3.7A1.9 1.9 0 0 1 18.1 19.2H5.9A1.9 1.9 0 0 1 4 17.1z"/></svg></span><span>邮箱池</span><span class="count-dot" id="navMailboxCount">0</span></button>
+        <button class="nav-item" data-view="redemption" onclick="setActiveView('redemption')"><span class="nav-ico">⇄</span><span>兑换隐私邮箱</span><span class="count-dot" id="navRedemptionCount">0</span></button>
       </nav>
     </aside>
 
@@ -1504,6 +1505,7 @@
             <select id="batchMailboxAPIExportType" title="邮箱 API 导出方式"><option value="json">JSON取码地址</option><option value="visual">邮件可视化取码地址</option><option value="content">邮件内容取码地址</option></select>
             <button onclick="batchExportMailboxes('api')">按所选方式导出 API</button>
             <button onclick="batchExportMailboxes('email')">只导出邮箱</button>
+            <button onclick="addSelectedToRedemptionPool()">加入兑换池</button>
             <button class="danger" onclick="batchDeleteMailboxes()">删除选中邮箱</button>
           </div>
           <div id="mailboxAccountTabs" class="account-tabs"></div>
@@ -1513,6 +1515,17 @@
               <tbody id="mailboxes"></tbody>
             </table>
           </div>
+        </section>
+
+        <section class="view-section panel" data-view="redemption">
+          <div class="panel-head"><div><h2>兑换隐私邮箱</h2><p>把未导出、状态可用且可正常接码的邮箱加入专属兑换池，并生成一次性兑换码。</p></div><button class="primary" onclick="loadRedemptionPool()">刷新兑换池</button></div>
+          <section class="grid"><div class="card"><strong id="redemptionStock">0</strong><span>当前可兑换</span></div><div class="card"><strong id="redemptionRedeemed">0</strong><span>累计已兑换</span></div><div class="card"><strong id="redemptionEligible">0</strong><span>可加入邮箱</span></div></section>
+          <div class="field-grid"><label class="full">专属兑换链接<div class="toolbar"><input id="redemptionPoolURL" readonly style="flex:1"><button onclick="copyRedemptionPoolURL()">复制链接</button><button onclick="openRedemptionPool()">打开页面</button></div></label><label>批次名称<input id="redemptionBatchName" placeholder="例如：8月活动"></label><label>生成兑换码数量<input id="redemptionCodeCount" type="number" min="1" max="1000" value="1"></label><label>每个兑换码发放数量<input id="redemptionQuantity" type="number" min="1" max="500" value="1"></label><label>有效期类型<select id="redemptionValidityType" onchange="toggleRedemptionValidity()"><option value="days">按天数过期</option><option value="permanent">永久有效</option></select></label><label id="redemptionValidDaysField">有效天数<input id="redemptionValidDays" type="number" min="1" max="3650" value="30"></label><label>导出批次<select id="redemptionExportBatch"><option value="">全部未使用批次</option></select></label><div class="toolbar"><button class="primary" onclick="createRedemptionCode()">批量生成兑换码</button><button onclick="exportRedemptionCodes()">按所选批次导出 TXT</button><button onclick="addAllEligibleToRedemptionPool()">全部符合条件的邮箱加入池</button></div></div>
+          <div class="notice">兑换成功会把邮箱标记为“已导出”并移出库存；撤销该批兑换并重置地址后，旧链接和原兑换码立即失效，邮箱恢复到兑换池。</div>
+          <div class="panel-head"><div><h3>兑换码记录</h3><p>可按兑换码重置整批取码地址，防止旧地址继续被使用。</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>兑换码 / 批次</th><th>数量 / 有效期</th><th>状态</th><th>生成 / 使用时间</th><th>重置</th></tr></thead><tbody id="redemptionCodeRows"></tbody></table></div>
+          <div class="panel-head"><div><h3>池内邮箱</h3><p>仅展示已加入的邮箱及其当前库存状态。</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>邮箱</th><th>接码状态</th><th>池状态</th><th>加入 / 兑换时间</th><th>操作</th></tr></thead><tbody id="redemptionItemRows"></tbody></table></div>
         </section>
 
       </main>
@@ -1539,10 +1552,10 @@
     </section>
   </div>
   <div id="announcementModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="announcementTitle">
-    <section class="modal" onclick="event.stopPropagation()" style="width:min(620px,94vw)">
-      <div class="panel-head"><div><h2 id="announcementTitle">平台公告</h2><p id="announcementTime">管理员发布</p></div></div>
-      <div id="announcementContent" style="padding:20px;white-space:pre-wrap;word-break:break-word;line-height:1.8;color:var(--text)"></div>
-      <div class="toolbar"><button id="announcementReadButton" class="primary" type="button" onclick="markCurrentAnnouncementRead()">我已阅读</button></div>
+    <section class="modal" onclick="event.stopPropagation()" style="width:min(620px,94vw);max-height:88vh;display:flex;flex-direction:column">
+      <div class="panel-head"><div><h2 id="announcementTitle">平台公告</h2><p id="announcementTime">管理员发布</p></div><button class="ghost" type="button" onclick="closeCurrentAnnouncement()" aria-label="关闭公告">关闭</button></div>
+      <div id="announcementContent" style="padding:20px;white-space:pre-wrap;word-break:break-word;line-height:1.8;color:var(--text);overflow:auto;min-height:0"></div>
+      <div class="toolbar"><button id="announcementReadButton" class="primary" type="button" onclick="markCurrentAnnouncementRead()">我已阅读并关闭</button></div>
     </section>
   </div>
   <div id="sessionAccountModal" class="modal-backdrop" onclick="closeSessionAccountModal(event)" role="dialog" aria-modal="true" aria-labelledby="sessionAccountModalTitle">
@@ -1661,13 +1674,15 @@
       overview: ['概览', '查看账号、邮箱和验证码数量。'],
       session: ['登录态', '保存和检测 Apple 登录态。'],
       create: ['创建邮箱', '按已保存账号创建 Hide My Email 地址。'],
-      mailboxes: ['邮箱池', '搜索、复制 API、取码和维护邮箱状态。']
+      mailboxes: ['邮箱池', '搜索、复制 API、取码和维护邮箱状态。'],
+      redemption: ['兑换隐私邮箱', '管理专属兑换池、一次性兑换码和已兑换批次。']
     };
     const viewDescriptions = {
 	  overview:'查看账号、邮箱和验证码总量，并通过快捷入口进入常用任务。',
 	  session:'管理多个 Apple 登录态；按状态和接口筛选账号，展开查看每个登录态所属的子邮箱。',
 	  create:'选择一个或多个可用 Apple 账号，配置新旧接口策略，手动或定时创建隐私邮箱。',
-	  mailboxes:'组合搜索全部隐私邮箱；按账号、邮箱状态、API、iCloud 和收件数量筛选并执行取码、同步、导出与状态维护。'
+	  mailboxes:'组合搜索全部隐私邮箱；按账号、邮箱状态、API、iCloud 和收件数量筛选并执行取码、同步、导出与状态维护。',
+	  redemption:'将未导出且可正常接码的邮箱加入专属兑换池，生成定量一次性兑换码，并管理已兑换批次的取码地址。'
 	};
 
     function setActiveView(view) {
@@ -1687,6 +1702,7 @@
       } catch (_) {}
       activeView = normalized;
       if (normalized === 'mailboxes') renderMailboxes();
+      if (normalized === 'redemption') loadRedemptionPool().catch(err => log('加载兑换池失败：'+err.message));
       renderGlobalLogs();
     }
 
@@ -1847,9 +1863,11 @@
       } catch (err) {
         log('公告已读确认失败：' + err.message);
       } finally {
-        button.disabled = false; button.textContent = '我已阅读';
+        button.disabled = false; button.textContent = '我已阅读并关闭';
       }
     }
+
+    function closeCurrentAnnouncement() { markCurrentAnnouncementRead(); }
 
     function openRenewInviteModal(voluntary = true) {
 	  const expired = !!(currentUser && currentUser.expired);
@@ -2682,7 +2700,28 @@
       renderICloudSessions(lastICloudSessions);
       updateNavCounts(status);
       await loadMailboxPage({silent: true});
+      if (activeView === 'redemption') await loadRedemptionPool();
     }
+
+    let lastRedemptionPool = null;
+    async function loadRedemptionPool() {
+      const data = await api('/api/redemption-pool'); lastRedemptionPool=data;
+      $('redemptionStock').textContent=data.pool.stock||0;$('redemptionRedeemed').textContent=data.pool.redeemed||0;$('redemptionEligible').textContent=data.eligible_count||0;$('redemptionPoolURL').value=data.pool.url||'';
+      if ($('navRedemptionCount')) $('navRedemptionCount').textContent=data.pool.stock||0;
+      const batches=[...new Set((data.codes||[]).map(c=>c.batch_name).filter(Boolean))];const batchSelect=$('redemptionExportBatch'),selectedBatch=batchSelect.value;batchSelect.innerHTML='<option value="">全部未使用批次</option>'+batches.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');if(batches.includes(selectedBatch))batchSelect.value=selectedBatch;
+      $('redemptionCodeRows').innerHTML=(data.codes||[]).map(c=>`<tr><td><code>${esc(c.code)}</code><br><span class="muted">批次：${esc(c.batch_name||'未命名')}</span><br><button onclick="copyText('${esc(c.code)}')">复制</button></td><td>${c.quantity}<br><span class="muted">${c.expires_at?'到期：'+esc(c.expires_at):'永久有效'}</span></td><td>${c.invalidated?'<span class="badge danger">已失效</span>':c.used?'<span class="badge warn">已兑换</span>':'<span class="badge ok">未使用</span>'}</td><td>${esc(c.created_at||'-')}<br>${esc(c.used_at||c.invalidated_at||'-')}</td><td>${c.used&&!c.invalidated?`<select id="rotateType-${esc(c.id)}"><option value="json">JSON取码</option><option value="visual">可视化邮件</option><option value="content">邮件内容</option></select><button onclick="rotateRedemptionCode('${esc(c.code)}','${esc(c.id)}')">撤销兑换并重置地址</button>`:c.invalidated?'邮箱已恢复到兑换池':'-'}</td></tr>`).join('')||'<tr><td colspan="5">暂无兑换码</td></tr>';
+      $('redemptionItemRows').innerHTML=(data.items||[]).map(i=>`<tr><td>${esc(i.mailbox.email)}</td><td>${i.mailbox.can_receive_code?'<span class="badge ok">正常</span>':`<span class="badge danger" title="${esc(i.mailbox.receive_code_error||'')}">异常</span>`}</td><td>${i.redeemed_at?'<span class="badge warn">已兑换</span>':i.available?'<span class="badge ok">库存中</span>':'<span class="badge danger">暂不可兑换</span>'}</td><td>${esc(i.added_at||'-')}<br>${esc(i.redeemed_at||'-')}</td><td>${i.redeemed_at?'-':`<button onclick="removeRedemptionItem('${esc(i.mailbox.id)}')">移出</button>`}</td></tr>`).join('')||'<tr><td colspan="5">兑换池暂无邮箱</td></tr>';
+    }
+    async function addSelectedToRedemptionPool(){const ids=[...selectedMailboxIDs];if(!ids.length){alert('请先在邮箱池勾选邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids})});selectedMailboxIDs.clear();log('所选符合条件的邮箱已加入兑换池');await loadMailboxPage();}
+    async function addAllEligibleToRedemptionPool(){const d=await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({add_all_eligible:true})});log(`已加入 ${d.added} 个邮箱`);await loadRedemptionPool()}
+    async function removeRedemptionItem(id){await api('/api/redemption-pool/items',{method:'DELETE',body:JSON.stringify({mailbox_ids:[id]})});await loadRedemptionPool()}
+    function toggleRedemptionValidity(){const permanent=$('redemptionValidityType').value==='permanent';$('redemptionValidDaysField').hidden=permanent;$('redemptionValidDays').disabled=permanent}
+    async function createRedemptionCode(){const quantity=Number($('redemptionQuantity').value||0),count=Number($('redemptionCodeCount').value||1),batch_name=$('redemptionBatchName').value.trim(),valid_days=$('redemptionValidityType').value==='permanent'?0:Number($('redemptionValidDays').value||0);const d=await api('/api/redemption-pool/codes',{method:'POST',body:JSON.stringify({quantity,count,batch_name,valid_days})});await writeClipboard((d.codes||[d.code]).join('\n'));alert(`已生成 ${d.count||1} 个${valid_days===0?'永久有效':'有效期 '+valid_days+' 天'}兑换码并复制。`);await loadRedemptionPool()}
+    async function rotateRedemptionCode(code,id){if(!confirm('确认撤销该批兑换？旧取码地址和原兑换码会失效，邮箱将恢复到兑换池。'))return;const d=await api('/api/redemption-pool/codes/rotate',{method:'POST',body:JSON.stringify({code,api_type:$(`rotateType-${id}`).value})});alert(`已重置 ${d.rotated} 个取码地址，邮箱已恢复到兑换池，原兑换码已失效。`);await loadRedemptionPool()}
+    function exportRedemptionCodes(){const batch=$('redemptionExportBatch').value;location.href='/api/redemption-pool/codes/export'+(batch?'?batch='+encodeURIComponent(batch):'')}
+    async function copyRedemptionPoolURL(){await writeClipboard($('redemptionPoolURL').value);log('专属兑换链接已复制')}
+    function openRedemptionPool(){window.open($('redemptionPoolURL').value,'_blank','noopener')}
+    async function copyText(text){await writeClipboard(text)}
 
     function ensureSchedulerPolling() {
       if (schedulerPollTimer) return;
@@ -3018,6 +3057,7 @@
               </span>
               <button id="verifyButton-${esc(row.id)}" onclick="verifyMailbox('${row.id}')">${verifyButtonText(row.id)}</button>
               <button onclick="viewMailbox('${row.id}')">查看邮箱</button>
+              <button onclick="rotateMailboxAPI('${row.id}')" title="生成新 API key，旧地址立即失效">重置API</button>
               <button class="${syncButtonClass(row.id)}" onclick="syncMailbox('${row.id}')" ${syncButtonDisabled(row.id)}>${syncButtonText(row.id)}</button>
               <button onclick="cleanRemoteMailbox('${row.id}')" title="把本地已同步过的远端邮件移到废纸篓，并清空当前 iCloud 废纸篓">删除邮件</button>
               <select onchange="setMailboxStatus('${row.id}', this.value)">
@@ -3869,6 +3909,8 @@
       log('已停用：' + id);
       await refresh();
     }
+
+    async function rotateMailboxAPI(id){const days=Number(prompt('请输入新 API 地址有效天数（1-3650）','180'));if(!days)return;if(!confirm('确认重置该邮箱 API？旧地址会立即失效。'))return;const d=await api(`/api/mailboxes/${encodeURIComponent(id)}/api-token/rotate`,{method:'POST',body:JSON.stringify({valid_days:days})});await writeClipboard(d.mailbox.api_url);alert('新 API 地址已复制，旧地址已失效。');await loadMailboxPage()}
 
     async function deleteMailbox(id) {
       if (!confirm('确认删除这个 API 绑定？')) return;

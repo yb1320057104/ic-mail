@@ -37,7 +37,49 @@ type State struct {
 	Announcements     []Announcement     `json:"announcements,omitempty"`
 	AnnouncementReads []AnnouncementRead `json:"announcement_reads,omitempty"`
 	AutoLoginBindings []AutoLoginBinding `json:"auto_login_bindings,omitempty"`
+	RedemptionPools   []RedemptionPool   `json:"redemption_pools,omitempty"`
+	RedemptionCodes   []RedemptionCode   `json:"redemption_codes,omitempty"`
+	RedemptionItems   []RedemptionItem   `json:"redemption_items,omitempty"`
 	RecycleBin        []RecycleBinItem   `json:"recycle_bin,omitempty"`
+}
+
+type RedemptionPool struct {
+	ID            string    `json:"id"`
+	OwnerID       string    `json:"owner_id"`
+	PublicToken   string    `json:"public_token"`
+	Enabled       bool      `json:"enabled"`
+	RedeemedCount int       `json:"redeemed_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type RedemptionCode struct {
+	ID                 string    `json:"id"`
+	PoolID             string    `json:"pool_id"`
+	OwnerID            string    `json:"owner_id"`
+	Code               string    `json:"code"`
+	CodeHash           string    `json:"code_hash"`
+	Quantity           int       `json:"quantity"`
+	BatchName          string    `json:"batch_name,omitempty"`
+	ExpiresAt          time.Time `json:"expires_at,omitempty"`
+	RedeemedIP         string    `json:"redeemed_ip,omitempty"`
+	Used               bool      `json:"used"`
+	Invalidated        bool      `json:"invalidated,omitempty"`
+	RedeemedMailboxIDs []string  `json:"redeemed_mailbox_ids,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UsedAt             time.Time `json:"used_at,omitempty"`
+	RotatedAt          time.Time `json:"rotated_at,omitempty"`
+	InvalidatedAt      time.Time `json:"invalidated_at,omitempty"`
+	RotationCount      int       `json:"rotation_count,omitempty"`
+}
+
+type RedemptionItem struct {
+	PoolID     string    `json:"pool_id"`
+	OwnerID    string    `json:"owner_id"`
+	MailboxID  string    `json:"mailbox_id"`
+	AddedAt    time.Time `json:"added_at"`
+	RedeemedAt time.Time `json:"redeemed_at,omitempty"`
+	CodeID     string    `json:"code_id,omitempty"`
 }
 
 type RecycleBinItem struct {
@@ -170,6 +212,7 @@ type Mailbox struct {
 	Label             string    `json:"label"`
 	Email             string    `json:"email"`
 	APIToken          string    `json:"api_token"`
+	APITokenExpiresAt time.Time `json:"api_token_expires_at,omitempty"`
 	APIActive         bool      `json:"api_active"`
 	ICloudActive      bool      `json:"icloud_active"`
 	ReceiveCount      int       `json:"receive_count"`
@@ -400,6 +443,7 @@ type publicMailbox struct {
 	Label              string `json:"label"`
 	Email              string `json:"email"`
 	APITokenMask       string `json:"api_token_mask"`
+	APITokenExpiresAt  string `json:"api_token_expires_at,omitempty"`
 	APIURL             string `json:"api_url"`
 	APIActive          bool   `json:"api_active"`
 	ICloudActive       bool   `json:"icloud_active"`
