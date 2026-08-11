@@ -385,9 +385,15 @@ func (s *Server) checkAllIMAPLoginStates(ctx context.Context) {
 			continue
 		}
 		checkedAt := time.Now()
+		metricStarted := time.Now()
 		checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := s.checkSavedIMAPState(checkCtx, imapState)
 		cancel()
+		metricMessage := "取码登录正常"
+		if err != nil {
+			metricMessage = err.Error()
+		}
+		_ = s.store.RecordRuntimeMetric("imap", err == nil, time.Since(metricStarted), metricMessage)
 		imapState.LastCheckedAt = checkedAt
 		imapState.LastCheckOK = err == nil
 		if err != nil {
@@ -1166,6 +1172,7 @@ func (s *Server) handleAdminOperations(w http.ResponseWriter, _ *http.Request) {
 	tasks := append([]operationTask(nil), s.operationTasks...)
 	s.operationMu.Unlock()
 	backups, _ := s.store.Backups()
+	metrics, _ := s.store.RuntimeMetrics()
 	dbSize := int64(0)
 	if info, err := os.Stat(s.store.DatabasePath()); err == nil {
 		dbSize = info.Size()
@@ -1193,7 +1200,23 @@ func (s *Server) handleAdminOperations(w http.ResponseWriter, _ *http.Request) {
 	if time.Since(s.startedAt) < 5*time.Minute {
 		alerts = append(alerts, "服务在最近 5 分钟内启动或重启")
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "uptime_seconds": int64(time.Since(s.startedAt).Seconds()), "database_path": s.store.DatabasePath(), "database_size": dbSize, "disk_total": diskTotal, "disk_free": diskFree, "users": len(state.Users), "accounts": len(state.Accounts), "mailboxes": len(state.Mailboxes), "messages": len(state.Messages), "unhealthy_sessions": unhealthy, "backup_count": len(backups), "recycle_count": len(state.RecycleBin), "alerts": alerts, "tasks": tasks, "backups": backups, "recycle_bin": s.store.RecycleBin()})
+	for _, metric := range metrics {
+		switch metric.Kind {
+		case "imap":
+			if metric.Total >= 5 && metric.FailureRate > 20 {
+				alerts = append(alerts, fmt.Sprintf("IMAP 异常率 %.1f%%，超过 20%%", metric.FailureRate))
+			}
+		case "keepalive_apple", "keepalive_icloud":
+			if metric.Total >= 5 && metric.SuccessRate < 80 {
+				alerts = append(alerts, fmt.Sprintf("%s 成功率 %.1f%%，低于 80%%", metric.Kind, metric.SuccessRate))
+			}
+		case "code":
+			if metric.Total >= 5 && metric.AverageMS > 10000 {
+				alerts = append(alerts, fmt.Sprintf("平均取码耗时 %.1f 秒，超过 10 秒", float64(metric.AverageMS)/1000))
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "uptime_seconds": int64(time.Since(s.startedAt).Seconds()), "database_path": s.store.DatabasePath(), "database_size": dbSize, "disk_total": diskTotal, "disk_free": diskFree, "users": len(state.Users), "accounts": len(state.Accounts), "mailboxes": len(state.Mailboxes), "messages": len(state.Messages), "unhealthy_sessions": unhealthy, "backup_count": len(backups), "recycle_count": len(state.RecycleBin), "alerts": alerts, "tasks": tasks, "backups": backups, "recycle_bin": s.store.RecycleBin(), "runtime_metrics": metrics})
 }
 
 func (s *Server) handleAdminVerify(w http.ResponseWriter, r *http.Request) {
@@ -2105,7 +2128,13 @@ func (s *Server) handleCheckICloudIMAPLogin(w http.ResponseWriter, r *http.Reque
 			continue
 		}
 		checks++
+		metricStarted := time.Now()
 		checkErr := s.checkSavedIMAPState(r.Context(), state)
+		metricMessage := "手动检测正常"
+		if checkErr != nil {
+			metricMessage = checkErr.Error()
+		}
+		_ = s.store.RecordRuntimeMetric("imap", checkErr == nil, time.Since(metricStarted), metricMessage)
 		if checkErr != nil {
 			failed++
 			lastErr = checkErr
@@ -3446,6 +3475,12 @@ func cleanMailboxVisualPlainText(body string) string {
 }
 
 func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbox Mailbox) {
+	metricStarted := time.Now()
+	metricSuccess := false
+	metricMessage := "暂未收到验证码"
+	defer func() {
+		_ = s.store.RecordRuntimeMetric("code", metricSuccess, time.Since(metricStarted), metricMessage)
+	}()
 	if !s.authorized(r, mailbox) {
 		writeError(w, http.StatusUnauthorized, errCode("invalid_api_key", "API Key 错误", false))
 		return
@@ -3480,14 +3515,16 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 	messages := s.store.MessagesForMailbox(mailbox.ID)
 	if cacheOnly {
 		if msg, code, ok := latestMailboxCode(messages, codeAfter, keyword, now); ok {
-			s.writeMailboxCodeSuccess(w, mailbox, msg, code, "", false)
+			metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, "", false)
+			metricMessage = "缓存取码成功"
 			return
 		}
 		writeError(w, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
 		return
 	}
 	if msg, code, ok := latestMailboxCodeSkipping(messages, codeAfter, keyword, now, skipMessageID); ok {
-		s.writeMailboxCodeSuccess(w, mailbox, msg, code, "", !peekOnly)
+		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, "", !peekOnly)
+		metricMessage = "本地取码成功"
 		return
 	}
 
@@ -3496,32 +3533,36 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 		s.logger.Warn("icloud sync failed", "mailbox_id", mailbox.ID, "err", result.syncErr)
 	}
 	if result.ok {
-		s.writeMailboxCodeSuccess(w, mailbox, result.message, result.code, staleCacheMessage(result.syncErr), !peekOnly)
+		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, result.message, result.code, staleCacheMessage(result.syncErr), !peekOnly)
+		metricMessage = "同步取码成功"
 		return
 	}
 	if msg, code, ok := latestMailboxCodeSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID); ok {
-		s.writeMailboxCodeSuccess(w, mailbox, msg, code, staleCacheMessage(result.syncErr), !peekOnly)
+		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, staleCacheMessage(result.syncErr), !peekOnly)
+		metricMessage = "同步后取码成功"
 		return
 	}
 	if result.syncErr != nil && allowStale {
 		if msg, code, ok := latestMailboxCodeSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID); ok {
-			s.writeMailboxCodeSuccess(w, mailbox, msg, code, "取码同步失败，当前验证码来自本地缓存", !peekOnly)
+			metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, "取码同步失败，当前验证码来自本地缓存", !peekOnly)
+			metricMessage = "旧缓存取码成功"
 			return
 		}
 	}
 	if result.syncErr != nil && !allowStale {
+		metricMessage = result.syncErr.Error()
 		writeError(w, http.StatusBadGateway, errCode("mail_sync_failed", "同步验证码邮件失败，已拒绝返回本地旧验证码；请检查取码登录或稍后重试", true))
 		return
 	}
 	writeError(w, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
 }
 
-func (s *Server) writeMailboxCodeSuccess(w http.ResponseWriter, mailbox Mailbox, msg Message, code string, staleMessage string, markServed bool) {
+func (s *Server) writeMailboxCodeSuccess(w http.ResponseWriter, mailbox Mailbox, msg Message, code string, staleMessage string, markServed bool) bool {
 	if markServed {
 		if _, err := s.store.SetMailboxLastCode(mailbox.ID, msg.ID, time.Now()); err != nil {
 			s.logger.Warn("remember mailbox code failed", "mailbox_id", mailbox.ID, "message_id", msg.ID, "err", err)
 			writeError(w, http.StatusInternalServerError, errCode("remember_code_failed", "保存验证码发放记录失败，请稍后重试", true))
-			return
+			return false
 		}
 	}
 	payload := map[string]any{
@@ -3537,6 +3578,7 @@ func (s *Server) writeMailboxCodeSuccess(w http.ResponseWriter, mailbox Mailbox,
 		payload["sync_error"] = staleMessage
 	}
 	writeJSON(w, http.StatusOK, payload)
+	return true
 }
 
 func staleCacheMessage(err error) string {
@@ -3869,8 +3911,8 @@ func (s *Server) runAppleAccountKeepAlive(ctx context.Context) {
 		s.appleAccountKeepAliveMu.Unlock()
 	}()
 
-	s.keepAliveAppleAccountRound(ctx)
-	s.keepAliveICloudWebRound(ctx)
+	s.keepAliveAppleAccountRoundWithForce(ctx, true)
+	s.keepAliveICloudWebRoundWithForce(ctx, true)
 	interval := s.appleAccountKeepAliveInterval
 	if interval <= 0 {
 		interval = appleAccountKeepAliveDefaultInterval
@@ -3889,6 +3931,10 @@ func (s *Server) runAppleAccountKeepAlive(ctx context.Context) {
 }
 
 func (s *Server) keepAliveICloudWebRound(ctx context.Context) {
+	s.keepAliveICloudWebRoundWithForce(ctx, false)
+}
+
+func (s *Server) keepAliveICloudWebRoundWithForce(ctx context.Context, force bool) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -3901,7 +3947,7 @@ func (s *Server) keepAliveICloudWebRound(ctx context.Context) {
 			continue
 		}
 		due := state.KeepAliveNextTry.IsZero() || !now.Before(state.KeepAliveNextTry)
-		if !due {
+		if !due && !force {
 			continue
 		}
 		workers <- struct{}{}
@@ -3914,8 +3960,14 @@ func (s *Server) keepAliveICloudWebRound(ctx context.Context) {
 			state.KeepAliveError = ""
 			s.saveICloudWebKeepAliveState(session, state)
 			callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			metricStarted := time.Now()
 			err := NewICloudClient().CheckICloudWebSession(callCtx, session)
 			cancel()
+			metricMessage := "旧接口保活正常"
+			if err != nil {
+				metricMessage = err.Error()
+			}
+			_ = s.store.RecordRuntimeMetric("keepalive_icloud", err == nil, time.Since(metricStarted), metricMessage)
 			checkedAt := time.Now()
 			state.LastCheckedAt = checkedAt
 			state.LastCheckOK = err == nil
@@ -3992,6 +4044,10 @@ func appleAccountKeepAliveScanInterval(base time.Duration) time.Duration {
 }
 
 func (s *Server) keepAliveAppleAccountRound(ctx context.Context) {
+	s.keepAliveAppleAccountRoundWithForce(ctx, false)
+}
+
+func (s *Server) keepAliveAppleAccountRoundWithForce(ctx context.Context, force bool) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -4017,7 +4073,7 @@ func (s *Server) keepAliveAppleAccountRound(ctx context.Context) {
 			continue
 		}
 		interval := appleAccountKeepAliveIntervalForSession(session, baseInterval)
-		if !appleAccountKeepAliveDue(state, now, interval) {
+		if !force && !appleAccountKeepAliveDue(state, now, interval) {
 			continue
 		}
 		workers <- struct{}{}
@@ -4049,8 +4105,14 @@ func (s *Server) keepAliveAppleAccountSession(ctx context.Context, session IClou
 	}
 	defer release()
 	callCtx, cancel := context.WithTimeout(ctx, appleAccountKeepAliveTimeout)
+	metricStarted := time.Now()
 	next, err := keepAliveFn(callCtx, state)
 	cancel()
+	metricMessage := "新接口保活正常"
+	if err != nil {
+		metricMessage = err.Error()
+	}
+	_ = s.store.RecordRuntimeMetric("keepalive_apple", err == nil, time.Since(metricStarted), metricMessage)
 	if err != nil {
 		next.KeepAliveFailures = state.KeepAliveFailures + 1
 		next.KeepAliveLastTry = state.KeepAliveLastTry

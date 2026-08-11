@@ -80,3 +80,24 @@ func TestBackupRestoreReturnsPreviousSQLiteState(t *testing.T) {
 		t.Fatalf("restored users=%+v", users)
 	}
 }
+
+func TestRuntimeMetricsPersistRatesAndLatency(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.RecordRuntimeMetric("imap", true, 120*time.Millisecond, "正常"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRuntimeMetric("imap", false, 380*time.Millisecond, "连接失败"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewFileStore(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := reopened.RuntimeMetrics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Total != 2 || rows[0].Success != 1 || rows[0].Failure != 1 || rows[0].SuccessRate != 50 || rows[0].FailureRate != 50 || rows[0].AverageMS != 250 || rows[0].MaxMS != 380 || rows[0].LastOK {
+		t.Fatalf("metric=%+v", rows)
+	}
+}

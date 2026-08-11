@@ -1,7 +1,6 @@
 package app
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,7 +23,7 @@ func (s *FileStore) CreateBackup(label string) (BackupInfo, error) {
 	if err := s.saveSQLiteLocked(); err != nil {
 		return BackupInfo{}, err
 	}
-	db, err := sql.Open("sqlite", s.dbPath)
+	db, err := s.sqliteConnection()
 	if err != nil {
 		return BackupInfo{}, err
 	}

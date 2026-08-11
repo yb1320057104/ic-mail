@@ -29,6 +29,7 @@ func (s *FileStore) openSQLite() error {
 		`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS backups (id TEXT PRIMARY KEY, kind TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS task_runs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS runtime_metrics (kind TEXT PRIMARY KEY, total INTEGER NOT NULL DEFAULT 0, success INTEGER NOT NULL DEFAULT 0, failure INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0, max_duration_ms INTEGER NOT NULL DEFAULT 0, last_duration_ms INTEGER NOT NULL DEFAULT 0, last_ok INTEGER NOT NULL DEFAULT 0, last_message TEXT NOT NULL DEFAULT '', last_at TEXT NOT NULL DEFAULT '')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			_ = db.Close()
@@ -38,13 +39,26 @@ func (s *FileStore) openSQLite() error {
 	return nil
 }
 
+func (s *FileStore) sqliteConnection() (*sql.DB, error) {
+	db, err := sql.Open("sqlite", s.dbPath)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 func (s *FileStore) loadSQLiteLocked() (bool, error) {
 	if _, err := os.Stat(s.dbPath); errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	} else if err != nil {
 		return false, err
 	}
-	db, err := sql.Open("sqlite", s.dbPath)
+	db, err := s.sqliteConnection()
 	if err != nil {
 		return false, err
 	}
@@ -94,7 +108,7 @@ func (s *FileStore) loadSQLiteLocked() (bool, error) {
 }
 
 func (s *FileStore) saveSQLiteLocked() error {
-	db, err := sql.Open("sqlite", s.dbPath)
+	db, err := s.sqliteConnection()
 	if err != nil {
 		return err
 	}
