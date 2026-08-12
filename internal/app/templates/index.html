@@ -2750,7 +2750,7 @@
       if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '正在检测新接口和旧接口登录态...';
       if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '正在检测...';
       try {
-        const data = await api('/api/icloud/session/check', {method:'POST', body:'{}'});
+        const data = await api('/api/icloud/session/check', {method:'POST', showLoading: !options.auto, loadingText:'正在检测登录态，请稍候...', body:'{}'});
         lastICloudSessions = data.sessions || (data.session && data.session.saved ? [data.session] : []);
         renderICloudSessions(lastICloudSessions);
         if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = data.message || '登录态检测完成';
