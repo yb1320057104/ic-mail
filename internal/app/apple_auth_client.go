@@ -1127,6 +1127,15 @@ func isAppleTransientNetworkError(err error) bool {
 	}
 	var coded codedError
 	if errors.As(err, &coded) {
+		if coded.code != "apple_account_api_failed" && coded.code != "apple_protocol_http_error" {
+			return false
+		}
+		text := strings.ToLower(coded.message)
+		for _, status := range []string{"http 429", "http 502", "http 503", "http 504"} {
+			if strings.Contains(text, status) {
+				return true
+			}
+		}
 		return false
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, context.DeadlineExceeded) {
@@ -1156,6 +1165,14 @@ func isAppleTransientNetworkError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isAppleTemporaryServiceError(err error) bool {
+	return isAppleTransientNetworkError(err)
+}
+
+func shouldTriggerAppleAutoLogin(err error) bool {
+	return isCodedError(err, "apple_account_auth_failed") || isCodedError(err, "apple_account_session_missing") || isCodedError(err, "icloud_session_expired")
 }
 
 func (s *appleAuthSession) extract(resp *http.Response) {

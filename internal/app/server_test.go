@@ -368,6 +368,26 @@ func TestAppleTransientNetworkErrorDetection(t *testing.T) {
 	}
 }
 
+func TestAppleHTTP503IsTemporaryAndDoesNotTriggerAutoLogin(t *testing.T) {
+	err := appleAccountAPIError(http.StatusServiceUnavailable, []byte(`<html><h1>503 Service Temporarily Unavailable</h1></html>`), "刷新管理 token")
+	if !isAppleTemporaryServiceError(err) {
+		t.Fatalf("503 was not classified temporary: %v", err)
+	}
+	if shouldTriggerAppleAutoLogin(err) {
+		t.Fatal("503 must not trigger automatic SMS login")
+	}
+	status, next := appleAccountKeepAliveRetry(err, 1, time.Unix(1000, 0))
+	if !strings.Contains(status, "未判定失效") || next.Before(time.Unix(1060, 0)) {
+		t.Fatalf("status=%q next=%s", status, next)
+	}
+}
+
+func TestExplicitAppleAuthFailureTriggersAutoLogin(t *testing.T) {
+	if !shouldTriggerAppleAutoLogin(errCode("apple_account_auth_failed", "session expired", true)) {
+		t.Fatal("explicit auth failure should trigger automatic login")
+	}
+}
+
 func TestRetryAppleTransientRetriesEOF(t *testing.T) {
 	attempts := 0
 	err := retryAppleTransient(t.Context(), func() error {

@@ -2622,9 +2622,13 @@ func checkSavedLoginStatesWithIMAP(ctx context.Context, client *ICloudClient, se
 		state, _ := appleAccountLoginState(session)
 		if err != nil {
 			lastErr = err
-			state.LastCheckedAt = checkedAt
-			state.LastCheckOK = false
-			state.LastStatusMessage = "新接口登录态异常：" + err.Error()
+			if isAppleTemporaryServiceError(err) {
+				state.LastStatusMessage = "Apple 服务暂时不可用，本次检测未判定登录态失效；系统将自动退避重试"
+			} else {
+				state.LastCheckedAt = checkedAt
+				state.LastCheckOK = false
+				state.LastStatusMessage = "新接口登录态异常：" + err.Error()
+			}
 			session = withAppleAccountLoginState(session, state)
 			parts = append(parts, "新接口异常")
 		} else {
@@ -4677,7 +4681,9 @@ func (s *Server) keepAliveAppleAccountSession(ctx context.Context, session IClou
 		next.KeepAliveError = keepAliveChineseError(err)
 		next.KeepAliveStatus, next.KeepAliveNextTry = appleAccountKeepAliveRetry(err, next.KeepAliveFailures, time.Now())
 		s.saveAppleAccountKeepAliveState(session, next)
-		go s.tryAutoLogin(withAppleAccountLoginState(session, next))
+		if shouldTriggerAppleAutoLogin(err) {
+			go s.tryAutoLogin(withAppleAccountLoginState(session, next))
+		}
 		if s.logger != nil {
 			s.logger.Warn("apple account keepalive failed", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "apple_id", session.AppleID, "err", err)
 		}
@@ -4709,6 +4715,18 @@ func (s *Server) saveAppleAccountKeepAliveState(session ICloudSession, state Log
 }
 
 func appleAccountKeepAliveRetry(err error, failures int, now time.Time) (string, time.Time) {
+	if isAppleTemporaryServiceError(err) {
+		delays := []time.Duration{time.Minute, 3 * time.Minute, 10 * time.Minute, 30 * time.Minute, time.Hour}
+		index := failures - 1
+		if index < 0 {
+			index = 0
+		}
+		if index >= len(delays) {
+			index = len(delays) - 1
+		}
+		jitter := time.Duration((failures*37)%31) * time.Second
+		return "Apple 服务暂时不可用，登录态未判定失效", now.Add(delays[index] + jitter)
+	}
 	if isCodedError(err, "apple_account_auth_failed") || isCodedError(err, "apple_account_session_missing") {
 		return "登录态已失效，等待低频复检", now.Add(30 * time.Minute)
 	}
