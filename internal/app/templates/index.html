@@ -3803,7 +3803,7 @@
       button.disabled = true;
       $('imapLoginStatus').textContent = '正在检测已保存的取码登录...';
       try {
-        const data = await api('/api/icloud/imap-login/check', {method:'POST', body: JSON.stringify({})});
+        const data = await api('/api/icloud/imap-login/check', {method:'POST', body: JSON.stringify({account_id: activeICloudSessionKey ? activeICloudSessionAccountID() : ''})});
         if (data.sessions) renderICloudSessions(data.sessions);
         $('imapLoginStatus').textContent = data.message || '取码登录检测完成';
         log(data.message || '取码登录检测完成');

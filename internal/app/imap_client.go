@@ -481,13 +481,23 @@ func CheckGenericIMAPLogin(ctx context.Context, email, username, password, host 
 
 	selectLines, err := imapCommand(conn, reader, "A002", "SELECT INBOX")
 	if err != nil {
-		return errCode("imap_select_failed", "打开 iCloud 收件箱失败："+err.Error(), true)
+		return imapSelectError(host, err.Error())
 	}
 	if !imapTaggedOK(selectLines, "A002") {
-		return errCode("imap_select_failed", "打开 iCloud 收件箱失败："+imapResponseSummary(selectLines), true)
+		return imapSelectError(host, imapResponseSummary(selectLines))
 	}
 	_, _ = imapCommand(conn, reader, "A003", "LOGOUT")
 	return nil
+}
+
+func imapSelectError(host, detail string) error {
+	detail = strings.TrimSpace(detail)
+	service := firstNonEmpty(strings.TrimSpace(host), "IMAP 服务")
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "unsafe login") {
+		return errCode("imap_unsafe_login", "邮箱服务商风控拒绝打开收件箱（"+service+"）：Unsafe Login。账号密码可能已通过认证，但当前服务器 IP、地区或登录环境被判定为风险；请先登录邮箱官网解除安全限制、开启 IMAP/SMTP，并按服务商要求使用客户端授权码；仍无法解除请联系邮箱服务商", false)
+	}
+	return errCode("imap_select_failed", "打开 IMAP 收件箱失败（"+service+"）："+detail, true)
 }
 
 func WatchICloudIMAPExists(ctx context.Context, state LoginState, onExists func()) error {

@@ -15,6 +15,23 @@ func TestDecodeMIMEHeaderAcceptsUTF8Alias(t *testing.T) {
 	}
 }
 
+func TestIMAPSelectErrorExplainsUnsafeLogin(t *testing.T) {
+	err := imapSelectError("imap.188.com", "A002 NO SELECT Unsafe Login. Please contact kefu@188.com for help")
+	message := err.Error()
+	for _, want := range []string{"邮箱服务商风控", "imap.188.com", "Unsafe Login", "客户端授权码"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("unsafe login message = %q, want contains %q", message, want)
+		}
+	}
+}
+
+func TestIMAPSelectErrorUsesActualHost(t *testing.T) {
+	err := imapSelectError("imap.example.com", "A002 NO mailbox unavailable")
+	if strings.Contains(err.Error(), "iCloud") || !strings.Contains(err.Error(), "imap.example.com") {
+		t.Fatalf("select message = %q", err.Error())
+	}
+}
+
 func TestICloudIMAPMessagesByMailboxMatchesRecipientAlias(t *testing.T) {
 	receivedAt := time.Date(2026, 7, 1, 5, 2, 50, 0, time.UTC)
 	mailboxes := []Mailbox{
