@@ -1582,7 +1582,6 @@
         <div><h2 id="sessionAccountModalTitle">添加 Apple 账号</h2><p>可分别登录新接口、旧接口并配置 IMAP 取码；编辑账号时会自动带入历史资料。</p></div>
         <button type="button" class="ghost" onclick="closeSessionAccountModal()">关闭</button>
       </div>
-      <div id="sessionEditAccountTabs" class="account-tabs" style="padding:12px 18px 0"></div>
       <div id="sessionAccountModalBody" style="padding:0 18px 18px"></div>
     </section>
   </div>
@@ -3455,19 +3454,9 @@
       if (content && body && content.parentElement !== body) body.appendChild(content);
       if (content) content.hidden = false;
       $('sessionAccountModalTitle').textContent = title || '添加 Apple 账号';
-      renderSessionEditAccountTabs();
       $('sessionAccountModal').classList.add('show');
       loadFixedProxy();
       setTimeout(() => $('protocolAppleId').focus({preventScroll:true}), 50);
-    }
-
-    function renderSessionEditAccountTabs() {
-      const box = $('sessionEditAccountTabs'); if (!box) return;
-      const sessions = (lastICloudSessions || []).filter(item => item && item.saved);
-      box.innerHTML = sessions.length ? `<span class="muted">全部登录态账号（${sessions.length} 个，其他账号未删除）：</span>` + sessions.map((session,index) => {
-        const key=sessionKey(session), name=session.apple_id||session.icloud_imap_email||`账号 ${index+1}`;
-        return `<button type="button" class="${key===activeICloudSessionKey?'active':''}" onclick="editICloudSession(${esc(JSON.stringify(key))})">${esc(name)}</button>`;
-      }).join('') : '<span class="muted">当前还没有已保存账号</span>';
     }
 
     function closeSessionAccountModal(event) {
@@ -3505,7 +3494,6 @@
       const session = visibleICloudSessions(lastICloudSessions).find(item => sessionKey(item) === key);
       if (!session) { log('未找到要编辑的登录态账号'); return; }
       activeICloudSessionKey = key;
-      renderSessionEditAccountTabs();
       $('protocolAppleId').value = session.apple_id || session.icloud_imap_email || '';
       $('protocolPassword').value = '';
       $('protocol2FA').value = '';
