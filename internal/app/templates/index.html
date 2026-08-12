@@ -556,9 +556,17 @@
     .table-filter-bar { display:grid; grid-template-columns:minmax(240px,2fr) repeat(2,minmax(160px,1fr)) auto; gap:10px; padding:14px 18px; align-items:end; border-bottom:1px solid var(--line); background:var(--bg-soft); }
     .table-filter-bar label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:800; }
     .table-filter-bar input,.table-filter-bar select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--text); }
-    .page-guide { display:flex; gap:12px; align-items:center; margin:0 0 16px; padding:13px 16px; border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line)); border-radius:14px; background:color-mix(in srgb,var(--accent) 7%,var(--panel)); }
+    .page-guide { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:center; margin:0 0 16px; padding:13px 16px; border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line)); border-radius:14px; background:color-mix(in srgb,var(--accent) 7%,var(--panel)); }
     .page-guide strong { white-space:nowrap; color:var(--accent); }
     .page-guide span { color:var(--muted); line-height:1.6; }
+    .page-guide button { white-space:nowrap; }
+    .guide-body { padding:18px 20px 22px; max-height:min(68vh,680px); overflow:auto; color:var(--text); }
+    .guide-summary { margin:0 0 16px; padding:12px 14px; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:var(--bg-soft); line-height:1.7; }
+    .guide-block { margin-top:18px; }
+    .guide-block h3 { margin:0 0 9px; color:var(--accent); font-size:15px; }
+    .guide-block ol,.guide-block ul { margin:0; padding-left:22px; }
+    .guide-block li { margin:7px 0; line-height:1.65; }
+    .guide-warning { margin-top:18px; padding:12px 14px; border:1px solid var(--warn-line); border-radius:8px; color:var(--warn); background:var(--warn-soft); line-height:1.65; }
     .session-table-wrap { max-height:520px; }
     .session-table { min-width:1050px; }
     .session-login-error { display:block; margin-top:7px; max-width:260px; color:#ff9aab; font-size:12px; line-height:1.45; white-space:normal; overflow-wrap:anywhere; }
@@ -1198,7 +1206,7 @@
       .account-dock { margin-left: auto; }
       .list-toolbar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
-    @media(max-width:760px){.content-head{margin:10px 12px 0}.content-main{padding:0 12px 20px}.mailbox-list-head{grid-template-columns:1fr}.table-filter-bar{grid-template-columns:1fr}.list-toolbar{grid-template-columns:1fr}.mailbox-filter-row{display:contents}.mailbox-control-stack{grid-template-columns:1fr;justify-items:start}.account-dock{min-width:0;grid-template-columns:repeat(3,1fr)}.account-dock .user-badge{grid-column:1/-1}.content-actions{flex-wrap:wrap}}
+    @media(max-width:760px){.content-head{margin:10px 12px 0}.content-main{padding:0 12px 20px}.mailbox-list-head{grid-template-columns:1fr}.table-filter-bar{grid-template-columns:1fr}.list-toolbar{grid-template-columns:1fr}.mailbox-filter-row{display:contents}.mailbox-control-stack{grid-template-columns:1fr;justify-items:start}.account-dock{min-width:0;grid-template-columns:repeat(3,1fr)}.account-dock .user-badge{grid-column:1/-1}.content-actions{flex-wrap:wrap}.page-guide{grid-template-columns:1fr}.page-guide button{width:100%}}
     body[data-theme="midnight"] .sidebar,
     body[data-theme="midnight"] .content-head,
     body[data-theme="midnight"] .modal { background:linear-gradient(145deg,rgba(2,10,27,.98),rgba(4,18,45,.98)); }
@@ -1569,6 +1577,13 @@
       </section>
     </section>
   </div>
+  <div id="featureGuideModal" class="modal-backdrop" onclick="closeFeatureGuide(event)" role="dialog" aria-modal="true" aria-labelledby="featureGuideTitle">
+    <section class="modal">
+      <div class="panel-head"><div><h2 id="featureGuideTitle">本页使用教学</h2><p id="featureGuideSubtitle">按照步骤完成当前功能配置。</p></div><button class="ghost" type="button" onclick="closeFeatureGuide()">关闭</button></div>
+      <div id="featureGuideBody" class="guide-body"></div>
+    </section>
+  </div>
+
   <div id="announcementModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="announcementTitle">
     <section class="modal" onclick="event.stopPropagation()" style="width:min(620px,94vw);max-height:88vh;display:flex;flex-direction:column">
       <div class="panel-head"><div><h2 id="announcementTitle">平台公告</h2><p id="announcementTime">管理员发布</p></div><button class="ghost" type="button" onclick="closeCurrentAnnouncement()" aria-label="关闭公告">关闭</button></div>
@@ -1707,10 +1722,51 @@
 	  mailboxes:'组合搜索全部隐私邮箱；按账号、邮箱状态、API、iCloud 和收件数量筛选并执行取码、同步、导出与状态维护。',
 	  redemption:'将未导出且可正常接码的邮箱加入专属兑换池，生成定量一次性兑换码，并管理已兑换批次的取码地址。'
 	};
+    const featureGuides = {
+      overview: {
+        title:'概览使用教学', summary:'这里用于快速确认账号、隐私邮箱、邮件和 API 的总体状态，再进入具体功能。',
+        steps:['查看顶部四项统计，确认平台已经载入账号与邮箱数据。','通过快捷入口进入登录态、创建邮箱、邮箱池或运行配置。','遇到数量或状态不一致时先点击“刷新状态”，再进入对应页面查看中文异常原因。'],
+        tips:['概览只展示汇总，不会修改任何账号或邮箱数据。','右上角可以切换主题、修改密码、邀请码续期和退出登录。']
+      },
+      session: {
+        title:'Apple 登录态配置教学', summary:'登录态页面负责添加 Apple 账号，并分别维护新接口、旧接口、IMAP 取码、固定可信代理和自动接码登录。',
+        steps:['点击右上角“添加账号”，填写 Apple ID；编辑已有账号时点击表格中的“编辑/重新登录”。','按需点击“新接口登录”或“旧接口登录”，选择短信/手机号或受信设备验证，收到验证码后提交对应验证码。','需要读取转发邮件时配置 IMAP 服务、端口、账号和应用专用密码，然后保存并检测取码登录。','如需自动恢复登录态，先配置短信接码地址；固定可信代理仅用于该用户自己的 Apple 请求。','保存后关闭弹窗，在列表查看新接口、旧接口、IMAP、保活标签和具体中文异常原因。'],
+        tips:['Apple 密码、IMAP 授权码和代理认证信息不会在编辑时明文回填。','HTTP 429/503 表示 Apple 临时限流或不可用，应等待系统退避，不要连续重复提交。','子邮箱达到 750 个时该 Apple 账号不再参与创建。']
+      },
+      create: {
+        title:'创建隐私邮箱教学', summary:'使用已保存且状态正常的新接口或旧接口，为一个或多个 Apple 账号创建隐私邮箱。',
+        steps:['先检测登录态，确保参与创建的账号对应接口正常。','填写邮箱标签和备注，选择新接口、旧接口或组合策略。','勾选参与本轮创建的 Apple 账号；未勾选账号不会执行。','点击开始创建并等待加载提示完成，在结果和日志中查看每个账号的成功或失败原因。','使用定时创建时设置合理间隔；不再需要时点击停止定时创建。'],
+        tips:['达到 750 个子邮箱上限的账号会被跳过。','Apple 返回临时异常时系统会退避，请避免短时间高频创建。']
+      },
+      mailboxes: {
+        title:'隐私邮箱池教学', summary:'在这里搜索、筛选、同步、取码、查看邮件、导出和批量维护隐私邮箱。',
+        steps:['填写邮箱、所属账号或标签等条件，选择状态、接码、导出和收件数条件后点击“搜索”。','勾选邮箱后使用顶部批量操作；跨页操作前核对选中数量和筛选范围。','点击“验证码”同步最新邮件并取码；点击“查看邮箱”查看已同步的可视化邮件。','同步旧 Apple 账号历史邮箱时先选择登录态，再点击“同步该登录态全部历史隐私邮箱”。','导出时选择 JSON、可视化或邮件内容地址；需要换新地址时使用批量重置或导入旧地址更新。'],
+        tips:['已加入兑换池的邮箱，普通用户只能通过兑换码发放，不能再次从邮箱池导出。','批量删除和邮件删除可能无法恢复，执行前先核对筛选条件。','显示“当前不可接码”时，应先修复所属账号的 IMAP 取码状态。']
+      },
+      redemption: {
+        title:'兑换隐私邮箱教学', summary:'把符合条件的邮箱加入个人兑换池，生成兑换码供客户一次性领取，并按批次管理。',
+        steps:['将未导出、状态可用且接码正常的邮箱加入兑换池。','设置每个兑换码领取数量、生成数量和有效期；可选择永久有效。','生成后按批次导出“兑换地址----兑换码”TXT 文件。','客户在兑换页可一次输入多个兑换码，并选择三种取码地址格式导出。','如某批地址需要失效，按兑换码批次重置取码地址；原兑换码失效，邮箱恢复到兑换池。'],
+        tips:['兑换码是领取凭证，请不要在公开渠道泄露。','重置后旧取码地址立即不可用，应及时把新地址交付给客户。']
+      }
+    };
+
+    function openFeatureGuide(view = activeView) {
+      const guide = featureGuides[view] || featureGuides.overview;
+      $('featureGuideTitle').textContent = guide.title;
+      $('featureGuideSubtitle').textContent = viewMeta[view] ? viewMeta[view][1] : '按照步骤完成当前功能配置。';
+      const steps = (guide.steps || []).map(item => `<li>${esc(item)}</li>`).join('');
+      const tips = (guide.tips || []).map(item => `<li>${esc(item)}</li>`).join('');
+      $('featureGuideBody').innerHTML = `<p class="guide-summary">${esc(guide.summary || '')}</p><section class="guide-block"><h3>配置与使用步骤</h3><ol>${steps}</ol></section>${tips ? `<section class="guide-block"><h3>注意事项</h3><ul>${tips}</ul></section>` : ''}<div class="guide-warning">涉及密码、验证码、授权码、代理认证和取码地址时，请勿截图或转发给无关人员。</div>`;
+      $('featureGuideModal').classList.add('show');
+    }
+    function closeFeatureGuide(event) {
+      if (event && event.target !== event.currentTarget) return;
+      $('featureGuideModal').classList.remove('show');
+    }
 
     function setActiveView(view) {
       const normalized = viewMeta[view] ? view : 'overview';
-	  if ($('pageGuide')) $('pageGuide').innerHTML = `<strong>${esc(viewMeta[normalized])}</strong><span>${esc(viewDescriptions[normalized] || '')}</span>`;
+      if ($('pageGuide')) $('pageGuide').innerHTML = `<strong>${esc(viewMeta[normalized][0])}</strong><span>${esc(viewDescriptions[normalized] || '')}</span><button type="button" onclick="openFeatureGuide('${normalized}')">查看本页教学</button>`;
       const meta = viewMeta[normalized];
       for (const button of document.querySelectorAll('.nav-item[data-view]')) {
         button.classList.toggle('active', button.dataset.view === normalized);

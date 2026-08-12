@@ -257,9 +257,19 @@
     .table-filter label { display:grid; gap:5px; min-width:160px; flex:1; color:var(--muted); font-size:12px; font-weight:800; }
     .table-filter input,.table-filter select { width:100%; padding:9px 10px; border:1px solid var(--line-strong); border-radius:10px; background:#fff; color:var(--text); }
     .table-filter button { border:1px solid var(--line-strong); border-radius:10px; padding:9px 12px; background:#fff; font-weight:800; cursor:pointer; }
-    .page-guide { display:flex; gap:12px; align-items:center; margin:0 0 16px; padding:13px 16px; border:1px solid rgba(19,184,166,.24); border-radius:14px; background:#f0fdfa; }
+    .page-guide { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:center; margin:0 0 16px; padding:13px 16px; border:1px solid rgba(19,184,166,.24); border-radius:14px; background:#f0fdfa; }
     .page-guide strong { color:var(--green-dark); white-space:nowrap; }
     .page-guide span { color:var(--muted); line-height:1.6; }
+    .page-guide button { white-space:nowrap; }
+    .guide-dialog { width:min(760px,calc(100vw - 32px)); max-height:86vh; padding:0; overflow:hidden; color:var(--text); border:1px solid var(--line-strong); border-radius:10px; background:var(--panel); box-shadow:0 28px 90px rgba(0,0,0,.5); }
+    .guide-dialog::backdrop { background:rgba(0,5,18,.74); backdrop-filter:blur(4px); }
+    .guide-body { padding:18px 22px 24px; max-height:66vh; overflow:auto; }
+    .guide-summary { margin:0 0 16px; padding:12px 14px; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:var(--bg-soft); line-height:1.7; }
+    .guide-block { margin-top:18px; }
+    .guide-block h3 { margin:0 0 9px; color:#60a5fa; font-size:15px; }
+    .guide-block ol,.guide-block ul { margin:0; padding-left:22px; }
+    .guide-block li { margin:7px 0; line-height:1.65; }
+    .guide-warning { margin-top:18px; padding:12px 14px; border:1px solid rgba(245,158,11,.4); border-radius:8px; color:#fbbf24; background:rgba(120,53,15,.18); line-height:1.65; }
     .table-wrap { overflow: auto; }
     table { width: 100%; min-width: 900px; border-collapse: collapse; }
     th, td { border-top: 1px solid rgba(118,143,174,.16); padding: 13px 14px; text-align: left; vertical-align: middle; }
@@ -325,6 +335,8 @@
       .topbar { align-items: flex-start; flex-direction: column; }
       .actions { justify-content: flex-start; flex-wrap: nowrap; }
       .panel-head { align-items: flex-start; flex-direction: column; }
+      .page-guide { grid-template-columns:1fr; }
+      .page-guide button { width:100%; }
       .panel-tools { justify-content: flex-start; width: 100%; }
       .stats { grid-template-columns: repeat(2, 1fr); }
       .nav { grid-template-columns: 1fr 1fr; }
@@ -584,6 +596,11 @@
     </div>
   </div>
 
+  <dialog id="manageGuideDialog" class="guide-dialog" onclick="if(event.target===this) closeManageGuide()">
+    <div class="panel-head"><div><h2 id="manageGuideTitle">本页使用教学</h2><p id="manageGuideSubtitle">按照步骤完成当前功能。</p></div><button class="btn" type="button" onclick="closeManageGuide()">关闭</button></div>
+    <div id="manageGuideBody" class="guide-body"></div>
+  </dialog>
+
   <script>
     const $ = id => document.getElementById(id);
     let currentUser = null;
@@ -609,6 +626,31 @@
       logs: '运行日志'
     };
 	const viewDescriptions = {overview:'查看平台数据总览。',accountManage:'按平台用户切换数据范围，核对用户与账号、邮箱、邮件的归属。',users:'搜索平台用户，查看角色、注册来源和最后登录。',mailboxes:'按邮箱、Apple账号、状态和收件数组合筛选子邮箱。',accounts:'维护登录账号分类与标签。',sessions:'查看所有用户登录态的新接口、旧接口、IMAP、子邮箱和异常原因。',invites:'仅管理员创建和维护注册邀请码。',announcements:'管理员发布平台公告并查看用户已读人数。',audit:'仅管理员查询登录、权限和数据修改记录。',operations:'查看任务、告警、备份和用户回收站。',logs:'查看当前浏览器会话中的最近操作结果。'};
+    const manageGuides = {
+      overview:{summary:'快速确认当前权限范围内的用户、登录账号、隐私邮箱和邮件总量。',steps:['核对四项统计是否符合预期。','需要查看归属关系时进入“账号管理”，需要排障时进入“用户登录态”或“运维中心”。','数据刚发生变化时点击右上角刷新。'],tips:['普通用户只会看到自己的数据；管理员可以查看全平台数据。']},
+      accountManage:{summary:'按平台用户切换查看范围，确认登录账号、邮箱和邮件属于哪个用户。',steps:['在账号卡片中选择目标平台用户。','确认“当前查看”已经切换到该用户。','再进入隐私邮箱、登录账号或登录态页面查看该用户的数据。','点击“查看全部”恢复全局范围。'],tips:['执行修改或导出前务必核对当前用户范围。']},
+      users:{summary:'管理平台注册用户、角色、有效期和最近使用状态。',steps:['使用用户名或角色条件搜索用户。','管理员可点击添加用户，填写用户名、初始密码和有效期。','使用编辑功能调整账号到期时间或其他允许字段。','清理长期未使用用户前，先核对最后登录时间和关联数据。'],tips:['删除用户会影响其登录态、邮箱和兑换数据，请先备份。','初始密码应要求用户首次登录后立即修改。']},
+      mailboxes:{summary:'在管理视角组合筛选所有有权限查看的隐私邮箱，并执行导出或状态维护。',steps:['输入邮箱、Apple 账号等搜索条件。','选择邮箱状态、接码状态、导出状态和收件数条件后点击搜索。','核对筛选总数和当前页，再勾选需要操作的邮箱。','执行批量状态、重置 API、更新旧导出地址或导出操作。'],tips:['普通用户不可从邮箱池导出已进入兑换池的邮箱，管理员不受此限制。','一键操作范围较大，提交前确认筛选条件。']},
+      accounts:{summary:'查看和维护 Apple/iCloud 登录账号的分类、标签及平台用户归属。',steps:['按账号或所属用户搜索。','核对 Apple ID、账号 ID、分类标签和归属用户。','需要修复登录或 IMAP 时返回生成邮箱页面的“登录态”功能编辑账号。'],tips:['这里主要维护数据归属与标签，不替代登录态重新认证。']},
+      sessions:{summary:'管理员集中查看所有用户的新接口、旧接口、IMAP、保活和子邮箱状态。',steps:['按平台用户、Apple ID、接口或健康状态筛选。','查看新接口、旧接口和 IMAP 的独立中文状态。','展开或查看异常原因，区分代理异常、Apple 临时不可用和登录态失效。','通知对应用户重新登录，或进入其账号范围进一步排查。'],tips:['HTTP 429/503 通常是 Apple 临时限流或不可用，不等于账号密码错误。']},
+      invites:{summary:'批量生成、导出和维护平台注册或续期邀请码。',steps:['设置生成数量和使用后延续天数；需要时选择永久有效。','批量生成邀请码并按批次导出。','通过状态和批次查看邀请码是否已使用、使用人和使用时间。','发现泄露时及时禁用尚未使用的邀请码。'],tips:['有效期从用户实际使用当天起算；提前续期会在原到期时间后叠加。']},
+      announcements:{summary:'发布面向普通用户的平台公告，并查看已读情况。',steps:['填写清晰的公告标题和适合用户阅读的内容。','发布后普通用户登录会自动看到未读公告。','查看已读人数确认触达情况。','内容过期时停止发布或新建更正公告。'],tips:['公告不要包含管理员密钥、服务器地址、用户隐私或内部安全细节。']},
+      audit:{summary:'查询登录、权限和数据修改操作，定位异常访问与误操作。',steps:['按用户、操作类型、IP 或时间范围筛选。','先查看失败登录和权限操作，再核对高风险数据修改。','记录异常事件的时间、用户和来源 IP。','确认风险后修改相关密钥、密码或停用凭证。'],tips:['审计日志用于追踪，不应由普通用户修改或删除。']},
+      operations:{summary:'查看真实运行指标、后台任务、数据库备份和用户回收站。',steps:['通过 IMAP 异常率、保活成功率和取码耗时判断服务健康度。','查看后台任务最近结果与错误，处理失败或堆积任务。','在重大修改前手动创建数据库备份。','需要恢复用户时在永久清除时间前从回收站操作。'],tips:['数据库恢复会改变线上数据，执行前应再次创建当前备份。','指标无样本表示尚未产生对应检测或取码请求。']},
+      logs:{summary:'查看当前浏览器会话中的操作结果，便于判断任务是否提交成功。',steps:['执行功能后查看最新一行中文结果。','出现错误时复制日志，连同账号和操作时间用于排查。','确认不再需要后可以清空当前页面日志。'],tips:['提交日志给他人前请遮盖邮箱 API、密码、验证码、Cookie 和授权码。']}
+    };
+
+    function openManageGuide(view) {
+      const normalized = manageGuides[view] ? view : 'overview';
+      const guide = manageGuides[normalized];
+      $('manageGuideTitle').textContent = (viewMeta[normalized] || '当前页面') + '使用教学';
+      $('manageGuideSubtitle').textContent = viewDescriptions[normalized] || '按照步骤完成当前功能。';
+      const steps = (guide.steps || []).map(item => `<li>${esc(item)}</li>`).join('');
+      const tips = (guide.tips || []).map(item => `<li>${esc(item)}</li>`).join('');
+      $('manageGuideBody').innerHTML = `<p class="guide-summary">${esc(guide.summary || '')}</p><section class="guide-block"><h3>配置与使用步骤</h3><ol>${steps}</ol></section>${tips ? `<section class="guide-block"><h3>注意事项</h3><ul>${tips}</ul></section>` : ''}<div class="guide-warning">涉及批量修改、删除、密钥或数据库恢复的操作，提交前请再次核对范围并保留备份。</div>`;
+      $('manageGuideDialog').showModal();
+    }
+    function closeManageGuide() { if ($('manageGuideDialog').open) $('manageGuideDialog').close(); }
 
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -676,7 +718,7 @@
     }
     function setActiveView(view) {
       const normalized = viewMeta[view] ? view : 'overview';
-	  if ($('pageGuide')) $('pageGuide').innerHTML = `<strong>${esc(viewMeta[normalized])}</strong><span>${esc(viewDescriptions[normalized] || '')}</span>`;
+      if ($('pageGuide')) $('pageGuide').innerHTML = `<strong>${esc(viewMeta[normalized])}</strong><span>${esc(viewDescriptions[normalized] || '')}</span><button class="btn" type="button" onclick="openManageGuide('${normalized}')">查看本页教学</button>`;
       for (const button of document.querySelectorAll('.nav button[data-view]')) {
         button.classList.toggle('active', button.dataset.view === normalized);
       }
