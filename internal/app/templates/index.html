@@ -2223,9 +2223,7 @@
     }
 
     function visibleICloudSessions(sessions) {
-      const saved = (sessions || []).filter(session => session && session.saved);
-      const createSessions = saved.filter(createLoginSaved);
-      return createSessions.length > 0 ? createSessions : saved;
+      return (sessions || []).filter(session => session && session.saved);
     }
 
     function selectableCreateSessions() {
@@ -3393,7 +3391,12 @@
     }
 
     function renderICloudSession(session) {
-      renderICloudSessions(session && session.saved ? [session] : []);
+      if (!session || !session.saved) return;
+      const key = sessionKey(session);
+      const merged = [...(lastICloudSessions || [])];
+      const index = merged.findIndex(item => sessionKey(item) === key);
+      if (index >= 0) merged[index] = session; else merged.push(session);
+      renderICloudSessions(merged);
     }
 
     function renderICloudSessions(sessions) {
