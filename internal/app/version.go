@@ -3,7 +3,7 @@ package app
 import "runtime"
 
 var (
-	AppVersion = "2026.08.12.13"
+	AppVersion = "2026.08.12.14"
 	AppCommit  = "unknown"
 	AppBuiltAt = ""
 )

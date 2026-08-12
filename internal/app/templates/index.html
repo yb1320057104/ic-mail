@@ -1352,7 +1352,7 @@
           </div>
           <div class="notice" id="icloudSessionInfo">未完成创建登录。建议先点“新接口登录”或“旧接口登录”；收到 2FA 后提交对应验证码。取码登录会单独保存。</div>
           <div class="table-filter-bar">
-            <label>搜索账号或子邮箱<input id="sessionSearch" placeholder="Apple ID、账号ID、子邮箱" oninput="renderICloudSessions(lastICloudSessions)"></label>
+            <label>搜索账号或子邮箱<input id="sessionSearch" name="session_list_filter_query" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" readonly placeholder="Apple ID、账号ID、子邮箱" onfocus="this.removeAttribute('readonly')" onpointerdown="this.removeAttribute('readonly')" oninput="renderICloudSessions(lastICloudSessions)"></label>
             <label>登录态状态<select id="sessionHealthFilter" onchange="renderICloudSessions(lastICloudSessions)"><option value="">全部状态</option><option value="normal">全部正常</option><option value="partial">部分正常</option><option value="failed">异常</option><option value="unchecked">未检测</option></select></label>
             <label>接口类型<select id="sessionKindFilter" onchange="renderICloudSessions(lastICloudSessions)"><option value="">全部接口</option><option value="apple">已保存新接口</option><option value="icloud">已保存旧接口</option><option value="imap">已保存取码登录</option></select></label>
             <button type="button" onclick="clearSessionFilters()">清空条件</button>
@@ -4124,6 +4124,7 @@
     }
 
     initAppearanceControls();
+    if ($('sessionSearch')) $('sessionSearch').value = '';
     initViewNavigation();
     initSessionCheckSettings();
     ensureManageRefreshClockTimer();
