@@ -25,6 +25,49 @@ type loginGuard struct {
 	now           func() time.Time
 }
 
+type requestRateLimiter struct {
+	mu          sync.Mutex
+	byIP        map[string][]time.Time
+	byResource  map[string][]time.Time
+	window      time.Duration
+	ipLimit     int
+	resourceMax int
+}
+
+func newRequestRateLimiter(window time.Duration, ipLimit, resourceMax int) *requestRateLimiter {
+	return &requestRateLimiter{byIP: map[string][]time.Time{}, byResource: map[string][]time.Time{}, window: window, ipLimit: ipLimit, resourceMax: resourceMax}
+}
+
+func (l *requestRateLimiter) allow(ip, resource string) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	check := func(entries map[string][]time.Time, key string, limit int) (bool, time.Duration) {
+		cutoff := now.Add(-l.window)
+		rows := entries[key][:0]
+		for _, at := range entries[key] {
+			if at.After(cutoff) {
+				rows = append(rows, at)
+			}
+		}
+		if len(rows) >= limit {
+			entries[key] = rows
+			return false, max(time.Second, rows[0].Add(l.window).Sub(now))
+		}
+		entries[key] = append(rows, now)
+		return true, 0
+	}
+	if ok, retry := check(l.byIP, ip, l.ipLimit); !ok {
+		return false, retry
+	}
+	if ok, retry := check(l.byResource, ip+"|"+resource, l.resourceMax); !ok {
+		// The IP counter already recorded this rejected attempt; this is intentional
+		// so rotating mailbox IDs cannot bypass the global IP ceiling.
+		return false, retry
+	}
+	return true, 0
+}
+
 func newLoginGuard(cfg Config) *loginGuard {
 	if cfg.LoginRateLimitWindowSeconds <= 0 {
 		cfg.LoginRateLimitWindowSeconds = 600

@@ -1304,6 +1304,25 @@ func (s *FileStore) RotateMailboxAPIToken(id string, validDays int) (Mailbox, er
 	return Mailbox{}, errCode("mailbox_not_found", "邮箱不存在", false)
 }
 
+func (s *FileStore) RotateAllMailboxAPITokens(validDays int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if validDays < 1 || validDays > 3650 {
+		return 0, errCode("invalid_valid_days", "API 地址有效天数必须为 1 到 3650", false)
+	}
+	now := time.Now()
+	for i := range s.state.Mailboxes {
+		token, err := randomToken(24)
+		if err != nil {
+			return 0, err
+		}
+		s.state.Mailboxes[i].APIToken = token
+		s.state.Mailboxes[i].APITokenExpiresAt = now.Add(time.Duration(validDays) * 24 * time.Hour)
+		s.state.Mailboxes[i].UpdatedAt = now
+	}
+	return len(s.state.Mailboxes), s.saveLocked()
+}
+
 func (s *FileStore) SetMailboxSyncCursor(id string, syncedAt time.Time, lastUID string) (Mailbox, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

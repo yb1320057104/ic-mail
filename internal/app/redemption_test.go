@@ -259,3 +259,21 @@ func TestExcludeRedemptionLockedData(t *testing.T) {
 		t.Fatalf("unexpected filtered data: locked=%d mailboxes=%#v messages=%#v", locked, mailboxes, messages)
 	}
 }
+
+func TestRotateAllMailboxAPITokens(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := store.AddMailboxForOwner("owner", "account", "first", "first@icloud.com")
+	second, _ := store.AddMailboxForOwner("owner", "account", "second", "second@icloud.com")
+	count, err := store.RotateAllMailboxAPITokens(180)
+	if err != nil || count != 2 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	updatedFirst, _ := store.FindMailboxByID(first.ID)
+	updatedSecond, _ := store.FindMailboxByID(second.ID)
+	if constantTimeEqual(first.APIToken, updatedFirst.APIToken) || constantTimeEqual(second.APIToken, updatedSecond.APIToken) || constantTimeEqual(updatedFirst.APIToken, updatedSecond.APIToken) {
+		t.Fatal("mailbox API tokens were not independently rotated")
+	}
+}

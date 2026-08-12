@@ -101,6 +101,7 @@ type Server struct {
 	updateCache                    updateCandidate
 	updateCacheAt                  time.Time
 	loginGuard                     *loginGuard
+	mailboxAPILimiter              *requestRateLimiter
 	registrationMu                 sync.Mutex
 	captchas                       *captchaStore
 	adminConfirmMu                 sync.Mutex
@@ -262,6 +263,7 @@ func NewServer(cfg Config, store *FileStore, logger *slog.Logger) http.Handler {
 		appleAccountKeepAliveInterval: appleAccountKeepAliveDefaultInterval,
 		mailboxSchedulers:             make(map[string]*mailboxSchedulerJob),
 		loginGuard:                    newLoginGuard(cfg),
+		mailboxAPILimiter:             newRequestRateLimiter(time.Minute, 120, 30),
 		captchas:                      newCaptchaStore(),
 		adminConfirmations:            make(map[string]adminConfirmation),
 		startedAt:                     time.Now(),
@@ -541,6 +543,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/mailboxes/{email}/code", s.handleMailboxCodeByEmail)
 	s.mux.HandleFunc("GET /api/v1/mailboxes/{email}/content", s.handleMailboxContentByEmail)
 	s.mux.HandleFunc("GET /api/v1/mailboxes/{email}/view", s.handleMailboxVisualByEmail)
+	s.mux.HandleFunc("GET /api/v1/access/{token}/mailboxes/{email}/code", s.handleMailboxCodeByEmail)
+	s.mux.HandleFunc("GET /api/v1/access/{token}/mailboxes/{email}/content", s.handleMailboxContentByEmail)
+	s.mux.HandleFunc("GET /api/v1/access/{token}/mailboxes/{email}/view", s.handleMailboxVisualByEmail)
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, _ *http.Request) {
@@ -1802,46 +1807,7 @@ func (s *Server) handleClaimMailbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLookupMailboxes(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizedGlobalAPI(r) {
-		writeError(w, http.StatusUnauthorized, errCode("global_api_key_required", "查询邮箱 API 需要配置并提交全局 API Key", false))
-		return
-	}
-	var payload struct {
-		Emails []string `json:"emails"`
-	}
-	if err := decodeJSON(r, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if len(payload.Emails) == 0 || len(payload.Emails) > 500 {
-		writeError(w, http.StatusBadRequest, errCode("invalid_email_count", "邮箱数量必须是 1-500", false))
-		return
-	}
-
-	seen := make(map[string]struct{}, len(payload.Emails))
-	missing := make([]string, 0)
-	mailboxes := make([]publicMailbox, 0, len(payload.Emails))
-	for _, rawEmail := range payload.Emails {
-		email := strings.ToLower(strings.TrimSpace(rawEmail))
-		if email == "" {
-			continue
-		}
-		if _, ok := seen[email]; ok {
-			continue
-		}
-		seen[email] = struct{}{}
-		mailbox, ok := s.store.FindMailboxByEmail(email)
-		if !ok {
-			missing = append(missing, email)
-			continue
-		}
-		mailboxes = append(mailboxes, s.publicMailbox(r, mailbox))
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"success":   true,
-		"mailboxes": mailboxes,
-		"missing":   missing,
-	})
+	writeError(w, http.StatusGone, errCode("mailbox_lookup_disabled", "全局邮箱查询接口已关闭", false))
 }
 
 func (s *Server) handleExportRuntimeData(w http.ResponseWriter, r *http.Request) {
@@ -2134,7 +2100,7 @@ func (s *Server) mailboxExportAPIURL(r *http.Request, mailbox Mailbox, apiType s
 	case "content", "message", "text":
 		suffix = "content"
 	}
-	return fmt.Sprintf("%s/api/v1/mailboxes/%s/%s?key=%s", baseURL, url.PathEscape(mailbox.Email), suffix, url.QueryEscape(mailbox.APIToken))
+	return fmt.Sprintf("%s/api/v1/access/%s/mailboxes/%s/%s", baseURL, url.PathEscape(mailbox.APIToken), url.PathEscape(mailbox.Email), suffix)
 }
 
 func parseMailboxExportFormat(value string) (mailboxExportFormat, error) {
@@ -3687,6 +3653,7 @@ func (s *Server) handleMailboxCodeByEmail(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) publicMailboxByEmail(w http.ResponseWriter, r *http.Request) (Mailbox, bool) {
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	email, err := url.PathUnescape(r.PathValue("email"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errCode("invalid_email", "邮箱地址格式不正确", false))
@@ -3699,6 +3666,9 @@ func (s *Server) publicMailboxByEmail(w http.ResponseWriter, r *http.Request) (M
 	}
 	if !s.authorized(r, mailbox) {
 		writeError(w, http.StatusUnauthorized, errCode("invalid_api_key", "API Key 错误", false))
+		return Mailbox{}, false
+	}
+	if !s.allowPublicMailboxAPI(w, r, mailbox) {
 		return Mailbox{}, false
 	}
 	if !mailbox.APIActive || mailbox.Status == StatusDisabled {
@@ -3787,6 +3757,7 @@ func cleanMailboxVisualPlainText(body string) string {
 }
 
 func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbox Mailbox) {
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	metricStarted := time.Now()
 	metricSuccess := false
 	metricMessage := "暂未收到验证码"
@@ -3795,6 +3766,9 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 	}()
 	if !s.authorized(r, mailbox) {
 		writeError(w, http.StatusUnauthorized, errCode("invalid_api_key", "API Key 错误", false))
+		return
+	}
+	if !s.allowPublicMailboxAPI(w, r, mailbox) {
 		return
 	}
 	if !mailbox.APIActive || mailbox.Status == StatusDisabled {
@@ -3867,6 +3841,19 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 		return
 	}
 	writeError(w, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
+}
+
+func (s *Server) allowPublicMailboxAPI(w http.ResponseWriter, r *http.Request, mailbox Mailbox) bool {
+	if s.mailboxAPILimiter == nil {
+		return true
+	}
+	allowed, retry := s.mailboxAPILimiter.allow(requestClientIP(r), mailbox.ID)
+	if allowed {
+		return true
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retry.Seconds()+0.999))))
+	writeError(w, http.StatusTooManyRequests, errCode("mailbox_api_rate_limited", "取码请求过于频繁，请稍后重试", true))
+	return false
 }
 
 func (s *Server) writeMailboxCodeSuccess(w http.ResponseWriter, mailbox Mailbox, msg Message, code string, staleMessage string, markServed bool) bool {
@@ -5461,11 +5448,8 @@ func (s *Server) authorized(r *http.Request, mailbox Mailbox) bool {
 	if !mailbox.APITokenExpiresAt.IsZero() && !mailbox.APITokenExpiresAt.After(time.Now()) {
 		return false
 	}
-	queryKey := strings.TrimSpace(r.URL.Query().Get("key"))
-	if constantTimeEqual(queryKey, mailbox.APIToken) {
-		return true
-	}
 	candidates := []string{
+		r.PathValue("token"),
 		strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
 		r.Header.Get("X-API-Key"),
 	}
@@ -5475,9 +5459,6 @@ func (s *Server) authorized(r *http.Request, mailbox Mailbox) bool {
 			continue
 		}
 		if constantTimeEqual(candidate, mailbox.APIToken) {
-			return true
-		}
-		if strings.TrimSpace(s.cfg.APIKey) != "" && constantTimeEqual(candidate, s.cfg.APIKey) {
 			return true
 		}
 	}
@@ -5921,6 +5902,9 @@ func (s *Server) requiresAdmin(r *http.Request) bool {
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/mailboxes/") && (strings.HasSuffix(r.URL.Path, "/code") || strings.HasSuffix(r.URL.Path, "/content") || strings.HasSuffix(r.URL.Path, "/view")) {
 		return false
 	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/access/") {
+		return false
+	}
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/mailboxes/") && strings.HasSuffix(r.URL.Path, "/code") {
 		return false
 	}
@@ -6157,7 +6141,7 @@ func (s *Server) mailboxReceiveCodeState(mailbox Mailbox) (bool, string, string)
 
 func (s *Server) mailboxAPIURL(r *http.Request, mailbox Mailbox) string {
 	baseURL := firstNonEmpty(s.cfg.PublicBaseURL, requestBaseURL(r))
-	return fmt.Sprintf("%s/api/v1/mailboxes/%s/code?key=%s", strings.TrimRight(baseURL, "/"), url.PathEscape(mailbox.Email), url.QueryEscape(mailbox.APIToken))
+	return fmt.Sprintf("%s/api/v1/access/%s/mailboxes/%s/code", strings.TrimRight(baseURL, "/"), url.PathEscape(mailbox.APIToken), url.PathEscape(mailbox.Email))
 }
 
 func (s *Server) publicSession(session *ICloudSession) publicICloudSession {

@@ -2949,7 +2949,7 @@ func TestMailboxExportFiltersByAccountID(t *testing.T) {
 		t.Fatalf("account filtered api export status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "one-alias@icloud.com----https://mail.example/api/v1/mailboxes/one-alias@icloud.com/code?key=") {
+	if !strings.Contains(body, "one-alias@icloud.com----https://mail.example/api/v1/access/") || !strings.Contains(body, "/mailboxes/one-alias@icloud.com/code") {
 		t.Fatalf("filtered export missing account one API: %q", body)
 	}
 	if strings.Contains(body, "two-alias@icloud.com") {
@@ -3298,17 +3298,24 @@ func TestMailboxCodeQueryAcceptsOnlyPerMailboxToken(t *testing.T) {
 	handler := NewServer(Config{APIKey: "global-secret"}, store, discardLogger())
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/alias%40icloud.com/code?key=global-secret&after=2000-01-01T00:00:00Z", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/alias%40icloud.com/code?after=2000-01-01T00:00:00Z", nil)
+	req.Header.Set("X-API-Key", "global-secret")
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("code with global query key = %d body=%s, want 401", rr.Code, rr.Body.String())
+		t.Fatalf("code with global key = %d body=%s, want 401", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/alias%40icloud.com/code?key="+url.QueryEscape(mailbox.APIToken), nil)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("code with query token = %d body=%s, want 401", rr.Code, rr.Body.String())
 	}
 
 	rr = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/alias%40icloud.com/code?key="+mailbox.APIToken+"&after=2000-01-01T00:00:00Z", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/alias%40icloud.com/code?after=2000-01-01T00:00:00Z", nil)
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("code with mailbox query key = %d body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("code with mailbox path token = %d body=%s", rr.Code, rr.Body.String())
 	}
 	var body struct {
 		Success bool   `json:"success"`
@@ -3319,6 +3326,27 @@ func TestMailboxCodeQueryAcceptsOnlyPerMailboxToken(t *testing.T) {
 	}
 	if !body.Success || body.Code != "135790" {
 		t.Fatalf("code body = %+v", body)
+	}
+}
+
+func TestMailboxPublicAPIRateLimit(t *testing.T) {
+	store := newTestStore(t)
+	mailbox, err := store.AddMailbox("", "UPI-1", "limited@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.AddMessage(mailbox.ID, "Your code is 246810", "sender@example.com", "246810", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(Config{}, store, discardLogger()).(*Server)
+	handler.mailboxAPILimiter = newRequestRateLimiter(time.Minute, 10, 1)
+	path := "/api/v1/access/" + url.PathEscape(mailbox.APIToken) + "/mailboxes/" + url.PathEscape(mailbox.Email) + "/code?peek=1"
+	for i, want := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != want {
+			t.Fatalf("request %d = %d body=%s, want %d", i+1, rr.Code, rr.Body.String(), want)
+		}
 	}
 }
 
@@ -3361,7 +3389,7 @@ func TestMailboxCodeQuerySyncsBeforeReturningCachedOldCode(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	lookupAfter := time.Now().Add(-10 * time.Second).UTC().Format(time.RFC3339Nano)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken+"&after="+url.QueryEscape(lookupAfter), nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?after="+url.QueryEscape(lookupAfter), nil)
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code request = %d body=%s", rr.Code, rr.Body.String())
@@ -3416,7 +3444,7 @@ func TestMailboxCodeQueryReturnsLocalCachedCodeBeforeSync(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code", nil)
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code request = %d body=%s", rr.Code, rr.Body.String())
@@ -3584,7 +3612,7 @@ func TestMailboxCodeQueryReturnsQuicklyWhileBackgroundSyncContinues(t *testing.T
 
 	start := time.Now()
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code", nil)
 	handler.ServeHTTP(rr, req)
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Fatalf("code request took %v, want quick no_code response", elapsed)
@@ -3657,7 +3685,7 @@ func TestMailboxCodeQueryWaitMSWaitsForSyncResult(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken+"&wait_ms=500", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?wait_ms=500", nil)
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code request = %d body=%s", rr.Code, rr.Body.String())
@@ -3720,7 +3748,7 @@ func TestMailboxCodeQueryReturnsCodeInsertedDuringWaitTimeout(t *testing.T) {
 	}()
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken+"&keyword=ChatGPT&wait_ms=500&peek=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?keyword=ChatGPT&wait_ms=500&peek=1", nil)
 	start := time.Now()
 	handler.ServeHTTP(rr, req)
 	elapsed := time.Since(start)
@@ -3799,7 +3827,7 @@ func TestMailboxCodeQueryDoesNotRepeatServedCachedCode(t *testing.T) {
 	} {
 		t.Helper()
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken+query, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?"+strings.TrimPrefix(query, "&"), nil)
 		handler.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("code request %q = %d body=%s", query, rr.Code, rr.Body.String())
@@ -3861,7 +3889,7 @@ func TestMailboxCodePeekDoesNotConsumeServedCode(t *testing.T) {
 	} {
 		t.Helper()
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken+query, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?"+strings.TrimPrefix(query, "&"), nil)
 		handler.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("code request %q = %d body=%s", query, rr.Code, rr.Body.String())
@@ -4092,7 +4120,7 @@ func TestMailboxCodeRequestsShareOwnerBatchSync(t *testing.T) {
 	requestCode := func(mailbox Mailbox) response {
 		t.Helper()
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken+"&after=2000-01-01T00:00:00Z", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?after=2000-01-01T00:00:00Z", nil)
 		handler.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("code request for %s = %d body=%s", mailbox.Email, rr.Code, rr.Body.String())
@@ -4164,7 +4192,7 @@ func TestMailboxCodeWaiterSyncUsesRequestKeyword(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?key="+mailbox.APIToken+"&keyword=ChatGPT&wait_ms=1000", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/access/"+url.PathEscape(mailbox.APIToken)+"/mailboxes/"+url.PathEscape(mailbox.Email)+"/code?keyword=ChatGPT&wait_ms=1000", nil)
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code request = %d body=%s", rr.Code, rr.Body.String())
@@ -4458,9 +4486,9 @@ func TestClaimMailboxIsDisabledEvenWithGlobalAPIKey(t *testing.T) {
 	}
 }
 
-func TestLookupMailboxesRequiresGlobalAPIKeyAndKeepsStatus(t *testing.T) {
+func TestLookupMailboxesIsDisabledEvenWithGlobalAPIKey(t *testing.T) {
 	store := newTestStore(t)
-	mailbox, err := store.AddMailbox("", "UPI-1", "alias@icloud.com")
+	_, err := store.AddMailbox("", "UPI-1", "alias@icloud.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4470,8 +4498,8 @@ func TestLookupMailboxesRequiresGlobalAPIKeyAndKeepsStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mailboxes/lookup", strings.NewReader(`{"emails":["alias@icloud.com"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("lookup without key = %d, want 401", rr.Code)
+	if rr.Code != http.StatusGone || !strings.Contains(rr.Body.String(), "mailbox_lookup_disabled") {
+		t.Fatalf("lookup without key = %d body=%s, want 410", rr.Code, rr.Body.String())
 	}
 
 	rr = httptest.NewRecorder()
@@ -4479,25 +4507,8 @@ func TestLookupMailboxesRequiresGlobalAPIKeyAndKeepsStatus(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer global-key")
 	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("lookup with key = %d, body=%s", rr.Code, rr.Body.String())
-	}
-	var body struct {
-		Success   bool            `json:"success"`
-		Mailboxes []publicMailbox `json:"mailboxes"`
-		Missing   []string        `json:"missing"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if !body.Success || len(body.Mailboxes) != 1 || body.Mailboxes[0].ID != mailbox.ID {
-		t.Fatalf("lookup body = %+v", body)
-	}
-	if len(body.Missing) != 1 || body.Missing[0] != "missing@icloud.com" {
-		t.Fatalf("missing = %+v", body.Missing)
-	}
-	if !strings.HasPrefix(body.Mailboxes[0].APIURL, "https://mail.example/") {
-		t.Fatalf("api_url = %q", body.Mailboxes[0].APIURL)
+	if rr.Code != http.StatusGone || !strings.Contains(rr.Body.String(), "mailbox_lookup_disabled") {
+		t.Fatalf("lookup with key = %d body=%s, want 410", rr.Code, rr.Body.String())
 	}
 	updated, ok := store.FindMailboxByEmail("alias@icloud.com")
 	if !ok || updated.Status != StatusAvailable {
