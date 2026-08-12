@@ -355,6 +355,13 @@ func firstLine(text string) string {
 }
 
 func downloadAndReplaceExecutable(ctx context.Context, downloadURL, wantSHA256, exePath string) error {
+	wantSHA256 = strings.ToLower(strings.TrimSpace(wantSHA256))
+	if len(wantSHA256) != 64 {
+		return errors.New("更新包缺少有效的 SHA-256 校验值，已拒绝在线更新")
+	}
+	if _, err := hex.DecodeString(wantSHA256); err != nil {
+		return errors.New("更新包的 SHA-256 校验值格式无效，已拒绝在线更新")
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, downloadURL, nil)
@@ -393,7 +400,7 @@ func downloadAndReplaceExecutable(ctx context.Context, downloadURL, wantSHA256, 
 		return fmt.Errorf("更新文件超过 %d MB，已拒绝", updateDownloadMaxBytes>>20)
 	}
 	gotSHA256 := hex.EncodeToString(hasher.Sum(nil))
-	if wantSHA256 != "" && !strings.EqualFold(gotSHA256, wantSHA256) {
+	if !strings.EqualFold(gotSHA256, wantSHA256) {
 		return fmt.Errorf("更新文件校验失败：sha256=%s", gotSHA256)
 	}
 	if err := os.Chmod(tmpPath, 0755); err != nil {

@@ -27,6 +27,19 @@ func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return fn(r)
 }
 
+func TestMailboxPublicAPIResponseDisablesCaching(t *testing.T) {
+	handler := NewServer(Config{ConfigPath: "test"}, newTestStore(t), discardLogger())
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/access/invalid/mailboxes/a%40example.com/code", nil)
+	handler.ServeHTTP(rr, req)
+	if got := rr.Header().Get("Cache-Control"); got != "no-store, private" {
+		t.Fatalf("Cache-Control=%q", got)
+	}
+	if got := rr.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("Referrer-Policy=%q", got)
+	}
+}
+
 func TestExtractOTP(t *testing.T) {
 	tests := []struct {
 		name string

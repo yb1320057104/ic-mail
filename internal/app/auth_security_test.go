@@ -36,6 +36,31 @@ func TestLoginGuardUsesUsernameAndIPDimensionsWithBackoff(t *testing.T) {
 	}
 }
 
+func TestSameOriginRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		origin  string
+		referer string
+		want    bool
+	}{
+		{name: "matching origin", origin: "https://mail.example", want: true},
+		{name: "cross site origin", origin: "https://evil.example", want: false},
+		{name: "matching referer", referer: "https://mail.example/manage", want: true},
+		{name: "cross site referer", referer: "https://evil.example/attack", want: false},
+		{name: "non browser client", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "https://mail.example/api/admin/verify", nil)
+			req.Host = "mail.example"
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("Referer", tc.referer)
+			if got := sameOriginRequest(req); got != tc.want {
+				t.Fatalf("sameOriginRequest()=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRegistrationCanBeDisabledAndFirstUserCanBootstrap(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewServer(Config{ConfigPath: "test", RegistrationEnabled: false}, store, discardLogger())

@@ -309,6 +309,16 @@ func NewServer(cfg Config, store *FileStore, logger *slog.Logger) http.Handler {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	recorder := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/access/") {
+		recorder.Header().Set("Cache-Control", "no-store, private")
+		recorder.Header().Set("Pragma", "no-cache")
+		recorder.Header().Set("Referrer-Policy", "no-referrer")
+	}
+	if isCookieAuthenticatedMutation(r) && !sameOriginRequest(r) {
+		writeError(recorder, http.StatusForbidden, errCode("cross_site_request_forbidden", "已拒绝跨站操作请求", false))
+		s.auditRequest(r, recorder.status, time.Since(started))
+		return
+	}
 	if s.requiresAdmin(r) &&
 		!s.authorizedAdminSession(r) &&
 		!(s.allowsUserSession(r) && s.authorizedUserSession(r)) {
@@ -1504,10 +1514,21 @@ func (s *Server) handleAdminVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	ip := requestClientIP(r)
+	guardKey := "admin-verify:" + user.ID
+	if allowed, retry := s.loginGuard.allow(ip, guardKey); !allowed {
+		writeRateLimit(w, retry)
+		return
+	}
 	if !s.store.VerifyUserPassword(user.ID, payload.Password) {
+		retry := s.loginGuard.failure(ip, guardKey)
+		if retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retry.Seconds()))))
+		}
 		writeError(w, http.StatusForbidden, errCode("admin_verification_failed", "管理员密码错误", false))
 		return
 	}
+	s.loginGuard.success(ip, guardKey)
 	token, err := randomToken(32)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1517,6 +1538,32 @@ func (s *Server) handleAdminVerify(w http.ResponseWriter, r *http.Request) {
 	s.adminConfirmations[sessionTokenHash(token)] = adminConfirmation{UserID: user.ID, ExpiresAt: time.Now().Add(5 * time.Minute)}
 	s.adminConfirmMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "token": token, "expires_in": 300})
+}
+
+func isCookieAuthenticatedMutation(r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return false
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/auth/") || strings.HasPrefix(r.URL.Path, "/api/public/") || strings.HasPrefix(r.URL.Path, "/api/v1/") {
+		return false
+	}
+	_, err := r.Cookie(sessionCookieName)
+	return err == nil
+}
+
+func sameOriginRequest(r *http.Request) bool {
+	value := strings.TrimSpace(r.Header.Get("Origin"))
+	if value == "" {
+		value = strings.TrimSpace(r.Header.Get("Referer"))
+	}
+	if value == "" {
+		return true
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 func (s *Server) requireAdminConfirmation(w http.ResponseWriter, r *http.Request) bool {
