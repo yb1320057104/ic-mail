@@ -1,11 +1,12 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -94,23 +95,100 @@ func testFixedProxy(ctx context.Context, raw string) (string, int64, bool, error
 	if err != nil {
 		return "", 0, false, err
 	}
-	start := time.Now()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org?format=json", nil)
-	res, err := client.Do(req)
-	if err != nil {
-		return "", time.Since(start).Milliseconds(), false, explainFixedProxyError(proxyURL, err)
+	started := time.Now()
+	checks := []struct {
+		url   string
+		parse func(string) string
+	}{
+		{"https://checkip.amazonaws.com/", parsePlainProxyIP},
+		{"https://icanhazip.com/", parsePlainProxyIP},
+		{"https://www.cloudflare.com/cdn-cgi/trace", parseCloudflareProxyIP},
+		{"https://api.ipify.org/", parsePlainProxyIP},
 	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return "", time.Since(start).Milliseconds(), false, fmt.Errorf("代理检测 HTTP %d", res.StatusCode)
+	errorsSeen := make([]string, 0, len(checks))
+	tlsOK := false
+	for _, check := range checks {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, check.url, nil)
+		res, requestErr := client.Do(req)
+		if requestErr != nil {
+			errorsSeen = append(errorsSeen, compactProxyCheckError(check.url, requestErr))
+			continue
+		}
+		tlsOK = tlsOK || res.TLS != nil
+		body, readErr := io.ReadAll(io.LimitReader(res.Body, 16*1024))
+		res.Body.Close()
+		if readErr != nil {
+			errorsSeen = append(errorsSeen, compactProxyCheckError(check.url, readErr))
+			continue
+		}
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			errorsSeen = append(errorsSeen, fmt.Sprintf("%s 返回 HTTP %d", proxyCheckHost(check.url), res.StatusCode))
+			continue
+		}
+		ip := check.parse(string(body))
+		if net.ParseIP(ip) == nil {
+			errorsSeen = append(errorsSeen, proxyCheckHost(check.url)+" 未返回有效出口 IP")
+			continue
+		}
+		return ip, time.Since(started).Milliseconds(), tlsOK, nil
 	}
-	var body struct {
-		IP string `json:"ip"`
+
+	// Some residential proxy providers block public IP lookup sites. Verify ordinary
+	// HTTPS connectivity separately so one blocked test domain does not mark a usable
+	// proxy as offline.
+	connectivityChecks := []string{"https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"}
+	for _, checkURL := range connectivityChecks {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, checkURL, nil)
+		res, requestErr := client.Do(req)
+		if requestErr != nil {
+			errorsSeen = append(errorsSeen, compactProxyCheckError(checkURL, requestErr))
+			continue
+		}
+		tlsOK = tlsOK || res.TLS != nil
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4*1024))
+		res.Body.Close()
+		if res.StatusCode >= 200 && res.StatusCode < 400 && tlsOK {
+			return "检测站点受限", time.Since(started).Milliseconds(), true, nil
+		}
+		errorsSeen = append(errorsSeen, fmt.Sprintf("%s 返回 HTTP %d", proxyCheckHost(checkURL), res.StatusCode))
 	}
-	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
-		return "", 0, false, err
+
+	lastErr := errors.New("所有普通检测站点均连接失败")
+	if len(errorsSeen) > 0 {
+		lastErr = errors.New(strings.Join(errorsSeen, "；"))
 	}
-	return strings.TrimSpace(body.IP), time.Since(start).Milliseconds(), res.TLS != nil, nil
+	return "", time.Since(started).Milliseconds(), tlsOK, explainFixedProxyError(proxyURL, lastErr)
+}
+
+func parsePlainProxyIP(body string) string {
+	return strings.TrimSpace(strings.SplitN(body, "\n", 2)[0])
+}
+
+func parseCloudflareProxyIP(body string) string {
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "ip=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "ip="))
+		}
+	}
+	return ""
+}
+
+func proxyCheckHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return "检测站点"
+	}
+	return u.Hostname()
+}
+
+func compactProxyCheckError(raw string, err error) string {
+	message := strings.TrimSpace(err.Error())
+	if len(message) > 180 {
+		message = message[:180] + "..."
+	}
+	return proxyCheckHost(raw) + "：" + message
 }
 
 func explainFixedProxyError(proxyURL *url.URL, err error) error {
@@ -126,7 +204,7 @@ func explainFixedProxyError(proxyURL *url.URL, err error) error {
 		return fmt.Errorf("代理认证失败（HTTP 407），请检查代理用户名和密码")
 	}
 	if strings.Contains(message, "403") || strings.Contains(message, "forbidden") {
-		return fmt.Errorf("代理服务器拒绝建立 HTTPS 隧道（HTTP 403），请检查代理授权、IP 白名单和套餐权限")
+		return fmt.Errorf("所有普通检测站点均被代理拒绝（HTTP 403），请检查代理授权、IP 白名单、地区参数和套餐权限")
 	}
 	if strings.Contains(message, "404") || strings.Contains(message, "not found") {
 		if scheme == "https" {
@@ -150,7 +228,7 @@ func explainFixedProxyError(proxyURL *url.URL, err error) error {
 		return fmt.Errorf("代理 TLS 检测失败：%v", err)
 	}
 	if strings.Contains(message, "socks") {
-		return fmt.Errorf("SOCKS5 代理握手失败，请检查协议、认证信息和端口")
+		return fmt.Errorf("SOCKS5 代理对所有普通检测站点均握手失败，请检查该端口是否真正支持 SOCKS5、账号地区参数和认证信息")
 	}
 	return fmt.Errorf("代理连接失败：%v", err)
 }

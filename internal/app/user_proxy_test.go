@@ -76,3 +76,13 @@ func TestExplainFixedProxyError(t *testing.T) {
 		}
 	}
 }
+
+func TestParseProxyCheckResponses(t *testing.T) {
+	if got := parsePlainProxyIP("203.0.113.9\n"); got != "203.0.113.9" {
+		t.Fatalf("plain ip = %q", got)
+	}
+	trace := "fl=1\nh=example.com\nip=2001:db8::1\nts=1\n"
+	if got := parseCloudflareProxyIP(trace); got != "2001:db8::1" {
+		t.Fatalf("cloudflare ip = %q", got)
+	}
+}
