@@ -219,21 +219,41 @@ type AnnouncementRead struct {
 }
 
 type AutoLoginBinding struct {
-	OwnerID        string    `json:"owner_id"`
-	AccountID      string    `json:"account_id"`
-	AppleID        string    `json:"apple_id"`
-	PhoneMasked    string    `json:"phone_masked"`
-	PhoneCipher    string    `json:"phone_cipher"`
-	URLMasked      string    `json:"url_masked"`
-	URLCipher      string    `json:"url_cipher"`
-	PasswordCipher string    `json:"password_cipher"`
-	Enabled        bool      `json:"enabled"`
-	Status         string    `json:"status,omitempty"`
-	LastError      string    `json:"last_error,omitempty"`
-	LastAttemptAt  time.Time `json:"last_attempt_at,omitempty"`
-	LastSuccessAt  time.Time `json:"last_success_at,omitempty"`
-	NextAttemptAt  time.Time `json:"next_attempt_at,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	OwnerID        string                `json:"owner_id"`
+	AccountID      string                `json:"account_id"`
+	AppleID        string                `json:"apple_id"`
+	PhoneMasked    string                `json:"phone_masked"`
+	PhoneCipher    string                `json:"phone_cipher"`
+	URLMasked      string                `json:"url_masked"`
+	URLCipher      string                `json:"url_cipher"`
+	PasswordCipher string                `json:"password_cipher"`
+	Enabled        bool                  `json:"enabled"`
+	Status         string                `json:"status,omitempty"`
+	LastError      string                `json:"last_error,omitempty"`
+	LastAttemptAt  time.Time             `json:"last_attempt_at,omitempty"`
+	LastSuccessAt  time.Time             `json:"last_success_at,omitempty"`
+	NextAttemptAt  time.Time             `json:"next_attempt_at,omitempty"`
+	UpdatedAt      time.Time             `json:"updated_at"`
+	Logs           []AutoLoginAttemptLog `json:"logs,omitempty"`
+}
+
+type AutoLoginAttemptLog struct {
+	ID         string             `json:"id"`
+	Trigger    string             `json:"trigger"`
+	Status     string             `json:"status"`
+	StartedAt  time.Time          `json:"started_at"`
+	FinishedAt time.Time          `json:"finished_at,omitempty"`
+	Error      string             `json:"error,omitempty"`
+	Steps      []AutoLoginLogStep `json:"steps,omitempty"`
+}
+
+type AutoLoginLogStep struct {
+	At         time.Time `json:"at"`
+	Stage      string    `json:"stage"`
+	Level      string    `json:"level"`
+	Message    string    `json:"message"`
+	CodeMasked string    `json:"code_masked,omitempty"`
+	CodeCipher string    `json:"code_cipher,omitempty"`
 }
 
 type Mailbox struct {

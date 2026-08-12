@@ -1428,7 +1428,8 @@
             <label class="full">手机号----接码地址<input id="autoLoginBinding" autocomplete="off" placeholder="13800138000----https://example.com/code?token=xxx"></label>
             <label>Apple ID 密码<input id="autoLoginPassword" type="password" autocomplete="new-password" placeholder="首次绑定必填；留空保留已保存密码"></label>
             <label>启用状态<select id="autoLoginEnabled"><option value="true">启用自动接码登录</option><option value="false">暂停自动接码登录</option></select></label>
-            <div class="full toolbar"><button id="autoLoginSaveButton" type="button" onclick="saveAutoLoginBinding()">保存自动接码登录</button><span id="autoLoginStatus" class="muted">尚未绑定</span></div>
+            <div class="full toolbar"><button id="autoLoginSaveButton" type="button" onclick="saveAutoLoginBinding()">保存自动接码登录</button><button type="button" onclick="loadAutoLoginLogs(false)">查看自动登录日志</button><button type="button" onclick="loadAutoLoginLogs(true)">显示完整验证码</button><span id="autoLoginStatus" class="muted">尚未绑定</span></div>
+            <div id="autoLoginLogs" class="full notice" hidden></div>
           </div>
           </div>
           <div class="field-grid">
@@ -3554,6 +3555,7 @@
     function closeSessionAccountModal(event) {
       if (event && event.target !== $('sessionAccountModal')) return;
       $('sessionAccountModal').classList.remove('show');
+      if ($('autoLoginLogs')) { $('autoLoginLogs').hidden=true; $('autoLoginLogs').innerHTML=''; }
     }
 
     function addICloudSession() {
@@ -3575,6 +3577,7 @@
       $('autoLoginPassword').value = '';
       $('autoLoginEnabled').value = 'true';
       $('autoLoginStatus').textContent = '请先完成账号登录，再绑定自动接码登录';
+      if ($('autoLoginLogs')) { $('autoLoginLogs').hidden=true; $('autoLoginLogs').innerHTML=''; }
       if ($('accountProxyPoolNode')) $('accountProxyPoolNode').value = '';
       if ($('accountProxyPoolStatus')) $('accountProxyPoolStatus').textContent = '新增账号请先完成首次登录，随后编辑该账号并绑定固定节点';
       $('sessionEditInfo').textContent = '当前为新增账号模式。输入 Apple ID 和密码后，可分别完成新接口或旧接口登录；IMAP 取码登录可按需配置。';
@@ -3608,6 +3611,7 @@
       $('autoLoginPassword').value = '';
       $('autoLoginEnabled').value = session.auto_login_enabled ? 'true' : 'false';
       $('autoLoginStatus').textContent = session.auto_login_enabled ? `已绑定：${session.auto_login_phone || '-'}----${session.auto_login_url || '-'}；${session.auto_login_status || '等待自动登录'}${session.auto_login_error ? '；错误：'+session.auto_login_error : ''}` : '尚未启用自动接码登录';
+      if ($('autoLoginLogs')) { $('autoLoginLogs').hidden=true; $('autoLoginLogs').innerHTML=''; }
       if ($('accountProxyPoolNode')) $('accountProxyPoolNode').value = session.proxy_pool_node || '';
       if ($('accountProxyPoolStatus')) $('accountProxyPoolStatus').textContent = session.proxy_pool_node ? `当前账号固定使用：${session.proxy_pool_node}` : '当前账号使用原有固定代理或服务器直连';
       renderICloudSessions(lastICloudSessions);
@@ -3781,6 +3785,28 @@
         $('autoLoginPassword').value=''; $('autoLoginBinding').value=''; $('autoLoginStatus').textContent=data.message || '自动接码登录配置已保存'; await refresh();
       } catch(err) { $('autoLoginStatus').textContent='保存失败：'+err.message; }
       finally { button.disabled=false; button.textContent='保存自动接码登录'; }
+    }
+
+    function autoLoginLogStatusText(status) {
+      return ({running:'进行中',success:'成功',failed:'失败'})[status] || status || '未知';
+    }
+
+    async function loadAutoLoginLogs(revealCodes) {
+      const session=activeICloudSessionForBinding();
+      const container=$('autoLoginLogs');
+      if(!session||!session.account_id){container.hidden=false;container.textContent='请先保存账号登录态，再查看自动登录日志';return;}
+      container.hidden=false;container.textContent=revealCodes?'正在解密读取验证码和自动登录日志...':'正在读取自动登录日志...';
+      try {
+        const data=await api('/api/icloud/auto-login/logs',{method:'POST',loadingText:'正在读取自动登录日志...',body:JSON.stringify({account_id:session.account_id,reveal_codes:!!revealCodes})});
+        const logs=data.logs||[];
+        if(!logs.length){container.innerHTML='<strong>自动登录日志</strong><p class="muted">该账号还没有触发过自动接码登录。只有系统明确检测到新接口或旧接口登录态失效时才会自动执行。</p>';return;}
+        const warning=revealCodes?'<div class="guide-warning">当前已显示完整短信验证码，请勿截图或转发；关闭账号弹窗后会立即从页面移除。</div>':'';
+        container.innerHTML=`<div class="selector-label-row"><strong>最近 ${logs.length} 次自动登录日志（每账号最多 10 次）</strong><span class="muted">账号：${esc(data.apple_id||session.apple_id||'-')}</span></div>${warning}`+logs.map((entry,index)=>{
+          const steps=(entry.steps||[]).map(step=>`<div class="submailbox-item"><strong>${esc(step.stage||'流程')}</strong><span>${esc(step.at||'-')} · ${esc(step.message||'')}${step.code?` · 验证码：<span class="mono">${esc(step.code)}</span>`:''}</span></div>`).join('');
+          const summary=`${autoLoginLogStatusText(entry.status)} · ${entry.started_at||'-'}${entry.finished_at?' 至 '+entry.finished_at:''}`;
+          return `<details ${index===0?'open':''}><summary><strong>${esc(entry.trigger||'自动登录')}</strong> · ${esc(summary)}</summary><div class="submailbox-grid">${steps||'<span class="muted">暂无流程明细</span>'}</div>${entry.error?`<div class="guide-warning">失败原因：${esc(entry.error)}</div>`:''}</details>`;
+        }).join('');
+      } catch(err){container.textContent='读取自动登录日志失败：'+err.message;}
     }
 
     async function loadFixedProxy() {

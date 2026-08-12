@@ -192,11 +192,11 @@ func (s *FileStore) SaveAutoLoginBinding(binding AutoLoginBinding) error {
 	defer s.mu.Unlock()
 	for i := range s.state.AutoLoginBindings {
 		if s.state.AutoLoginBindings[i].OwnerID == binding.OwnerID && s.state.AutoLoginBindings[i].AccountID == binding.AccountID {
-			s.state.AutoLoginBindings[i] = binding
+			s.state.AutoLoginBindings[i] = cloneAutoLoginBinding(binding)
 			return s.saveLocked()
 		}
 	}
-	s.state.AutoLoginBindings = append(s.state.AutoLoginBindings, binding)
+	s.state.AutoLoginBindings = append(s.state.AutoLoginBindings, cloneAutoLoginBinding(binding))
 	return s.saveLocked()
 }
 
@@ -205,7 +205,7 @@ func (s *FileStore) AutoLoginBinding(ownerID, accountID string) (AutoLoginBindin
 	defer s.mu.Unlock()
 	for _, item := range s.state.AutoLoginBindings {
 		if item.OwnerID == ownerID && item.AccountID == accountID {
-			return item, true
+			return cloneAutoLoginBinding(item), true
 		}
 	}
 	return AutoLoginBinding{}, false
@@ -214,7 +214,20 @@ func (s *FileStore) AutoLoginBinding(ownerID, accountID string) (AutoLoginBindin
 func (s *FileStore) AutoLoginBindings() []AutoLoginBinding {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]AutoLoginBinding(nil), s.state.AutoLoginBindings...)
+	out := make([]AutoLoginBinding, 0, len(s.state.AutoLoginBindings))
+	for _, item := range s.state.AutoLoginBindings {
+		out = append(out, cloneAutoLoginBinding(item))
+	}
+	return out
+}
+
+func cloneAutoLoginBinding(in AutoLoginBinding) AutoLoginBinding {
+	out := in
+	out.Logs = append([]AutoLoginAttemptLog(nil), in.Logs...)
+	for i := range out.Logs {
+		out.Logs[i].Steps = append([]AutoLoginLogStep(nil), in.Logs[i].Steps...)
+	}
+	return out
 }
 
 func (s *FileStore) SaveUserProxyConfig(config UserProxyConfig) error {
@@ -2434,7 +2447,10 @@ func cloneState(in State) State {
 	out.WebSessions = append([]WebSession(nil), in.WebSessions...)
 	out.Announcements = append([]Announcement(nil), in.Announcements...)
 	out.AnnouncementReads = append([]AnnouncementRead(nil), in.AnnouncementReads...)
-	out.AutoLoginBindings = append([]AutoLoginBinding(nil), in.AutoLoginBindings...)
+	out.AutoLoginBindings = make([]AutoLoginBinding, 0, len(in.AutoLoginBindings))
+	for _, binding := range in.AutoLoginBindings {
+		out.AutoLoginBindings = append(out.AutoLoginBindings, cloneAutoLoginBinding(binding))
+	}
 	out.UserProxyConfigs = append([]UserProxyConfig(nil), in.UserProxyConfigs...)
 	for i := range out.UserProxyConfigs {
 		out.UserProxyConfigs[i].PoolNodes = append([]ProxyPoolNode(nil), in.UserProxyConfigs[i].PoolNodes...)

@@ -530,6 +530,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/icloud/imap-login/save", s.handleSaveICloudIMAPLogin)
 	s.mux.HandleFunc("POST /api/icloud/imap-login/check", s.handleCheckICloudIMAPLogin)
 	s.mux.HandleFunc("POST /api/icloud/auto-login/bind", s.handleBindAutoLogin)
+	s.mux.HandleFunc("POST /api/icloud/auto-login/logs", s.handleAutoLoginLogs)
 	s.mux.HandleFunc("GET /api/user/fixed-proxy", s.handleGetFixedProxy)
 	s.mux.HandleFunc("POST /api/user/fixed-proxy", s.handleSaveFixedProxy)
 	s.mux.HandleFunc("POST /api/user/fixed-proxy/test", s.handleTestFixedProxy)
@@ -6150,6 +6151,7 @@ func (s *Server) allowsUserSession(r *http.Request) bool {
 			"/api/icloud/imap-login/save",
 			"/api/icloud/imap-login/check",
 			"/api/icloud/auto-login/bind",
+			"/api/icloud/auto-login/logs",
 			"/api/icloud/mailboxes/create",
 			"/api/icloud/mailboxes/sync",
 			"/api/icloud/scheduler/start",
