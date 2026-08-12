@@ -241,6 +241,52 @@ func (s *FileStore) UserProxyConfig(ownerID string) (UserProxyConfig, bool) {
 	return UserProxyConfig{}, false
 }
 
+func (s *FileStore) UserProxyConfigs() []UserProxyConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]UserProxyConfig(nil), s.state.UserProxyConfigs...)
+	for i := range out {
+		out[i].PoolNodes = append([]ProxyPoolNode(nil), out[i].PoolNodes...)
+	}
+	return out
+}
+
+func (s *FileStore) SaveAccountProxyPoolNode(ownerID, accountID, node string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID, accountID, node = strings.TrimSpace(ownerID), strings.TrimSpace(accountID), strings.TrimSpace(node)
+	for i := range s.state.Accounts {
+		if constantTimeEqual(s.state.Accounts[i].OwnerID, ownerID) && constantTimeEqual(s.state.Accounts[i].ID, accountID) {
+			s.state.Accounts[i].ProxyPoolNode = node
+			s.state.Accounts[i].UpdatedAt = time.Now()
+			for j := range s.state.ICloudSessions {
+				if constantTimeEqual(s.state.ICloudSessions[j].OwnerID, ownerID) && constantTimeEqual(s.state.ICloudSessions[j].AccountID, accountID) {
+					s.state.ICloudSessions[j].ProxyPoolNode = node
+				}
+			}
+			return s.saveLocked()
+		}
+	}
+	return errCode("account_not_found", "账号不存在", false)
+}
+
+func (s *FileStore) ProxyPoolNodeForAccount(ownerID, accountID, appleID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, account := range s.state.Accounts {
+		if !constantTimeEqual(account.OwnerID, strings.TrimSpace(ownerID)) {
+			continue
+		}
+		if strings.TrimSpace(accountID) != "" && constantTimeEqual(account.ID, strings.TrimSpace(accountID)) {
+			return strings.TrimSpace(account.ProxyPoolNode)
+		}
+		if strings.TrimSpace(appleID) != "" && strings.EqualFold(strings.TrimSpace(account.AppleID), strings.TrimSpace(appleID)) {
+			return strings.TrimSpace(account.ProxyPoolNode)
+		}
+	}
+	return ""
+}
+
 func (s *FileStore) CreateUser(username, password string) (User, error) {
 	return s.createUser(username, password, false)
 }
@@ -2390,6 +2436,9 @@ func cloneState(in State) State {
 	out.AnnouncementReads = append([]AnnouncementRead(nil), in.AnnouncementReads...)
 	out.AutoLoginBindings = append([]AutoLoginBinding(nil), in.AutoLoginBindings...)
 	out.UserProxyConfigs = append([]UserProxyConfig(nil), in.UserProxyConfigs...)
+	for i := range out.UserProxyConfigs {
+		out.UserProxyConfigs[i].PoolNodes = append([]ProxyPoolNode(nil), in.UserProxyConfigs[i].PoolNodes...)
+	}
 	out.RedemptionPools = append([]RedemptionPool(nil), in.RedemptionPools...)
 	out.RedemptionCodes = append([]RedemptionCode(nil), in.RedemptionCodes...)
 	for i := range out.RedemptionCodes {
@@ -2455,6 +2504,7 @@ func mergeICloudSession(existing, incoming ICloudSession) ICloudSession {
 		out.LastCheckOK = existing.LastCheckOK
 	}
 	out.LastStatusMessage = firstNonEmpty(incoming.LastStatusMessage, existing.LastStatusMessage)
+	out.ProxyPoolNode = firstNonEmpty(incoming.ProxyPoolNode, existing.ProxyPoolNode)
 	return out
 }
 

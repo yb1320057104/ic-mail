@@ -42,6 +42,8 @@ type Config struct {
 	LoginBackoffMaxSeconds       int    `json:"login_backoff_max_seconds"`
 	LoginCaptchaEnabled          bool   `json:"login_captcha_enabled"`
 	AutoLoginSecret              string `json:"-"`
+	MihomoBinary                 string `json:"-"`
+	ProxyPoolRuntimeDir          string `json:"-"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -78,6 +80,8 @@ func LoadConfig(path string) (Config, error) {
 		LoginBackoffMaxSeconds:       envPositiveInt("IPM_LOGIN_BACKOFF_MAX_SECONDS", 600),
 		LoginCaptchaEnabled:          envBool("IPM_LOGIN_CAPTCHA_ENABLED", true),
 		AutoLoginSecret:              strings.TrimSpace(os.Getenv("IPM_AUTO_LOGIN_SECRET")),
+		MihomoBinary:                 firstNonEmptyString(strings.TrimSpace(os.Getenv("IPM_MIHOMO_BINARY")), "mihomo"),
+		ProxyPoolRuntimeDir:          strings.TrimSpace(os.Getenv("IPM_PROXY_POOL_RUNTIME_DIR")),
 	}
 	if path == "" {
 		return cfg, nil

@@ -235,7 +235,7 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	client, clientErr := s.appleAuthClientForOwner(session.OwnerID)
+	client, clientErr := s.appleAuthClientForAccount(session.OwnerID, session.AccountID, session.AppleID)
 	if clientErr != nil {
 		s.autoLoginFailed(binding, clientErr)
 		return

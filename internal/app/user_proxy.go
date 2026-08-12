@@ -234,6 +234,18 @@ func explainFixedProxyError(proxyURL *url.URL, err error) error {
 }
 
 func (s *Server) appleHTTPClientForOwner(ownerID string) (*http.Client, error) {
+	return s.appleHTTPClientForAccount(ownerID, "", "")
+}
+
+func (s *Server) appleHTTPClientForAccount(ownerID, accountID, appleID string) (*http.Client, error) {
+	if s.proxyPool != nil {
+		if client, selected, err := s.proxyPool.client(ownerID, accountID, appleID); selected {
+			if err != nil {
+				return nil, errCode("proxy_pool_unavailable", "账号代理异常，已停止 Apple 请求："+err.Error(), true)
+			}
+			return client, nil
+		}
+	}
 	config, ok := s.store.UserProxyConfig(ownerID)
 	if !ok || !config.Enabled {
 		return &http.Client{Timeout: 30 * time.Second}, nil
@@ -247,6 +259,22 @@ func (s *Server) appleHTTPClientForOwner(ownerID string) (*http.Client, error) {
 		return nil, errCode("proxy_unavailable", "代理异常，已停止 Apple 请求："+err.Error(), true)
 	}
 	return client, nil
+}
+
+func (s *Server) iCloudClientForAccount(ownerID, accountID, appleID string) (*ICloudClient, error) {
+	client, err := s.appleHTTPClientForAccount(ownerID, accountID, appleID)
+	if err != nil {
+		return nil, err
+	}
+	return NewICloudClientWithHTTPClient(client), nil
+}
+
+func (s *Server) appleAuthClientForAccount(ownerID, accountID, appleID string) (*AppleAuthClient, error) {
+	client, err := s.appleHTTPClientForAccount(ownerID, accountID, appleID)
+	if err != nil {
+		return nil, err
+	}
+	return NewAppleAuthClientWithHTTPClient(client), nil
 }
 
 func (s *Server) iCloudClientForOwner(ownerID string) (*ICloudClient, error) {
@@ -306,7 +334,18 @@ func (s *Server) handleSaveFixedProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, errCode("proxy_required", "首次配置必须填写代理地址", false))
 		return
 	}
-	c := UserProxyConfig{OwnerID: owner, URLCipher: cipher, URLMasked: masked, Enabled: p.Enabled, Status: "等待连通性测试", UpdatedAt: time.Now()}
+	c := old
+	c.OwnerID = owner
+	c.URLCipher = cipher
+	c.URLMasked = masked
+	c.Enabled = p.Enabled
+	c.Status = "等待连通性测试"
+	c.ExitIP = ""
+	c.LatencyMS = 0
+	c.TLSOK = false
+	c.LastError = ""
+	c.LastTestedAt = time.Time{}
+	c.UpdatedAt = time.Now()
 	if err := s.store.SaveUserProxyConfig(c); err != nil {
 		writeError(w, 500, err)
 		return

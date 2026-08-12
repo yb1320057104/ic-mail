@@ -3464,6 +3464,34 @@ func TestNormalUserCanAccessOwnFixedProxyConfiguration(t *testing.T) {
 	}
 }
 
+func TestSavingFixedProxyPreservesProxyPool(t *testing.T) {
+	store := newTestStore(t)
+	secret := "test-fixed-proxy-encryption-secret"
+	handler := NewServer(Config{PublicBaseURL: "https://mail.example", AutoLoginSecret: secret}, store, discardLogger())
+	_, _ = registerTestUser(t, handler, "admin", "admin123")
+	userCookie, user := registerTestUser(t, handler, "pool-user", "pool-user-123")
+	poolCipher, err := encryptAutoSecret(secret, "proxies: []")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUserProxyConfig(UserProxyConfig{OwnerID: user.ID, PoolEnabled: true, PoolYAMLCipher: poolCipher, PoolNodes: []ProxyPoolNode{{Name: "node-a", Type: "hysteria2"}}, PoolStatus: "代理池已导入"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/user/fixed-proxy", strings.NewReader(`{"url":"http://1.1.1.1:8080","enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(userCookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save fixed proxy = %d body=%s", rr.Code, rr.Body.String())
+	}
+	config, ok := store.UserProxyConfig(user.ID)
+	if !ok || !config.PoolEnabled || config.PoolYAMLCipher != poolCipher || len(config.PoolNodes) != 1 || config.PoolNodes[0].Name != "node-a" {
+		t.Fatalf("proxy pool overwritten: %+v", config)
+	}
+}
+
 func TestSensitiveKeysAreNotAcceptedFromQueryString(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewServer(Config{APIKey: "global-secret"}, store, discardLogger())

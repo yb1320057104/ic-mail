@@ -1415,6 +1415,15 @@
             <label>启用状态<select id="fixedProxyEnabled"><option value="true">启用固定代理</option><option value="false">暂停固定代理</option></select></label>
             <div class="full toolbar"><button type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测连通性</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div>
           </div>
+          <div class="notice"><strong>账号固定代理池</strong><br>支持导入 Clash/Mihomo YAML 或 HTTPS 订阅。每个 Apple 账号固定选择一个节点；支持 <code>dialer-proxy</code> 链式代理。原有固定 HTTP/HTTPS/SOCKS5 代理保持不变。</div>
+          <div class="field-grid">
+            <label>导入方式<select id="proxyPoolSourceType" onchange="updateProxyPoolSourceHint()"><option value="yaml">粘贴 YAML</option><option value="subscription">订阅链接</option></select></label>
+            <label>启用状态<select id="proxyPoolEnabled"><option value="true">启用代理池</option><option value="false">暂停代理池</option></select></label>
+            <label class="full">代理池配置<textarea id="proxyPoolSource" rows="7" autocomplete="off" spellcheck="false" placeholder="粘贴 Clash/Mihomo YAML，系统只读取 proxies 节点"></textarea></label>
+            <div class="full toolbar"><button type="button" onclick="importProxyPool()">导入/覆盖代理池</button><button type="button" onclick="refreshProxyPool()">刷新订阅</button><span id="proxyPoolStatus" class="muted">尚未导入代理池</span></div>
+            <label class="full">当前账号使用的代理节点<select id="accountProxyPoolNode"><option value="">使用原有固定代理或服务器直连</option></select></label>
+            <div class="full toolbar"><button type="button" onclick="bindAccountProxyPoolNode()">保存账号代理</button><button type="button" onclick="testAccountProxyPoolNode()">检测所选节点</button><span id="accountProxyPoolStatus" class="muted">新增账号可先导入代理池，登录成功后再绑定节点</span></div>
+          </div>
           <div class="field-grid">
             <label class="full">手机号----接码地址<input id="autoLoginBinding" autocomplete="off" placeholder="13800138000----https://example.com/code?token=xxx"></label>
             <label>Apple ID 密码<input id="autoLoginPassword" type="password" autocomplete="new-password" placeholder="首次绑定必填；留空保留已保存密码"></label>
@@ -3515,7 +3524,7 @@
         const expanded = expandedSessionAccounts.has(key);
         const childHTML = children.length ? children.map(m => `<div class="submailbox-item"><strong>${esc(m.email)}</strong><span>${esc(m.label || '无标签')} · ${esc(statusText(m.status))} · 收件 ${m.receive_count || 0}</span></div>`).join('') : '<span class="muted">该登录态下暂无同步到的子邮箱</span>';
         const autoLoginText = session.auto_login_enabled ? (session.auto_login_status || '自动接码登录已启用') : '自动接码登录未启用';
-        return `<tr class="${activeICloudSessionKey === key ? 'selected-session-row' : ''}"><td><div class="session-account">${esc(session.apple_id || `账号 ${index+1}`)}</div><span class="mono muted">${esc(session.account_id || '-')}</span><br><span class="login-chip ${session.auto_login_enabled ? 'on' : 'off'}">${esc(autoLoginText)}</span>${session.auto_login_error ? sessionLoginError(session.auto_login_error) : ''}</td>
+        return `<tr class="${activeICloudSessionKey === key ? 'selected-session-row' : ''}"><td><div class="session-account">${esc(session.apple_id || `账号 ${index+1}`)}</div><span class="mono muted">${esc(session.account_id || '-')}</span><br><span class="login-chip ${session.auto_login_enabled ? 'on' : 'off'}">${esc(autoLoginText)}</span>${session.proxy_pool_node ? `<br><span class="login-chip on">代理：${esc(session.proxy_pool_node)}</span>` : ''}${session.auto_login_error ? sessionLoginError(session.auto_login_error) : ''}</td>
           <td>${loginChip('新接口', session.apple_account_login_status || (appleAccountLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(appleAccountLoginSaved(session),session.apple_account_login_checked,session.apple_account_login_ok))}${sessionLoginError(session.apple_account_login_error)}<br>${sessionManageRefreshBadge(session)}</td>
           <td>${loginChip('旧接口', session.icloud_web_login_status || (iCloudWebLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudWebLoginSaved(session),session.icloud_web_login_checked,session.icloud_web_login_ok))}${sessionLoginError(session.icloud_web_login_error)}${sessionOldKeepAliveBadge(session)}</td>
           <td>${loginChip('IMAP', session.icloud_imap_login_status || (iCloudIMAPLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudIMAPLoginSaved(session),session.icloud_imap_login_checked,session.icloud_imap_login_ok))}${sessionLoginError(session.icloud_imap_login_error)}<br><span class="muted">${esc(session.icloud_imap_email || '-')}</span></td>
@@ -3538,6 +3547,7 @@
       $('sessionAccountModalTitle').textContent = title || '添加 Apple 账号';
       $('sessionAccountModal').classList.add('show');
       loadFixedProxy();
+      loadProxyPool();
       setTimeout(() => $('protocolAppleId').focus({preventScroll:true}), 50);
     }
 
@@ -3565,6 +3575,8 @@
       $('autoLoginPassword').value = '';
       $('autoLoginEnabled').value = 'true';
       $('autoLoginStatus').textContent = '请先完成账号登录，再绑定自动接码登录';
+      if ($('accountProxyPoolNode')) $('accountProxyPoolNode').value = '';
+      if ($('accountProxyPoolStatus')) $('accountProxyPoolStatus').textContent = '新增账号请先完成首次登录，随后编辑该账号并绑定固定节点';
       $('sessionEditInfo').textContent = '当前为新增账号模式。输入 Apple ID 和密码后，可分别完成新接口或旧接口登录；IMAP 取码登录可按需配置。';
       $('imapLoginStatus').textContent = '取码登录用于 IMAP 收件和快速获取验证码，不参与创建邮箱。';
       if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '';
@@ -3596,6 +3608,8 @@
       $('autoLoginPassword').value = '';
       $('autoLoginEnabled').value = session.auto_login_enabled ? 'true' : 'false';
       $('autoLoginStatus').textContent = session.auto_login_enabled ? `已绑定：${session.auto_login_phone || '-'}----${session.auto_login_url || '-'}；${session.auto_login_status || '等待自动登录'}${session.auto_login_error ? '；错误：'+session.auto_login_error : ''}` : '尚未启用自动接码登录';
+      if ($('accountProxyPoolNode')) $('accountProxyPoolNode').value = session.proxy_pool_node || '';
+      if ($('accountProxyPoolStatus')) $('accountProxyPoolStatus').textContent = session.proxy_pool_node ? `当前账号固定使用：${session.proxy_pool_node}` : '当前账号使用原有固定代理或服务器直连';
       renderICloudSessions(lastICloudSessions);
       showSessionAccountModal(`编辑账号：${session.apple_id || email || key}`);
       $('protocolPassword').focus({preventScroll:true});
@@ -3777,6 +3791,57 @@
       } catch(err) { $('fixedProxyStatus').textContent='读取代理配置失败：'+err.message; }
     }
 
+    let proxyPoolNodes = [];
+    function updateProxyPoolSourceHint() {
+      const subscription = $('proxyPoolSourceType').value === 'subscription';
+      $('proxyPoolSource').rows = subscription ? 2 : 7;
+      $('proxyPoolSource').placeholder = subscription ? 'https://example.com/clash-subscription' : '粘贴 Clash/Mihomo YAML，系统只读取 proxies 节点';
+    }
+
+    function renderProxyPoolNodes(selected) {
+      const select = $('accountProxyPoolNode'); if (!select) return;
+      const current = selected !== undefined ? selected : select.value;
+      select.innerHTML = '<option value="">使用原有固定代理或服务器直连</option>' + proxyPoolNodes.map(node => `<option value="${esc(node.name)}">${esc(node.name)} · ${esc(node.type)}${node.dialer_proxy ? ' · 经 '+esc(node.dialer_proxy) : ''}</option>`).join('');
+      select.value = proxyPoolNodes.some(node => node.name === current) ? current : '';
+    }
+
+    async function loadProxyPool() {
+      try {
+        const data = await api('/api/user/proxy-pool'); const pool = data.pool || {};
+        proxyPoolNodes = pool.nodes || [];
+        $('proxyPoolEnabled').value = pool.enabled ? 'true' : 'false';
+        const session = activeICloudSessionForBinding();
+        renderProxyPoolNodes(session ? (session.proxy_pool_node || '') : '');
+        $('proxyPoolStatus').textContent = data.configured ? `${pool.status || '代理池已配置'}；${proxyPoolNodes.length} 个节点${pool.source_masked ? '；来源 '+pool.source_masked : ''}${pool.last_error ? '；错误 '+pool.last_error : ''}` : '尚未导入代理池';
+      } catch (err) { $('proxyPoolStatus').textContent = '读取代理池失败：' + err.message; }
+    }
+
+    async function importProxyPool() {
+      const source = $('proxyPoolSource').value.trim(); if (!source) { $('proxyPoolStatus').textContent='请填写 YAML 或 HTTPS 订阅链接'; return; }
+      try {
+        const data = await api('/api/user/proxy-pool/import',{method:'POST',loadingText:'正在校验并加密导入代理池...',body:JSON.stringify({source_type:$('proxyPoolSourceType').value,source,enabled:$('proxyPoolEnabled').value==='true'})});
+        $('proxyPoolSource').value=''; $('proxyPoolStatus').textContent=data.message || '代理池已导入'; await loadProxyPool();
+      } catch(err) { $('proxyPoolStatus').textContent='导入失败：'+err.message; }
+    }
+
+    async function refreshProxyPool() {
+      try { const data=await api('/api/user/proxy-pool/refresh',{method:'POST',loadingText:'正在安全刷新代理订阅...',body:'{}'}); $('proxyPoolStatus').textContent=data.message; await loadProxyPool(); }
+      catch(err) { $('proxyPoolStatus').textContent='刷新失败：'+err.message; }
+    }
+
+    async function bindAccountProxyPoolNode() {
+      const session=activeICloudSessionForBinding(); if(!session||!session.account_id){$('accountProxyPoolStatus').textContent='请先保存账号登录态，再绑定代理节点';return;}
+      const node=$('accountProxyPoolNode').value;
+      try { const data=await api('/api/user/proxy-pool/bind',{method:'POST',loadingText:'正在保存账号固定代理...',body:JSON.stringify({account_id:session.account_id,node})});$('accountProxyPoolStatus').textContent=data.message;await refresh(); }
+      catch(err){$('accountProxyPoolStatus').textContent='保存失败：'+err.message;}
+    }
+
+    async function testAccountProxyPoolNode() {
+      const session=activeICloudSessionForBinding();const node=$('accountProxyPoolNode').value;if(!node){$('accountProxyPoolStatus').textContent='请先选择代理池节点';return;}
+      try {const data=await api('/api/user/proxy-pool/test',{method:'POST',loadingText:'正在启动并检测代理节点...',body:JSON.stringify({account_id:(session||{}).account_id||'',node})});$('accountProxyPoolStatus').textContent=`节点正常；出口 IP ${data.exit_ip||'-'}；延迟 ${data.latency_ms||0}ms；TLS ${data.tls_ok?'正常':'异常'}`;}
+      catch(err){$('accountProxyPoolStatus').textContent='节点异常：'+err.message;}
+    }
+
     async function saveFixedProxy() {
       try {
         let proxyURL=$('fixedProxyURL').value.trim();
@@ -3823,7 +3888,7 @@
       if (!appleId || !password) { setLoginActionState(button, false, '', '旧接口登录', '请输入 Apple ID 和密码'); return; }
       setLoginActionState(button, true, '旧接口登录中...', '旧接口登录', '正在提交旧接口登录，请稍候...');
       try {
-        const data = await apiWithTimeout('/api/icloud/protocol-login/start', {method:'POST', body: JSON.stringify({apple_id:appleId,password,two_factor_method:twoFactorMethodPayloadValue('iCloudWeb2FAMethod')})});
+        const data = await apiWithTimeout('/api/icloud/protocol-login/start', {method:'POST', body: JSON.stringify({account_id:activeICloudSessionKey ? activeICloudSessionAccountID() : '',apple_id:appleId,password,two_factor_method:twoFactorMethodPayloadValue('iCloudWeb2FAMethod')})});
         $('protocolPassword').value = '';
         if (data.needs_2fa) {
           protocolPendingID = data.pending_id || '';
@@ -3885,7 +3950,7 @@
       if (!appleId || !password) { setLoginActionState(button, false, '', '新接口登录', '请输入 Apple ID 和密码'); return; }
       setLoginActionState(button, true, '新接口登录中...', '新接口登录', '正在提交新接口登录，请稍候...');
       try {
-        const data = await apiWithTimeout('/api/apple-account/login/start', {method:'POST', body:JSON.stringify({apple_id:appleId,password,two_factor_method:twoFactorMethodPayloadValue('appleAccount2FAMethod')})});
+        const data = await apiWithTimeout('/api/apple-account/login/start', {method:'POST', body:JSON.stringify({account_id:activeICloudSessionKey ? activeICloudSessionAccountID() : '',apple_id:appleId,password,two_factor_method:twoFactorMethodPayloadValue('appleAccount2FAMethod')})});
         $('protocolPassword').value = '';
         if (data.needs_2fa) {
           appleAccountPendingID = data.pending_id || '';

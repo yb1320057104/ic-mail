@@ -57,6 +57,7 @@ func main() {
 		panel.StartAutomaticBackups(ctx)
 		defer panel.StopMailWatcher()
 		defer panel.StopAppleAccountKeepAlive()
+		defer panel.StopProxyPool()
 	}
 
 	server := &http.Server{

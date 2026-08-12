@@ -109,6 +109,7 @@ type Server struct {
 	startedAt                      time.Time
 	operationMu                    sync.Mutex
 	operationTasks                 []operationTask
+	proxyPool                      *proxyPoolRuntime
 }
 
 type adminConfirmation struct {
@@ -301,6 +302,7 @@ func NewServer(cfg Config, store *FileStore, logger *slog.Logger) http.Handler {
 	}
 	s.checkIMAPLogin = CheckICloudIMAPLogin
 	s.checkGenericIMAPLogin = CheckGenericIMAPLogin
+	s.proxyPool = newProxyPoolRuntime(cfg, store, logger)
 	s.routes()
 	_ = s.store.RecoverInterruptedTasks()
 	return s
@@ -531,6 +533,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/user/fixed-proxy", s.handleGetFixedProxy)
 	s.mux.HandleFunc("POST /api/user/fixed-proxy", s.handleSaveFixedProxy)
 	s.mux.HandleFunc("POST /api/user/fixed-proxy/test", s.handleTestFixedProxy)
+	s.mux.HandleFunc("GET /api/user/proxy-pool", s.handleGetProxyPool)
+	s.mux.HandleFunc("POST /api/user/proxy-pool/import", s.handleImportProxyPool)
+	s.mux.HandleFunc("POST /api/user/proxy-pool/refresh", s.handleRefreshProxyPool)
+	s.mux.HandleFunc("POST /api/user/proxy-pool/bind", s.handleBindAccountProxyPool)
+	s.mux.HandleFunc("POST /api/user/proxy-pool/test", s.handleTestAccountProxyPool)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/create", s.handleCreateICloudMailbox)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/sync", s.handleSyncICloudMailboxes)
 	s.mux.HandleFunc("GET /api/icloud/scheduler/status", s.handleMailboxSchedulerStatus)
@@ -2200,14 +2207,15 @@ func (s *Server) handleCheckICloudSession(w http.ResponseWriter, r *http.Request
 	}
 
 	checkedAt := time.Now()
-	client, clientErr := s.iCloudClientForOwner(ownerID)
-	if clientErr != nil {
-		writeError(w, http.StatusBadGateway, clientErr)
-		return
-	}
 	failed := 0
 	var lastErr error
 	for _, session := range sessions {
+		client, clientErr := s.iCloudClientForAccount(ownerID, session.AccountID, session.AppleID)
+		if clientErr != nil {
+			failed++
+			lastErr = clientErr
+			continue
+		}
 		imapChecker := func(ctx context.Context, _, _ string) error {
 			state, exists := iCloudIMAPLoginState(session)
 			if !exists {
@@ -2279,7 +2287,7 @@ func (s *Server) handleCheckICloudWebLogin(w http.ResponseWriter, r *http.Reques
 	}
 	checkedAt := time.Now()
 	checkCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	client, clientErr := s.iCloudClientForOwner(ownerID)
+	client, clientErr := s.iCloudClientForAccount(ownerID, session.AccountID, session.AppleID)
 	var err error
 	if clientErr != nil {
 		err = clientErr
@@ -2725,6 +2733,7 @@ func checkSavedLoginStatesWithIMAP(ctx context.Context, client *ICloudClient, se
 
 func (s *Server) handleStartICloudProtocolLogin(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
+		AccountID       string `json:"account_id"`
 		AppleID         string `json:"apple_id"`
 		Password        string `json:"password"`
 		TwoFactorMethod string `json:"two_factor_method"`
@@ -2734,7 +2743,7 @@ func (s *Server) handleStartICloudProtocolLogin(w http.ResponseWriter, r *http.R
 		return
 	}
 	ownerID := requestOwnerID(r, s.store)
-	authClient, err := s.appleAuthClientForOwner(ownerID)
+	authClient, err := s.appleAuthClientForAccount(ownerID, payload.AccountID, payload.AppleID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -2792,7 +2801,7 @@ func (s *Server) handleSubmitICloudProtocol2FA(w http.ResponseWriter, r *http.Re
 		return
 	}
 	ownerID := requestOwnerID(r, s.store)
-	authClient, err := s.appleAuthClientForOwner(ownerID)
+	authClient, err := s.appleAuthClientForAccount(ownerID, "", pending.Session.AppleID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -2818,6 +2827,7 @@ func (s *Server) handleSubmitICloudProtocol2FA(w http.ResponseWriter, r *http.Re
 
 func (s *Server) handleStartAppleAccountLogin(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
+		AccountID       string `json:"account_id"`
 		AppleID         string `json:"apple_id"`
 		Password        string `json:"password"`
 		TwoFactorMethod string `json:"two_factor_method"`
@@ -2827,7 +2837,7 @@ func (s *Server) handleStartAppleAccountLogin(w http.ResponseWriter, r *http.Req
 		return
 	}
 	ownerID := requestOwnerID(r, s.store)
-	authClient, err := s.appleAuthClientForOwner(ownerID)
+	authClient, err := s.appleAuthClientForAccount(ownerID, payload.AccountID, payload.AppleID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -2884,7 +2894,7 @@ func (s *Server) handleSubmitAppleAccount2FA(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	ownerID := requestOwnerID(r, s.store)
-	authClient, err := s.appleAuthClientForOwner(ownerID)
+	authClient, err := s.appleAuthClientForAccount(ownerID, "", pending.Session.AppleID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -3074,7 +3084,7 @@ func (s *Server) syncICloudMailboxesForSession(ctx context.Context, r *http.Requ
 		result.Error = err.Error()
 		return result, nil, err
 	}
-	client, clientErr := s.iCloudClientForOwner(ownerID)
+	client, clientErr := s.iCloudClientForAccount(ownerID, session.AccountID, session.AppleID)
 	if clientErr != nil {
 		result.Error = clientErr.Error()
 		return result, nil, clientErr
@@ -3748,7 +3758,7 @@ func (s *Server) handleCleanRemoteMailbox(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	client, clientErr := s.iCloudClientForOwner(mailbox.OwnerID)
+	client, clientErr := s.iCloudClientForAccount(mailbox.OwnerID, mailbox.AccountID, "")
 	if clientErr != nil {
 		writeError(w, http.StatusBadGateway, clientErr)
 		return
@@ -3825,7 +3835,7 @@ func (s *Server) handleCleanRemoteMailboxes(w http.ResponseWriter, r *http.Reque
 			result.Skipped++
 			continue
 		}
-		client, clientErr := s.iCloudClientForOwner(mailbox.OwnerID)
+		client, clientErr := s.iCloudClientForAccount(mailbox.OwnerID, mailbox.AccountID, "")
 		if clientErr != nil {
 			failedMailboxes++
 			warnings = append(warnings, clientErr.Error())
@@ -4574,7 +4584,7 @@ func (s *Server) keepAliveICloudWebRoundWithForce(ctx context.Context, force boo
 			s.saveICloudWebKeepAliveState(session, state)
 			callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			metricStarted := time.Now()
-			client, clientErr := s.iCloudClientForOwner(session.OwnerID)
+			client, clientErr := s.iCloudClientForAccount(session.OwnerID, session.AccountID, session.AppleID)
 			var err error
 			if clientErr != nil {
 				err = clientErr
@@ -4727,7 +4737,7 @@ func (s *Server) keepAliveAppleAccountSession(ctx context.Context, session IClou
 	metricStarted := time.Now()
 	next, err := keepAliveFn(callCtx, state)
 	if proxyConfig, ok := s.store.UserProxyConfig(session.OwnerID); ok && proxyConfig.Enabled {
-		if client, clientErr := s.iCloudClientForOwner(session.OwnerID); clientErr != nil {
+		if client, clientErr := s.iCloudClientForAccount(session.OwnerID, session.AccountID, session.AppleID); clientErr != nil {
 			next, err = state, clientErr
 		} else {
 			next, err = client.keepAliveAppleAccountManageStateUnlocked(callCtx, state)
@@ -5645,7 +5655,7 @@ func (s *Server) createICloudMailboxRemoteAppleAccount(ctx context.Context, owne
 		return ICloudRemoteMailbox{}, errCode("apple_account_session_missing", "未保存新接口登录态，请先完成新接口登录", true)
 	}
 	cooldownKey := mailboxCreateChannelCooldownKey(key, mailboxCreateChannelAppleAccount)
-	client, clientErr := s.iCloudClientForOwner(ownerID)
+	client, clientErr := s.iCloudClientForAccount(ownerID, session.AccountID, session.AppleID)
 	if clientErr != nil {
 		return ICloudRemoteMailbox{}, clientErr
 	}
@@ -5675,7 +5685,7 @@ func (s *Server) createICloudMailboxRemoteICloudWeb(ctx context.Context, ownerID
 		return ICloudRemoteMailbox{}, errCode("icloud_hme_limit", fmt.Sprintf("iCloud 创建上限冷却中，请约 %d 秒后再试", remaining), true)
 	}
 
-	client, clientErr := s.iCloudClientForOwner(ownerID)
+	client, clientErr := s.iCloudClientForAccount(ownerID, session.AccountID, session.AppleID)
 	if clientErr != nil {
 		return ICloudRemoteMailbox{}, clientErr
 	}
@@ -6125,6 +6135,9 @@ func (s *Server) allowsUserSession(r *http.Request) bool {
 	if r.URL.Path == "/api/user/fixed-proxy" || r.URL.Path == "/api/user/fixed-proxy/test" {
 		return true
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/user/proxy-pool") {
+		return true
+	}
 	if r.Method == http.MethodPost {
 		switch r.URL.Path {
 		case "/api/create-settings",
@@ -6503,6 +6516,7 @@ func (s *Server) publicSession(session *ICloudSession) publicICloudSession {
 	}
 	out := publicSessionWithKeepAliveInterval(session, interval)
 	if session != nil {
+		out.ProxyPoolNode = strings.TrimSpace(session.ProxyPoolNode)
 		out.OwnerID = strings.TrimSpace(session.OwnerID)
 		out.Owner = s.ownerName(session.OwnerID)
 		state := s.store.SnapshotForOwner(session.OwnerID)
