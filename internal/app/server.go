@@ -543,6 +543,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/mailboxes/import-refresh-apis", s.handleImportRefreshMailboxAPIs)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/verify", s.handleVerifyMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/disable", s.handleDisableMailbox)
+	s.mux.HandleFunc("POST /api/mailboxes/status/batch", s.handleBatchSetMailboxStatus)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/status", s.handleSetMailboxStatus)
 	s.mux.HandleFunc("POST /api/mailboxes/api-tokens/rotate", s.handleRotateMailboxAPITokens)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/api-token/rotate", s.handleRotateMailboxAPIToken)
@@ -3425,6 +3426,50 @@ func (s *Server) handleSetMailboxStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "mailbox": s.publicMailbox(r, mailbox)})
+}
+
+func (s *Server) handleBatchSetMailboxStatus(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		MailboxIDs []string `json:"mailbox_ids"`
+		Status     string   `json:"status"`
+		Note       string   `json:"note"`
+		APIActive  *bool    `json:"api_active"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(payload.Status))
+	if !validMailboxStatus(status) {
+		writeError(w, http.StatusBadRequest, errCode("invalid_status", "状态只能是 available、used、failed、active、disabled", false))
+		return
+	}
+	if len(payload.MailboxIDs) == 0 || len(payload.MailboxIDs) > 10000 {
+		writeError(w, http.StatusBadRequest, errCode("invalid_mailbox_ids", "请选择 1 到 10000 个邮箱", false))
+		return
+	}
+	wanted := make(map[string]bool, len(payload.MailboxIDs))
+	for _, id := range payload.MailboxIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			wanted[id] = true
+		}
+	}
+	ids := make([]string, 0, len(wanted))
+	for _, mailbox := range s.store.Snapshot().Mailboxes {
+		if wanted[mailbox.ID] && s.canAccessMailbox(r, mailbox) {
+			ids = append(ids, mailbox.ID)
+		}
+	}
+	if len(ids) == 0 {
+		writeError(w, http.StatusForbidden, errCode("no_accessible_mailboxes", "没有可操作的邮箱", false))
+		return
+	}
+	count, err := s.store.SetMailboxStatuses(ids, payload.APIActive, status, payload.Note)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "updated": count, "message": fmt.Sprintf("已批量更新 %d 个邮箱", count)})
 }
 
 func (s *Server) handleRotateMailboxAPIToken(w http.ResponseWriter, r *http.Request) {

@@ -164,6 +164,31 @@ func TestMailboxStatusFilterPaginationAndGroupsUseFilteredTotal(t *testing.T) {
 	}
 }
 
+func TestBatchSetMailboxStatusUpdatesOnlyOwnedMailboxes(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{ConfigPath: "test", RegistrationEnabled: true}, store, discardLogger())
+	_, admin := registerTestUser(t, handler, "admin", "secret1")
+	cookie, user := registerTestUser(t, handler, "alice", "secret1")
+	ownedA, _ := store.AddMailboxForOwner(user.ID, "a", "a", "a@icloud.com")
+	ownedB, _ := store.AddMailboxForOwner(user.ID, "a", "b", "b@icloud.com")
+	foreign, _ := store.AddMailboxForOwner(admin.ID, "b", "foreign", "foreign@icloud.com")
+	body := fmt.Sprintf(`{"mailbox_ids":[%q,%q,%q],"status":"used"}`, ownedA.ID, ownedB.ID, foreign.ID)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailboxes/status/batch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"updated":2`) {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	updatedA, _ := store.FindMailboxByID(ownedA.ID)
+	updatedB, _ := store.FindMailboxByID(ownedB.ID)
+	unchangedForeign, _ := store.FindMailboxByID(foreign.ID)
+	if updatedA.Status != StatusUsed || updatedB.Status != StatusUsed || unchangedForeign.Status != StatusAvailable {
+		t.Fatalf("statuses=%q,%q,%q", updatedA.Status, updatedB.Status, unchangedForeign.Status)
+	}
+}
+
 func TestExtractOTP(t *testing.T) {
 	tests := []struct {
 		name string

@@ -1281,6 +1281,42 @@ func (s *FileStore) SetMailboxStatus(id string, apiActive *bool, icloudActive *b
 	return s.state.Mailboxes[idx], s.saveLocked()
 }
 
+func (s *FileStore) SetMailboxStatuses(ids []string, apiActive *bool, status, note string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			wanted[id] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return 0, errCode("mailbox_ids_required", "请先选择需要更新的邮箱", false)
+	}
+	now := time.Now()
+	count := 0
+	for i := range s.state.Mailboxes {
+		if !wanted[s.state.Mailboxes[i].ID] {
+			continue
+		}
+		if apiActive != nil {
+			s.state.Mailboxes[i].APIActive = *apiActive
+		}
+		if strings.TrimSpace(status) != "" {
+			s.state.Mailboxes[i].Status = strings.TrimSpace(status)
+		}
+		if strings.TrimSpace(note) != "" {
+			s.state.Mailboxes[i].Note = strings.TrimSpace(note)
+		}
+		s.state.Mailboxes[i].UpdatedAt = now
+		count++
+	}
+	if count == 0 {
+		return 0, errCode("mailbox_not_found", "没有找到可更新的邮箱", false)
+	}
+	return count, s.saveLocked()
+}
+
 func (s *FileStore) RotateMailboxAPIToken(id string, validDays int) (Mailbox, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

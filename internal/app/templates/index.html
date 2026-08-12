@@ -3150,12 +3150,10 @@
     async function batchMailboxStatus(status) {
       const ids = requireSelectedMailboxes(); if (!ids.length) return;
       if (!confirm(`确认修改选中的 ${ids.length} 个邮箱状态？`)) return;
-      for (const id of ids) {
-        const payload = {status, note:'面板批量修改状态'};
-        if (status === 'disabled') payload.api_active = false;
-        await api(`/api/mailboxes/${encodeURIComponent(id)}/status`, {method:'POST', body:JSON.stringify(payload)});
-      }
-      selectedMailboxIDs.clear(); await loadMailboxPage(); log(`已批量修改 ${ids.length} 个邮箱`);
+      const payload = {mailbox_ids:ids, status, note:'面板批量修改状态'};
+      if (status === 'disabled') payload.api_active = false;
+      const data = await api('/api/mailboxes/status/batch', {method:'POST', loadingText:`正在批量更新 ${ids.length} 个邮箱，请稍候...`, body:JSON.stringify(payload)});
+      selectedMailboxIDs.clear(); await loadMailboxPage(); log(`已批量修改 ${data.updated || ids.length} 个邮箱`);
     }
 
     async function batchDeleteMailboxes() {
