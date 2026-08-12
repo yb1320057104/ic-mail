@@ -1420,7 +1420,7 @@
             <label>导入方式<select id="proxyPoolSourceType" onchange="updateProxyPoolSourceHint()"><option value="yaml">粘贴 YAML</option><option value="subscription">订阅链接</option></select></label>
             <label>启用状态<select id="proxyPoolEnabled"><option value="true">启用代理池</option><option value="false">暂停代理池</option></select></label>
             <label class="full">代理池配置<textarea id="proxyPoolSource" rows="7" autocomplete="off" spellcheck="false" placeholder="粘贴 Clash/Mihomo YAML，系统只读取 proxies 节点"></textarea></label>
-            <div class="full toolbar"><button type="button" onclick="importProxyPool()">导入/覆盖代理池</button><button type="button" onclick="refreshProxyPool()">刷新订阅</button><span id="proxyPoolStatus" class="muted">尚未导入代理池</span></div>
+            <div class="full toolbar"><button type="button" onclick="importProxyPool()">导入/覆盖代理池</button><button type="button" onclick="saveProxyPoolEnabled()">保存启用状态</button><button type="button" onclick="refreshProxyPool()">刷新订阅</button><span id="proxyPoolStatus" class="muted">尚未导入代理池</span></div>
             <label class="full">当前账号使用的代理节点<select id="accountProxyPoolNode"><option value="">使用原有固定代理或服务器直连</option></select></label>
             <div class="full toolbar"><button type="button" onclick="bindAccountProxyPoolNode()">保存账号代理</button><button type="button" onclick="testAccountProxyPoolNode()">检测所选节点</button><span id="accountProxyPoolStatus" class="muted">新增账号可先导入代理池，登录成功后再绑定节点</span></div>
           </div>
@@ -3809,7 +3809,7 @@
       try {
         const data = await api('/api/user/proxy-pool'); const pool = data.pool || {};
         proxyPoolNodes = pool.nodes || [];
-        $('proxyPoolEnabled').value = pool.enabled ? 'true' : 'false';
+        $('proxyPoolEnabled').value = data.configured ? (pool.enabled ? 'true' : 'false') : 'true';
         const session = activeICloudSessionForBinding();
         renderProxyPoolNodes(session ? (session.proxy_pool_node || '') : '');
         $('proxyPoolStatus').textContent = data.configured ? `${pool.status || '代理池已配置'}；${proxyPoolNodes.length} 个节点${pool.source_masked ? '；来源 '+pool.source_masked : ''}${pool.last_error ? '；错误 '+pool.last_error : ''}` : '尚未导入代理池';
@@ -3827,6 +3827,12 @@
     async function refreshProxyPool() {
       try { const data=await api('/api/user/proxy-pool/refresh',{method:'POST',loadingText:'正在安全刷新代理订阅...',body:'{}'}); $('proxyPoolStatus').textContent=data.message; await loadProxyPool(); }
       catch(err) { $('proxyPoolStatus').textContent='刷新失败：'+err.message; }
+    }
+
+    async function saveProxyPoolEnabled() {
+      const enabled=$('proxyPoolEnabled').value==='true';
+      try { const data=await api('/api/user/proxy-pool/status',{method:'POST',loadingText:enabled?'正在启用代理池...':'正在暂停代理池...',body:JSON.stringify({enabled})}); $('proxyPoolStatus').textContent=data.message; await loadProxyPool(); }
+      catch(err) { $('proxyPoolStatus').textContent='保存启用状态失败：'+err.message; }
     }
 
     async function bindAccountProxyPoolNode() {

@@ -536,6 +536,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/user/proxy-pool", s.handleGetProxyPool)
 	s.mux.HandleFunc("POST /api/user/proxy-pool/import", s.handleImportProxyPool)
 	s.mux.HandleFunc("POST /api/user/proxy-pool/refresh", s.handleRefreshProxyPool)
+	s.mux.HandleFunc("POST /api/user/proxy-pool/status", s.handleSetProxyPoolStatus)
 	s.mux.HandleFunc("POST /api/user/proxy-pool/bind", s.handleBindAccountProxyPool)
 	s.mux.HandleFunc("POST /api/user/proxy-pool/test", s.handleTestAccountProxyPool)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/create", s.handleCreateICloudMailbox)

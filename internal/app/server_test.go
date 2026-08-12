@@ -3492,6 +3492,34 @@ func TestSavingFixedProxyPreservesProxyPool(t *testing.T) {
 	}
 }
 
+func TestProxyPoolStatusCanBeSavedSeparately(t *testing.T) {
+	store := newTestStore(t)
+	secret := "test-proxy-pool-status-secret"
+	handler := NewServer(Config{PublicBaseURL: "https://mail.example", AutoLoginSecret: secret}, store, discardLogger())
+	_, _ = registerTestUser(t, handler, "admin", "admin123")
+	userCookie, user := registerTestUser(t, handler, "pool-status-user", "pool-status-123")
+	poolCipher, err := encryptAutoSecret(secret, "proxies: []")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUserProxyConfig(UserProxyConfig{OwnerID: user.ID, PoolEnabled: false, PoolYAMLCipher: poolCipher, PoolNodes: []ProxyPoolNode{{Name: "node-a", Type: "hysteria2"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/user/proxy-pool/status", strings.NewReader(`{"enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(userCookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enable proxy pool = %d body=%s", rr.Code, rr.Body.String())
+	}
+	config, _ := store.UserProxyConfig(user.ID)
+	if !config.PoolEnabled || config.PoolStatus != "代理池已启用" {
+		t.Fatalf("proxy pool status not saved: %+v", config)
+	}
+}
+
 func TestSensitiveKeysAreNotAcceptedFromQueryString(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewServer(Config{APIKey: "global-secret"}, store, discardLogger())

@@ -508,6 +508,42 @@ func (s *Server) handleRefreshProxyPool(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]any{"success": true, "message": fmt.Sprintf("订阅已刷新，共 %d 个节点", len(nodes)), "nodes": nodes})
 }
 
+func (s *Server) handleSetProxyPoolStatus(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	owner := requestOwnerID(r, s.store)
+	c, ok := s.store.UserProxyConfig(owner)
+	if !ok || c.PoolYAMLCipher == "" || len(c.PoolNodes) == 0 {
+		writeError(w, http.StatusBadRequest, errCode("proxy_pool_missing", "请先导入代理池配置", false))
+		return
+	}
+	c.PoolEnabled = payload.Enabled
+	c.PoolUpdatedAt = time.Now()
+	if payload.Enabled {
+		c.PoolStatus = "代理池已启用"
+		c.PoolLastError = ""
+	} else {
+		c.PoolStatus = "代理池已暂停"
+	}
+	if err := s.store.SaveUserProxyConfig(c); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !payload.Enabled && s.proxyPool != nil {
+		s.proxyPool.restart(owner)
+	}
+	message := "代理池已暂停"
+	if payload.Enabled {
+		message = "代理池已启用"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "enabled": payload.Enabled, "message": message})
+}
+
 func (s *Server) handleBindAccountProxyPool(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		AccountID string `json:"account_id"`
