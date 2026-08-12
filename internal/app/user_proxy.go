@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	xproxy "golang.org/x/net/proxy"
@@ -74,6 +77,10 @@ func maskProxyURL(raw string) string {
 }
 
 func testFixedProxy(ctx context.Context, raw string) (string, int64, bool, error) {
+	proxyURL, parseErr := validateFixedProxyURL(raw)
+	if parseErr != nil {
+		return "", 0, false, parseErr
+	}
 	client, err := proxyHTTPClient(raw, 15*time.Second)
 	if err != nil {
 		return "", 0, false, err
@@ -82,7 +89,7 @@ func testFixedProxy(ctx context.Context, raw string) (string, int64, bool, error
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org?format=json", nil)
 	res, err := client.Do(req)
 	if err != nil {
-		return "", time.Since(start).Milliseconds(), false, err
+		return "", time.Since(start).Milliseconds(), false, explainFixedProxyError(proxyURL, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
@@ -95,6 +102,48 @@ func testFixedProxy(ctx context.Context, raw string) (string, int64, bool, error
 		return "", 0, false, err
 	}
 	return strings.TrimSpace(body.IP), time.Since(start).Milliseconds(), res.TLS != nil, nil
+}
+
+func explainFixedProxyError(proxyURL *url.URL, err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	scheme := ""
+	if proxyURL != nil {
+		scheme = strings.ToLower(proxyURL.Scheme)
+	}
+	if strings.Contains(message, "407") || strings.Contains(message, "proxy authentication required") {
+		return fmt.Errorf("代理认证失败（HTTP 407），请检查代理用户名和密码")
+	}
+	if strings.Contains(message, "403") || strings.Contains(message, "forbidden") {
+		return fmt.Errorf("代理服务器拒绝建立 HTTPS 隧道（HTTP 403），请检查代理授权、IP 白名单和套餐权限")
+	}
+	if strings.Contains(message, "404") || strings.Contains(message, "not found") {
+		if scheme == "https" {
+			return fmt.Errorf("代理服务器未提供 HTTPS 正向代理隧道（HTTP 404）；多数标注“支持 HTTPS”的代理仍应填写 http://IP:端口，请改为 http:// 后重新检测")
+		}
+		return fmt.Errorf("代理地址返回 HTTP 404，它可能是普通网页/API 而不是支持 CONNECT 的正向代理，请核对代理主机和端口")
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) || strings.Contains(message, "timeout") || strings.Contains(message, "deadline exceeded") {
+		return fmt.Errorf("连接代理超时，请检查代理地址、端口、防火墙和代理是否在线")
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || strings.Contains(message, "connection refused") {
+		return fmt.Errorf("代理端口拒绝连接，请检查主机、端口和代理服务是否启动")
+	}
+	if strings.Contains(message, "no such host") || strings.Contains(message, "server misbehaving") {
+		return fmt.Errorf("代理域名解析失败，请检查代理域名")
+	}
+	if strings.Contains(message, "tls") || strings.Contains(message, "certificate") || strings.Contains(message, "first record does not look like a tls handshake") {
+		if scheme == "https" {
+			return fmt.Errorf("代理协议不匹配：该端口不像 HTTPS 代理，请尝试改为 http:// 后重新检测")
+		}
+		return fmt.Errorf("代理 TLS 检测失败：%v", err)
+	}
+	if strings.Contains(message, "socks") {
+		return fmt.Errorf("SOCKS5 代理握手失败，请检查协议、认证信息和端口")
+	}
+	return fmt.Errorf("代理连接失败：%v", err)
 }
 
 func (s *Server) appleHTTPClientForOwner(ownerID string) (*http.Client, error) {

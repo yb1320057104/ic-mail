@@ -1,6 +1,8 @@
 package app
 
 import (
+	"errors"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -28,5 +30,28 @@ func TestUserProxyConfigsAreOwnerIsolated(t *testing.T) {
 	got, ok := store.UserProxyConfig("owner-a")
 	if !ok || got.URLCipher != "a" {
 		t.Fatalf("proxy=%+v ok=%v", got, ok)
+	}
+}
+
+func TestExplainFixedProxyError(t *testing.T) {
+	tests := []struct {
+		raw  string
+		err  error
+		want string
+	}{
+		{"https://8.8.8.8:8080", errors.New("Not Found"), "改为 http://"},
+		{"http://8.8.8.8:8080", errors.New("407 Proxy Authentication Required"), "认证失败"},
+		{"http://8.8.8.8:8080", errors.New("connection refused"), "拒绝连接"},
+		{"https://8.8.8.8:8080", errors.New("tls: first record does not look like a TLS handshake"), "协议不匹配"},
+	}
+	for _, tt := range tests {
+		u, err := url.Parse(tt.raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := explainFixedProxyError(u, tt.err).Error()
+		if !strings.Contains(got, tt.want) {
+			t.Fatalf("explain %q = %q, want contains %q", tt.err, got, tt.want)
+		}
 	}
 }
