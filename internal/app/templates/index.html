@@ -927,6 +927,13 @@
       backdrop-filter: blur(10px);
     }
     .modal-backdrop.show { display: flex; }
+    .operation-loading {
+      position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;
+      background:rgba(0,5,18,.72);backdrop-filter:blur(3px);
+    }
+    .operation-loading.show { display:flex; }
+    .operation-loading-card { min-width:260px;max-width:86vw;padding:24px;border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);text-align:center;box-shadow:0 22px 70px rgba(0,0,0,.45); }
+    .operation-loading-card .spinner { width:28px;height:28px;margin:0 auto 12px;display:block; }
     .modal {
       width: min(720px, 100%);
       border: 1px solid var(--line);
@@ -1465,16 +1472,16 @@
           </div>
           <div class="toolbar list-toolbar">
             <label class="search-field">全局搜索邮箱
-              <input id="mailboxSearch" placeholder="输入完整或部分邮箱，跨全部页搜索" oninput="setMailboxSearch()">
+              <input id="mailboxSearch" placeholder="输入完整或部分邮箱，填写后点击搜索" onkeydown="if(event.key==='Enter'){event.preventDefault();applyMailboxFilters()}">
             </label>
             <div class="mailbox-filter-row">
-              <label class="mailbox-filter-field">邮箱状态<select id="mailboxStatusFilter" onchange="applyMailboxFilters()"><option value="">全部状态</option><option value="available">可用</option><option value="used">已使用</option><option value="failed">失败</option><option value="disabled">停用</option></select></label>
-              <label class="mailbox-filter-field">API 状态<select id="mailboxAPIFilter" onchange="applyMailboxFilters()"><option value="">全部</option><option value="active">API启用</option><option value="disabled">API停用</option></select></label>
-              <label class="mailbox-filter-field">iCloud 状态<select id="mailboxICloudFilter" onchange="applyMailboxFilters()"><option value="">全部</option><option value="active">iCloud启用</option><option value="disabled">iCloud停用</option></select></label>
-              <label class="mailbox-filter-field">接码状态<select id="mailboxReceiveCodeFilter" onchange="applyMailboxFilters()"><option value="">全部接码状态</option><option value="available">可以接码</option><option value="unavailable">当前不可接码</option></select></label>
-              <label class="mailbox-filter-field">导出状态<select id="mailboxExportStatusFilter" onchange="applyMailboxFilters()"><option value="">全部导出状态</option><option value="exported">已导出</option><option value="unexported">未导出</option></select></label>
-              <label class="mailbox-filter-field">最低收件数<input id="mailboxMinReceive" type="number" min="0" placeholder="不限" oninput="setMailboxSearch()"></label>
-              <label class="mailbox-filter-field">最高收件数<input id="mailboxMaxReceive" type="number" min="0" placeholder="不限" oninput="setMailboxSearch()"></label>
+              <label class="mailbox-filter-field">邮箱状态<select id="mailboxStatusFilter"><option value="">全部状态</option><option value="available">可用</option><option value="used">已使用</option><option value="failed">失败</option><option value="disabled">停用</option></select></label>
+              <label class="mailbox-filter-field">API 状态<select id="mailboxAPIFilter"><option value="">全部</option><option value="active">API启用</option><option value="disabled">API停用</option></select></label>
+              <label class="mailbox-filter-field">iCloud 状态<select id="mailboxICloudFilter"><option value="">全部</option><option value="active">iCloud启用</option><option value="disabled">iCloud停用</option></select></label>
+              <label class="mailbox-filter-field">接码状态<select id="mailboxReceiveCodeFilter"><option value="">全部接码状态</option><option value="available">可以接码</option><option value="unavailable">当前不可接码</option></select></label>
+              <label class="mailbox-filter-field">导出状态<select id="mailboxExportStatusFilter"><option value="">全部导出状态</option><option value="exported">已导出</option><option value="unexported">未导出</option></select></label>
+              <label class="mailbox-filter-field">最低收件数<input id="mailboxMinReceive" type="number" min="0" placeholder="不限"></label>
+              <label class="mailbox-filter-field">最高收件数<input id="mailboxMaxReceive" type="number" min="0" placeholder="不限"></label>
               <label class="mailbox-filter-field">同步范围
                 <select id="mailboxSyncAccount" title="同步登录态">
                   <option value="">全部登录态</option>
@@ -1483,6 +1490,7 @@
             </div>
             <div class="mailbox-control-stack">
               <div class="mailbox-action-row">
+                <button id="mailboxSearchButton" class="primary" onclick="applyMailboxFilters()">搜索 / 应用筛选</button>
                 <button id="syncICloudMailboxesButton" onclick="syncICloudMailboxes()">同步该登录态全部历史隐私邮箱</button>
                 <button onclick="clearMailboxSearch()">清空全部条件</button>
               </div>
@@ -1623,6 +1631,9 @@
       <div class="toolbar"><button class="ghost" onclick="closeMailboxViewer()">关闭</button></div>
     </section>
   </div>
+  <div id="operationLoading" class="operation-loading" role="status" aria-live="polite" aria-busy="true">
+    <div class="operation-loading-card"><span class="spinner"></span><strong id="operationLoadingText">正在处理，请稍候...</strong></div>
+  </div>
   <div id="mailboxHistorySyncModal" class="modal-backdrop" onclick="closeMailboxHistorySync(event)" role="dialog" aria-modal="true">
     <section class="modal" onclick="event.stopPropagation()" style="width:min(620px,94vw)">
       <div class="panel-head"><h2 id="mailboxHistorySyncTitle">同步历史隐私邮箱</h2><p id="mailboxHistorySyncStatus">正在准备同步...</p></div>
@@ -1649,7 +1660,9 @@
     let mailboxPage = 1;
     let mailboxPageSize = 10;
     let activeMailboxAccountKey = 'all';
-    let mailboxSearchTimer = null;
+    let appliedMailboxFilters = {};
+    let mailboxRequestSerial = 0;
+    let operationLoadingCount = 0;
     const mailboxCodeResults = new Map();
     const selectedMailboxIDs = new Set();
     const mailboxSyncResults = new Map();
@@ -1768,12 +1781,12 @@
     }
 
     async function api(path, options = {}) {
+      const method = String(options.method || 'GET').toUpperCase();
+      const showLoading = options.showLoading !== false && method !== 'GET' && method !== 'HEAD';
+      if (showLoading) beginOperationLoading(options.loadingText || '正在提交操作，请稍候...');
       const headers = {'content-type': 'application/json', ...(options.headers || {})};
-      const res = await fetch(path, {
-        ...options,
-        headers,
-        credentials: 'same-origin'
-      });
+      try {
+        const res = await fetch(path, {...options, headers, credentials: 'same-origin'});
       let data;
       try {
         data = await res.json();
@@ -1790,7 +1803,21 @@
         err.retryable = !!data.retryable;
         throw err;
       }
-      return data;
+        return data;
+      } finally {
+        if (showLoading) endOperationLoading();
+      }
+    }
+
+    function beginOperationLoading(text) {
+      operationLoadingCount++;
+      if ($('operationLoadingText')) $('operationLoadingText').textContent = text || '正在处理，请稍候...';
+      if ($('operationLoading')) $('operationLoading').classList.add('show');
+    }
+
+    function endOperationLoading() {
+      operationLoadingCount = Math.max(0, operationLoadingCount - 1);
+      if (!operationLoadingCount && $('operationLoading')) $('operationLoading').classList.remove('show');
     }
 
     async function apiWithTimeout(path, options = {}, timeoutMs = 60000) {
@@ -2831,14 +2858,6 @@
       return hasNewCreated;
     }
 
-    function setMailboxSearch() {
-      mailboxPage = 1;
-      if (mailboxSearchTimer) clearTimeout(mailboxSearchTimer);
-      mailboxSearchTimer = setTimeout(() => {
-        loadMailboxPage().catch(err => log('邮箱搜索失败：' + err.message));
-      }, 260);
-    }
-
     function clearMailboxSearch() {
       if ($('mailboxSearch')) $('mailboxSearch').value = '';
       if ($('mailboxStatusFilter')) $('mailboxStatusFilter').value = '';
@@ -2849,8 +2868,9 @@
       if ($('mailboxMinReceive')) $('mailboxMinReceive').value = '';
       if ($('mailboxMaxReceive')) $('mailboxMaxReceive').value = '';
       activeMailboxAccountKey = 'all';
+      appliedMailboxFilters = {};
       mailboxPage = 1;
-      loadMailboxPage().catch(err => log('清空邮箱搜索失败：' + err.message));
+      loadMailboxPage({loadingText:'正在清空筛选条件...'}).catch(err => log('清空邮箱搜索失败：' + err.message));
     }
 
     async function loadSessionMailboxRows(sessions) {
@@ -2872,9 +2892,23 @@
       return rows;
     }
 
+    function readMailboxFilterForm() {
+      return {
+        search: (($('mailboxSearch') || {}).value || '').trim(),
+        status: (($('mailboxStatusFilter') || {}).value || ''),
+        api_status: (($('mailboxAPIFilter') || {}).value || ''),
+        icloud_status: (($('mailboxICloudFilter') || {}).value || ''),
+        receive_code_status: (($('mailboxReceiveCodeFilter') || {}).value || ''),
+        export_status: (($('mailboxExportStatusFilter') || {}).value || ''),
+        min_receive: (($('mailboxMinReceive') || {}).value || ''),
+        max_receive: (($('mailboxMaxReceive') || {}).value || '')
+      };
+    }
+
     function applyMailboxFilters() {
+      appliedMailboxFilters = readMailboxFilterForm();
       mailboxPage = 1;
-      loadMailboxPage().catch(err => log('筛选邮箱失败：' + err.message));
+      loadMailboxPage({loadingText:'正在搜索并筛选邮箱...'}).catch(err => log('筛选邮箱失败：' + err.message));
     }
 
     function mailboxAccountKey(row) {
@@ -2970,18 +3004,19 @@
         page: String(Math.max(1, mailboxPage)),
         page_size: String(Math.max(1, mailboxPageSize))
       });
-      const keyword = ($('mailboxSearch') ? $('mailboxSearch').value : '').trim();
+      const filters = appliedMailboxFilters || {};
+      const keyword = filters.search || '';
       if (keyword) params.set('search', keyword);
       if (!keyword && activeMailboxAccountKey && activeMailboxAccountKey !== 'all') {
         params.set('account_key', activeMailboxAccountKey);
       }
-      const status = ($('mailboxStatusFilter') || {}).value || '';
-      const apiStatus = ($('mailboxAPIFilter') || {}).value || '';
-      const icloudStatus = ($('mailboxICloudFilter') || {}).value || '';
-      const receiveCodeStatus = ($('mailboxReceiveCodeFilter') || {}).value || '';
-      const exportStatus = ($('mailboxExportStatusFilter') || {}).value || '';
-      const minReceive = ($('mailboxMinReceive') || {}).value || '';
-      const maxReceive = ($('mailboxMaxReceive') || {}).value || '';
+      const status = filters.status || '';
+      const apiStatus = filters.api_status || '';
+      const icloudStatus = filters.icloud_status || '';
+      const receiveCodeStatus = filters.receive_code_status || '';
+      const exportStatus = filters.export_status || '';
+      const minReceive = filters.min_receive || '';
+      const maxReceive = filters.max_receive || '';
       if (status) params.set('status', status);
       if (apiStatus) params.set('api_status', apiStatus);
       if (icloudStatus) params.set('icloud_status', icloudStatus);
@@ -2993,7 +3028,16 @@
     }
 
     async function loadMailboxPage(options = {}) {
-      const data = await api('/api/mailboxes?' + mailboxListQuery().toString());
+      const serial = ++mailboxRequestSerial;
+      const showLoading = !!options.loadingText;
+      if (showLoading) beginOperationLoading(options.loadingText);
+      let data;
+      try {
+        data = await api('/api/mailboxes?' + mailboxListQuery().toString());
+      } finally {
+        if (showLoading) endOperationLoading();
+      }
+      if (serial !== mailboxRequestSerial) return;
       lastMailboxes = data.mailboxes || [];
       lastMailboxGroups = data.groups || [];
       lastMailboxPagination = data.pagination || {
