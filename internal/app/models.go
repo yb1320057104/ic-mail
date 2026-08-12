@@ -37,10 +37,25 @@ type State struct {
 	Announcements     []Announcement     `json:"announcements,omitempty"`
 	AnnouncementReads []AnnouncementRead `json:"announcement_reads,omitempty"`
 	AutoLoginBindings []AutoLoginBinding `json:"auto_login_bindings,omitempty"`
+	UserProxyConfigs  []UserProxyConfig  `json:"user_proxy_configs,omitempty"`
 	RedemptionPools   []RedemptionPool   `json:"redemption_pools,omitempty"`
 	RedemptionCodes   []RedemptionCode   `json:"redemption_codes,omitempty"`
 	RedemptionItems   []RedemptionItem   `json:"redemption_items,omitempty"`
 	RecycleBin        []RecycleBinItem   `json:"recycle_bin,omitempty"`
+}
+
+type UserProxyConfig struct {
+	OwnerID      string    `json:"owner_id"`
+	URLCipher    string    `json:"url_cipher"`
+	URLMasked    string    `json:"url_masked"`
+	Enabled      bool      `json:"enabled"`
+	Status       string    `json:"status,omitempty"`
+	ExitIP       string    `json:"exit_ip,omitempty"`
+	LatencyMS    int64     `json:"latency_ms,omitempty"`
+	TLSOK        bool      `json:"tls_ok,omitempty"`
+	LastError    string    `json:"last_error,omitempty"`
+	LastTestedAt time.Time `json:"last_tested_at,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type RedemptionPool struct {

@@ -1401,6 +1401,12 @@
             </div>
           </div>
           <div class="notice"><strong>自动接码登录功能</strong><br>仅在新接口或旧接口登录态异常时，通过短信/手机号验证码自动重新登录。Apple 密码和接码地址会在服务器加密保存。</div>
+          <div class="notice"><strong>用户固定可信代理</strong><br>每个用户最多一个固定出口，仅用于自己的 Apple 请求，不轮换。支持 http://、https://、socks5://，认证信息加密保存。</div>
+          <div class="field-grid">
+            <label class="full">固定代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="http://user:pass@host:port 或 socks5://host:port；留空保留原配置"></label>
+            <label>启用状态<select id="fixedProxyEnabled"><option value="true">启用固定代理</option><option value="false">暂停固定代理</option></select></label>
+            <div class="full toolbar"><button type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测连通性</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div>
+          </div>
           <div class="field-grid">
             <label class="full">手机号----接码地址<input id="autoLoginBinding" autocomplete="off" placeholder="13800138000----https://example.com/code?token=xxx"></label>
             <label>Apple ID 密码<input id="autoLoginPassword" type="password" autocomplete="new-password" placeholder="首次绑定必填；留空保留已保存密码"></label>
@@ -3446,6 +3452,7 @@
       if (content) content.hidden = false;
       $('sessionAccountModalTitle').textContent = title || '添加 Apple 账号';
       $('sessionAccountModal').classList.add('show');
+      loadFixedProxy();
       setTimeout(() => $('protocolAppleId').focus({preventScroll:true}), 50);
     }
 
@@ -3675,6 +3682,27 @@
         $('autoLoginPassword').value=''; $('autoLoginBinding').value=''; $('autoLoginStatus').textContent=data.message || '自动接码登录配置已保存'; await refresh();
       } catch(err) { $('autoLoginStatus').textContent='保存失败：'+err.message; }
       finally { button.disabled=false; button.textContent='保存自动接码登录'; }
+    }
+
+    async function loadFixedProxy() {
+      try {
+        const data = await api('/api/user/fixed-proxy'); const p=data.proxy||{};
+        $('fixedProxyEnabled').value=p.enabled?'true':'false';
+        $('fixedProxyStatus').textContent=data.configured?`${p.url_masked||'已配置'}；${p.status||'等待检测'}${p.exit_ip?'；出口IP '+p.exit_ip:''}${p.latency_ms?'；延迟 '+p.latency_ms+'ms':''}${p.tls_ok?'；TLS正常':''}${p.last_error?'；'+p.last_error:''}`:'尚未配置';
+      } catch(err) { $('fixedProxyStatus').textContent='读取代理配置失败：'+err.message; }
+    }
+
+    async function saveFixedProxy() {
+      try {
+        const data=await api('/api/user/fixed-proxy',{method:'POST',loadingText:'正在加密保存固定代理...',body:JSON.stringify({url:$('fixedProxyURL').value.trim(),enabled:$('fixedProxyEnabled').value==='true'})});
+        $('fixedProxyURL').value=''; $('fixedProxyStatus').textContent=data.message; await loadFixedProxy();
+      } catch(err) { $('fixedProxyStatus').textContent='代理异常：'+err.message; }
+    }
+
+    async function testFixedProxy() {
+      $('fixedProxyStatus').textContent='正在检测代理连通性、出口 IP、延迟和 TLS...';
+      try { const d=await api('/api/user/fixed-proxy/test',{method:'POST',loadingText:'正在检测固定代理...',body:'{}'}); $('fixedProxyStatus').textContent=`代理正常；出口IP ${d.exit_ip||'-'}；延迟 ${d.latency_ms||0}ms；TLS ${d.tls_ok?'正常':'异常'}`; }
+      catch(err) { $('fixedProxyStatus').textContent='代理异常：'+err.message; }
     }
 
     function applyIMAPPreset() {

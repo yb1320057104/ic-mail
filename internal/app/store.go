@@ -217,6 +217,30 @@ func (s *FileStore) AutoLoginBindings() []AutoLoginBinding {
 	return append([]AutoLoginBinding(nil), s.state.AutoLoginBindings...)
 }
 
+func (s *FileStore) SaveUserProxyConfig(config UserProxyConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.UserProxyConfigs {
+		if constantTimeEqual(s.state.UserProxyConfigs[i].OwnerID, config.OwnerID) {
+			s.state.UserProxyConfigs[i] = config
+			return s.saveLocked()
+		}
+	}
+	s.state.UserProxyConfigs = append(s.state.UserProxyConfigs, config)
+	return s.saveLocked()
+}
+
+func (s *FileStore) UserProxyConfig(ownerID string) (UserProxyConfig, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, config := range s.state.UserProxyConfigs {
+		if constantTimeEqual(config.OwnerID, ownerID) {
+			return config, true
+		}
+	}
+	return UserProxyConfig{}, false
+}
+
 func (s *FileStore) CreateUser(username, password string) (User, error) {
 	return s.createUser(username, password, false)
 }
@@ -693,6 +717,13 @@ func (s *FileStore) DeleteUserWithReason(id, reason string) (DeleteUserResult, e
 		}
 	}
 	s.state.AutoLoginBindings = autoLoginBindings
+	proxyConfigs := s.state.UserProxyConfigs[:0]
+	for _, item := range s.state.UserProxyConfigs {
+		if item.OwnerID != id {
+			proxyConfigs = append(proxyConfigs, item)
+		}
+	}
+	s.state.UserProxyConfigs = proxyConfigs
 	redemptionPools := s.state.RedemptionPools[:0]
 	for _, item := range s.state.RedemptionPools {
 		if item.OwnerID != id {
@@ -2358,6 +2389,7 @@ func cloneState(in State) State {
 	out.Announcements = append([]Announcement(nil), in.Announcements...)
 	out.AnnouncementReads = append([]AnnouncementRead(nil), in.AnnouncementReads...)
 	out.AutoLoginBindings = append([]AutoLoginBinding(nil), in.AutoLoginBindings...)
+	out.UserProxyConfigs = append([]UserProxyConfig(nil), in.UserProxyConfigs...)
 	out.RedemptionPools = append([]RedemptionPool(nil), in.RedemptionPools...)
 	out.RedemptionCodes = append([]RedemptionCode(nil), in.RedemptionCodes...)
 	for i := range out.RedemptionCodes {

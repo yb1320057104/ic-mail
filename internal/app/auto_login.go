@@ -235,7 +235,11 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	client := NewAppleAuthClient()
+	client, clientErr := s.appleAuthClientForOwner(session.OwnerID)
+	if clientErr != nil {
+		s.autoLoginFailed(binding, clientErr)
+		return
+	}
 	var successes []string
 	if state, saved := appleAccountLoginState(session); saved && state.LastCheckedAt.IsZero() == false && !state.LastCheckOK {
 		store := newAppleAuthPendingStore()

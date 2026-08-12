@@ -136,6 +136,13 @@ func NewAppleAuthClient() *AppleAuthClient {
 	return &AppleAuthClient{httpClient: &http.Client{Timeout: 30 * time.Second}}
 }
 
+func NewAppleAuthClientWithHTTPClient(client *http.Client) *AppleAuthClient {
+	if client == nil {
+		return NewAppleAuthClient()
+	}
+	return &AppleAuthClient{httpClient: client}
+}
+
 func newAppleAuthPendingStore() *appleAuthPendingStore {
 	return &appleAuthPendingStore{items: make(map[string]appleAuthPending)}
 }

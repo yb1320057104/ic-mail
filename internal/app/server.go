@@ -528,6 +528,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/icloud/imap-login/save", s.handleSaveICloudIMAPLogin)
 	s.mux.HandleFunc("POST /api/icloud/imap-login/check", s.handleCheckICloudIMAPLogin)
 	s.mux.HandleFunc("POST /api/icloud/auto-login/bind", s.handleBindAutoLogin)
+	s.mux.HandleFunc("GET /api/user/fixed-proxy", s.handleGetFixedProxy)
+	s.mux.HandleFunc("POST /api/user/fixed-proxy", s.handleSaveFixedProxy)
+	s.mux.HandleFunc("POST /api/user/fixed-proxy/test", s.handleTestFixedProxy)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/create", s.handleCreateICloudMailbox)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/sync", s.handleSyncICloudMailboxes)
 	s.mux.HandleFunc("GET /api/icloud/scheduler/status", s.handleMailboxSchedulerStatus)
@@ -2197,7 +2200,11 @@ func (s *Server) handleCheckICloudSession(w http.ResponseWriter, r *http.Request
 	}
 
 	checkedAt := time.Now()
-	client := NewICloudClient()
+	client, clientErr := s.iCloudClientForOwner(ownerID)
+	if clientErr != nil {
+		writeError(w, http.StatusBadGateway, clientErr)
+		return
+	}
 	failed := 0
 	var lastErr error
 	for _, session := range sessions {
@@ -2272,7 +2279,13 @@ func (s *Server) handleCheckICloudWebLogin(w http.ResponseWriter, r *http.Reques
 	}
 	checkedAt := time.Now()
 	checkCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	err := NewICloudClient().CheckICloudWebSession(checkCtx, session)
+	client, clientErr := s.iCloudClientForOwner(ownerID)
+	var err error
+	if clientErr != nil {
+		err = clientErr
+	} else {
+		err = client.CheckICloudWebSession(checkCtx, session)
+	}
 	checkTimedOut := errors.Is(checkCtx.Err(), context.DeadlineExceeded)
 	cancel()
 	state.LastCheckedAt = checkedAt
@@ -2720,7 +2733,13 @@ func (s *Server) handleStartICloudProtocolLogin(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := NewAppleAuthClient().StartLogin(
+	ownerID := requestOwnerID(r, s.store)
+	authClient, err := s.appleAuthClientForOwner(ownerID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	result, err := authClient.StartLogin(
 		r.Context(),
 		payload.AppleID,
 		payload.Password,
@@ -2744,7 +2763,7 @@ func (s *Server) handleStartICloudProtocolLogin(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
-	if err := s.store.SaveICloudSessionForOwner(requestOwnerID(r, s.store), result.Session); err != nil {
+	if err := s.store.SaveICloudSessionForOwner(ownerID, result.Session); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -2772,13 +2791,19 @@ func (s *Server) handleSubmitICloudProtocol2FA(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, errCode("apple_login_pending_expired", "旧接口登录已过期，请重新输入账号密码发起登录", true))
 		return
 	}
-	session, err := NewAppleAuthClient().Submit2FA(r.Context(), pending, payload.Code)
+	ownerID := requestOwnerID(r, s.store)
+	authClient, err := s.appleAuthClientForOwner(ownerID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	session, err := authClient.Submit2FA(r.Context(), pending, payload.Code)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	s.icloudProtocolLogins.delete(payload.PendingID)
-	if err := s.store.SaveICloudSessionForOwner(requestOwnerID(r, s.store), session); err != nil {
+	if err := s.store.SaveICloudSessionForOwner(ownerID, session); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -2801,7 +2826,13 @@ func (s *Server) handleStartAppleAccountLogin(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := NewAppleAuthClient().StartAppleAccountManageLogin(
+	ownerID := requestOwnerID(r, s.store)
+	authClient, err := s.appleAuthClientForOwner(ownerID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	result, err := authClient.StartAppleAccountManageLogin(
 		r.Context(),
 		payload.AppleID,
 		payload.Password,
@@ -2823,7 +2854,7 @@ func (s *Server) handleStartAppleAccountLogin(w http.ResponseWriter, r *http.Req
 		})
 		return
 	}
-	if err := s.store.SaveICloudSessionForOwner(requestOwnerID(r, s.store), result.Session); err != nil {
+	if err := s.store.SaveICloudSessionForOwner(ownerID, result.Session); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -2852,13 +2883,19 @@ func (s *Server) handleSubmitAppleAccount2FA(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, errCode("apple_login_pending_expired", "新接口登录已过期，请重新输入账号密码发起登录", true))
 		return
 	}
-	session, err := NewAppleAuthClient().SubmitAppleAccountManage2FA(r.Context(), pending, payload.Code, payload.PhoneNumber)
+	ownerID := requestOwnerID(r, s.store)
+	authClient, err := s.appleAuthClientForOwner(ownerID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	session, err := authClient.SubmitAppleAccountManage2FA(r.Context(), pending, payload.Code, payload.PhoneNumber)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	s.appleAccountLogins.delete(payload.PendingID)
-	if err := s.store.SaveICloudSessionForOwner(requestOwnerID(r, s.store), session); err != nil {
+	if err := s.store.SaveICloudSessionForOwner(ownerID, session); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -3037,7 +3074,12 @@ func (s *Server) syncICloudMailboxesForSession(ctx context.Context, r *http.Requ
 		result.Error = err.Error()
 		return result, nil, err
 	}
-	remotes, err := NewICloudClient().ListPrivacyMailboxes(ctx, session)
+	client, clientErr := s.iCloudClientForOwner(ownerID)
+	if clientErr != nil {
+		result.Error = clientErr.Error()
+		return result, nil, clientErr
+	}
+	remotes, err := client.ListPrivacyMailboxes(ctx, session)
 	if err != nil {
 		result.Error = err.Error()
 		return result, nil, err
@@ -3706,7 +3748,11 @@ func (s *Server) handleCleanRemoteMailbox(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	client := NewICloudClient()
+	client, clientErr := s.iCloudClientForOwner(mailbox.OwnerID)
+	if clientErr != nil {
+		writeError(w, http.StatusBadGateway, clientErr)
+		return
+	}
 	result := ICloudMailCleanupResult{}
 	remoteWarning := ""
 	if payload.MoveSynced {
@@ -3756,7 +3802,6 @@ func (s *Server) handleCleanRemoteMailboxes(w http.ResponseWriter, r *http.Reque
 	}
 
 	state := s.scopedState(r)
-	client := NewICloudClient()
 	result := ICloudMailCleanupResult{}
 	cleanedSessions := map[string]bool{}
 	handledMailboxes := 0
@@ -3778,6 +3823,12 @@ func (s *Server) handleCleanRemoteMailboxes(w http.ResponseWriter, r *http.Reque
 		session, ok := s.sessionForMailbox(mailbox.OwnerID, mailbox.AccountID)
 		if !ok {
 			result.Skipped++
+			continue
+		}
+		client, clientErr := s.iCloudClientForOwner(mailbox.OwnerID)
+		if clientErr != nil {
+			failedMailboxes++
+			warnings = append(warnings, clientErr.Error())
 			continue
 		}
 		sessionKey := firstNonEmpty(session.OwnerID, mailbox.OwnerID, "__legacy__") + ":" + firstNonEmpty(session.AccountID, session.DSID, session.AppleID, mailbox.AccountID, "__session__")
@@ -4523,7 +4574,13 @@ func (s *Server) keepAliveICloudWebRoundWithForce(ctx context.Context, force boo
 			s.saveICloudWebKeepAliveState(session, state)
 			callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			metricStarted := time.Now()
-			err := NewICloudClient().CheckICloudWebSession(callCtx, session)
+			client, clientErr := s.iCloudClientForOwner(session.OwnerID)
+			var err error
+			if clientErr != nil {
+				err = clientErr
+			} else {
+				err = client.CheckICloudWebSession(callCtx, session)
+			}
 			cancel()
 			metricMessage := "旧接口保活正常"
 			if err != nil {
@@ -4624,7 +4681,7 @@ func (s *Server) keepAliveAppleAccountRoundWithForce(ctx context.Context, force 
 		baseInterval = appleAccountKeepAliveDefaultInterval
 	}
 	now := time.Now()
-	workers := make(chan struct{}, 3)
+	workers := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	for _, session := range s.appleAccountKeepAliveSessions() {
 		if ctx.Err() != nil {
@@ -4669,6 +4726,13 @@ func (s *Server) keepAliveAppleAccountSession(ctx context.Context, session IClou
 	callCtx, cancel := context.WithTimeout(ctx, appleAccountKeepAliveTimeout)
 	metricStarted := time.Now()
 	next, err := keepAliveFn(callCtx, state)
+	if proxyConfig, ok := s.store.UserProxyConfig(session.OwnerID); ok && proxyConfig.Enabled {
+		if client, clientErr := s.iCloudClientForOwner(session.OwnerID); clientErr != nil {
+			next, err = state, clientErr
+		} else {
+			next, err = client.keepAliveAppleAccountManageStateUnlocked(callCtx, state)
+		}
+	}
 	cancel()
 	metricMessage := "新接口保活正常"
 	if err != nil {
@@ -5533,7 +5597,7 @@ func (s *Server) createICloudMailboxRemoteWithChannel(ctx context.Context, owner
 	case mailboxCreateChannelAppleAccount:
 		return s.createICloudMailboxRemoteAppleAccount(ctx, ownerID, session, label, note, key)
 	case mailboxCreateChannelICloudWeb:
-		return s.createICloudMailboxRemoteICloudWeb(ctx, session, label, note, key)
+		return s.createICloudMailboxRemoteICloudWeb(ctx, ownerID, session, label, note, key)
 	}
 
 	var appleAccountErr error
@@ -5548,7 +5612,7 @@ func (s *Server) createICloudMailboxRemoteWithChannel(ctx context.Context, owner
 		appleAccountErr = err
 		s.logger.Warn("Apple Account mailbox create failed; falling back to iCloud HME", "account_id", session.AccountID, "err", err)
 	}
-	remote, err := s.createICloudMailboxRemoteICloudWeb(ctx, session, label, note, key)
+	remote, err := s.createICloudMailboxRemoteICloudWeb(ctx, ownerID, session, label, note, key)
 	if err != nil && appleAccountErr != nil {
 		return ICloudRemoteMailbox{}, errCode("mailbox_create_all_channels_failed", "新接口失败："+appleAccountErr.Error()+"；旧接口失败："+err.Error(), true)
 	}
@@ -5581,7 +5645,11 @@ func (s *Server) createICloudMailboxRemoteAppleAccount(ctx context.Context, owne
 		return ICloudRemoteMailbox{}, errCode("apple_account_session_missing", "未保存新接口登录态，请先完成新接口登录", true)
 	}
 	cooldownKey := mailboxCreateChannelCooldownKey(key, mailboxCreateChannelAppleAccount)
-	remote, updatedSession, err := NewICloudClient().CreatePrivacyMailboxWithAppleAccount(ctx, session, s.cfg.AppleAccountAPIKey, label, note)
+	client, clientErr := s.iCloudClientForOwner(ownerID)
+	if clientErr != nil {
+		return ICloudRemoteMailbox{}, clientErr
+	}
+	remote, updatedSession, err := client.CreatePrivacyMailboxWithAppleAccount(ctx, session, s.cfg.AppleAccountAPIKey, label, note)
 	s.markMailboxCreateFinished(key)
 	if isCodedError(err, "apple_account_hme_limit") {
 		s.markMailboxCreateCooldown(cooldownKey, mailboxCreateLimitCooldown)
@@ -5594,7 +5662,7 @@ func (s *Server) createICloudMailboxRemoteAppleAccount(ctx context.Context, owne
 	return remote, err
 }
 
-func (s *Server) createICloudMailboxRemoteICloudWeb(ctx context.Context, session ICloudSession, label, note, key string) (ICloudRemoteMailbox, error) {
+func (s *Server) createICloudMailboxRemoteICloudWeb(ctx context.Context, ownerID string, session ICloudSession, label, note, key string) (ICloudRemoteMailbox, error) {
 	if !iCloudWebLoginSaved(session) {
 		return ICloudRemoteMailbox{}, errCode("icloud_session_missing", "未保存旧接口登录态，请先完成旧接口登录", true)
 	}
@@ -5607,7 +5675,11 @@ func (s *Server) createICloudMailboxRemoteICloudWeb(ctx context.Context, session
 		return ICloudRemoteMailbox{}, errCode("icloud_hme_limit", fmt.Sprintf("iCloud 创建上限冷却中，请约 %d 秒后再试", remaining), true)
 	}
 
-	remote, err := NewICloudClient().CreatePrivacyMailbox(ctx, session, label, note)
+	client, clientErr := s.iCloudClientForOwner(ownerID)
+	if clientErr != nil {
+		return ICloudRemoteMailbox{}, clientErr
+	}
+	remote, err := client.CreatePrivacyMailbox(ctx, session, label, note)
 	s.markMailboxCreateFinished(key)
 	var coded codedError
 	if errors.As(err, &coded) && coded.code == "icloud_hme_limit" {

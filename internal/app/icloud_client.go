@@ -54,6 +54,13 @@ func NewICloudClient() *ICloudClient {
 	return &ICloudClient{client: &http.Client{Timeout: 30 * time.Second}}
 }
 
+func NewICloudClientWithHTTPClient(client *http.Client) *ICloudClient {
+	if client == nil {
+		return NewICloudClient()
+	}
+	return &ICloudClient{client: client}
+}
+
 const mailboxSyncCursorOverlap = 2 * time.Minute
 const appleAccountManageRefreshSkew = 0 * time.Second
 const appleAccountKeepAliveDefaultInterval = 4 * time.Minute
