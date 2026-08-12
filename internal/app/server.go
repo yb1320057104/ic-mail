@@ -543,6 +543,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/verify", s.handleVerifyMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/disable", s.handleDisableMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/status", s.handleSetMailboxStatus)
+	s.mux.HandleFunc("POST /api/mailboxes/api-tokens/rotate", s.handleRotateMailboxAPITokens)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/api-token/rotate", s.handleRotateMailboxAPIToken)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/sync", s.handleSyncMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/remote-clean", s.handleCleanRemoteMailbox)
@@ -3438,6 +3439,69 @@ func (s *Server) handleRotateMailboxAPIToken(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "mailbox": s.publicMailbox(r, m), "message": "API 地址已重置，旧地址立即失效"})
+}
+
+func (s *Server) handleRotateMailboxAPITokens(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		MailboxIDs []string `json:"mailbox_ids"`
+		All        bool     `json:"all"`
+		ValidDays  int      `json:"valid_days"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.ValidDays == 0 {
+		payload.ValidDays = 180
+	}
+	if !payload.All && len(payload.MailboxIDs) == 0 {
+		writeError(w, http.StatusBadRequest, errCode("mailbox_ids_required", "请先选择需要重置取码 API 的邮箱", false))
+		return
+	}
+	if len(payload.MailboxIDs) > 10000 {
+		writeError(w, http.StatusBadRequest, errCode("too_many_mailboxes", "单次最多选择 10000 个邮箱", false))
+		return
+	}
+
+	isAdmin := s.isAdminRequest(r)
+	state := s.store.Snapshot()
+	ownerID := requestOwnerID(r, s.store)
+	requested := make(map[string]bool, len(payload.MailboxIDs))
+	for _, id := range payload.MailboxIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			requested[id] = true
+		}
+	}
+	ids := make([]string, 0)
+	skippedLocked := 0
+	for _, mailbox := range state.Mailboxes {
+		if !isAdmin && !constantTimeEqual(mailbox.OwnerID, ownerID) {
+			continue
+		}
+		if !payload.All && !requested[mailbox.ID] {
+			continue
+		}
+		if !isAdmin && s.store.MailboxRedemptionLocked(mailbox.ID) {
+			skippedLocked++
+			continue
+		}
+		ids = append(ids, mailbox.ID)
+	}
+	if len(ids) == 0 {
+		writeError(w, http.StatusBadRequest, errCode("no_rotatable_mailboxes", "没有可重置取码 API 的邮箱；兑换池邮箱不能单独重置", false))
+		return
+	}
+	count, err := s.store.RotateMailboxAPITokens(ids, payload.ValidDays)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":        true,
+		"rotated":        count,
+		"skipped_locked": skippedLocked,
+		"message":        fmt.Sprintf("已重置 %d 个邮箱的取码 API，旧地址立即失效", count),
+	})
 }
 
 func (s *Server) handleSyncMailbox(w http.ResponseWriter, r *http.Request) {

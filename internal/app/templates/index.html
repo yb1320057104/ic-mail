@@ -1506,6 +1506,8 @@
             <button onclick="batchExportMailboxes('api')">按所选方式导出 API</button>
             <button onclick="batchExportMailboxes('email')">只导出邮箱</button>
             <button onclick="addSelectedToRedemptionPool()">加入兑换池</button>
+            <button onclick="batchRotateMailboxAPIs(false)">重置所选取码 API</button>
+            <button class="danger" onclick="batchRotateMailboxAPIs(true)">一键重置全部取码 API</button>
             <button class="danger" onclick="batchDeleteMailboxes()">删除选中邮箱</button>
           </div>
           <div id="mailboxAccountTabs" class="account-tabs"></div>
@@ -3116,6 +3118,31 @@
       if (!confirm(`确认永久删除选中的 ${ids.length} 个邮箱及其本地验证码记录？`)) return;
       for (const id of ids) await api(`/api/mailboxes/${encodeURIComponent(id)}`, {method:'DELETE'});
       selectedMailboxIDs.clear(); await loadMailboxPage(); log(`已批量删除 ${ids.length} 个邮箱`);
+    }
+
+    async function batchRotateMailboxAPIs(all) {
+      const ids = all ? [] : requireSelectedMailboxes();
+      if (!all && !ids.length) return;
+      const days = Number(prompt('请输入新取码 API 的有效天数（1-3650）', '180'));
+      if (!Number.isInteger(days) || days < 1 || days > 3650) {
+        alert('有效天数必须是 1 到 3650 之间的整数'); return;
+      }
+      const scope = all ? '当前账号全部可操作邮箱' : `选中的 ${ids.length} 个邮箱`;
+      if (!confirm(`确认重置${scope}的取码 API？\n\n所有旧取码地址会立即失效，此操作无法撤销。`)) return;
+      const buttons = [...document.querySelectorAll('button[onclick^="batchRotateMailboxAPIs"]')];
+      buttons.forEach(button => { button.disabled = true; button.dataset.oldText = button.textContent; button.textContent = '正在重置...'; });
+      try {
+        const data = await api('/api/mailboxes/api-tokens/rotate', {method:'POST', body:JSON.stringify({mailbox_ids:ids, all, valid_days:days})});
+        selectedMailboxIDs.clear();
+        await loadMailboxPage();
+        const skipped = Number(data.skipped_locked || 0);
+        const message = `成功重置 ${data.rotated || 0} 个邮箱的取码 API` + (skipped ? `，已跳过 ${skipped} 个兑换池邮箱` : '');
+        alert(message + '。旧地址已立即失效。'); log(message);
+      } catch (error) {
+        alert(`重置取码 API 失败：${error.message || error}`);
+      } finally {
+        buttons.forEach(button => { button.disabled = false; button.textContent = button.dataset.oldText || '重置取码 API'; });
+      }
     }
 
     async function batchExportMailboxes(mode) {

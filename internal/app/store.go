@@ -1304,6 +1304,49 @@ func (s *FileStore) RotateMailboxAPIToken(id string, validDays int) (Mailbox, er
 	return Mailbox{}, errCode("mailbox_not_found", "邮箱不存在", false)
 }
 
+func (s *FileStore) RotateMailboxAPITokens(ids []string, validDays int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if validDays < 1 || validDays > 3650 {
+		return 0, errCode("invalid_api_expiry", "API 有效期必须在 1 到 3650 天之间", false)
+	}
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			wanted[id] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return 0, errCode("mailbox_ids_required", "请先选择需要重置取码 API 的邮箱", false)
+	}
+	type tokenUpdate struct {
+		index int
+		token string
+	}
+	updates := make([]tokenUpdate, 0, len(wanted))
+	for i := range s.state.Mailboxes {
+		if !wanted[s.state.Mailboxes[i].ID] {
+			continue
+		}
+		token, err := randomToken(24)
+		if err != nil {
+			return 0, err
+		}
+		updates = append(updates, tokenUpdate{index: i, token: token})
+	}
+	if len(updates) == 0 {
+		return 0, errCode("mailbox_not_found", "没有找到可重置的邮箱", false)
+	}
+	now := time.Now()
+	for _, update := range updates {
+		s.state.Mailboxes[update.index].APIToken = update.token
+		s.state.Mailboxes[update.index].APITokenExpiresAt = now.Add(time.Duration(validDays) * 24 * time.Hour)
+		s.state.Mailboxes[update.index].APIActive = true
+		s.state.Mailboxes[update.index].UpdatedAt = now
+	}
+	return len(updates), s.saveLocked()
+}
+
 func (s *FileStore) RotateAllMailboxAPITokens(validDays int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

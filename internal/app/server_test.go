@@ -40,6 +40,60 @@ func TestMailboxPublicAPIResponseDisablesCaching(t *testing.T) {
 	}
 }
 
+func TestBatchRotateMailboxAPIsRespectsOwnerAndRedemptionLock(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{ConfigPath: "test", RegistrationEnabled: true}, store, discardLogger())
+	_, admin := registerTestUser(t, handler, "admin", "secret1")
+	userCookie, user := registerTestUser(t, handler, "alice", "secret1")
+	owned, err := store.AddMailboxForOwner(user.ID, "account-a", "owned", "owned@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := store.AddMailboxForOwner(user.ID, "account-a", "locked", "locked@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := store.AddMailboxForOwner(admin.ID, "account-b", "foreign", "foreign@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	for i := range store.state.Mailboxes {
+		if store.state.Mailboxes[i].ID == locked.ID {
+			store.state.Mailboxes[i].RedemptionLocked = true
+		}
+	}
+	if err := store.saveLocked(); err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	store.mu.Unlock()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailboxes/api-tokens/rotate", strings.NewReader(`{"all":true,"valid_days":30}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(userCookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"rotated":1`) || !strings.Contains(rr.Body.String(), `"skipped_locked":1`) {
+		t.Fatalf("unexpected body=%s", rr.Body.String())
+	}
+	updatedOwned, _ := store.FindMailboxByID(owned.ID)
+	updatedLocked, _ := store.FindMailboxByID(locked.ID)
+	updatedForeign, _ := store.FindMailboxByID(foreign.ID)
+	if constantTimeEqual(updatedOwned.APIToken, owned.APIToken) {
+		t.Fatal("owned mailbox token was not rotated")
+	}
+	if !constantTimeEqual(updatedLocked.APIToken, locked.APIToken) {
+		t.Fatal("redemption-locked mailbox token was rotated")
+	}
+	if !constantTimeEqual(updatedForeign.APIToken, foreign.APIToken) {
+		t.Fatal("foreign mailbox token was rotated")
+	}
+}
+
 func TestExtractOTP(t *testing.T) {
 	tests := []struct {
 		name string
