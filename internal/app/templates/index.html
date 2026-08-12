@@ -1409,9 +1409,9 @@
             </div>
           </div>
           <div class="notice"><strong>自动接码登录功能</strong><br>仅在新接口或旧接口登录态异常时，通过短信/手机号验证码自动重新登录。Apple 密码和接码地址会在服务器加密保存。</div>
-          <div class="notice"><strong>用户固定可信代理</strong><br>每个用户最多一个固定出口，仅用于自己的 Apple 请求，不轮换。支持 http://、https://、socks5://，认证信息加密保存。</div>
+          <div class="notice"><strong>用户固定可信代理</strong><br>每个用户最多一个固定出口，仅用于自己的 Apple 请求，不轮换。支持 http://、https://、socks5://；未填写协议时自动补全 http://，认证信息加密保存。</div>
           <div class="field-grid">
-            <label class="full">固定代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="http://user:pass@host:port 或 socks5://host:port；留空保留原配置"></label>
+            <label class="full">固定代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="可直接填写 IP:端口，系统自动补全 http://；留空保留原配置"></label>
             <label>启用状态<select id="fixedProxyEnabled"><option value="true">启用固定代理</option><option value="false">暂停固定代理</option></select></label>
             <div class="full toolbar"><button type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测连通性</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div>
           </div>
@@ -3779,7 +3779,9 @@
 
     async function saveFixedProxy() {
       try {
-        const data=await api('/api/user/fixed-proxy',{method:'POST',loadingText:'正在加密保存固定代理...',body:JSON.stringify({url:$('fixedProxyURL').value.trim(),enabled:$('fixedProxyEnabled').value==='true'})});
+        let proxyURL=$('fixedProxyURL').value.trim();
+        if (proxyURL && !proxyURL.includes('://')) proxyURL='http://'+proxyURL;
+        const data=await api('/api/user/fixed-proxy',{method:'POST',loadingText:'正在加密保存固定代理...',body:JSON.stringify({url:proxyURL,enabled:$('fixedProxyEnabled').value==='true'})});
         $('fixedProxyURL').value=''; $('fixedProxyStatus').textContent=data.message; await loadFixedProxy();
       } catch(err) { $('fixedProxyStatus').textContent='代理异常：'+err.message; }
     }

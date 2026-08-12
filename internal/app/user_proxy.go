@@ -17,8 +17,17 @@ import (
 	xproxy "golang.org/x/net/proxy"
 )
 
+func normalizeFixedProxyURL(raw string) (string, bool) {
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" || strings.Contains(normalized, "://") {
+		return normalized, false
+	}
+	return "http://" + normalized, true
+}
+
 func validateFixedProxyURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	normalized, _ := normalizeFixedProxyURL(raw)
+	u, err := url.Parse(normalized)
 	if err != nil || u.Hostname() == "" {
 		return nil, errCode("proxy_invalid", "代理地址格式无效", false)
 	}
@@ -196,18 +205,24 @@ func (s *Server) handleSaveFixedProxy(w http.ResponseWriter, r *http.Request) {
 	old, _ := s.store.UserProxyConfig(owner)
 	cipher := old.URLCipher
 	masked := old.URLMasked
+	schemeAdded := false
 	if strings.TrimSpace(p.URL) != "" {
-		if _, err := validateFixedProxyURL(p.URL); err != nil {
+		var normalizedURL string
+		normalizedURL, schemeAdded = normalizeFixedProxyURL(p.URL)
+		if _, err := validateFixedProxyURL(normalizedURL); err != nil {
 			writeError(w, 400, err)
 			return
 		}
 		var err error
-		cipher, err = encryptAutoSecret(s.cfg.AutoLoginSecret, p.URL)
+		cipher, err = encryptAutoSecret(s.cfg.AutoLoginSecret, normalizedURL)
 		if err != nil {
 			writeError(w, 503, err)
 			return
 		}
-		masked = maskProxyURL(p.URL)
+		masked = maskProxyURL(normalizedURL)
+		if schemeAdded {
+			p.URL = normalizedURL
+		}
 	}
 	if cipher == "" {
 		writeError(w, 400, errCode("proxy_required", "首次配置必须填写代理地址", false))
@@ -218,7 +233,11 @@ func (s *Server) handleSaveFixedProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"success": true, "message": "固定代理已加密保存"})
+	message := "固定代理已加密保存"
+	if schemeAdded {
+		message = "未填写代理协议，已自动补全 http:// 并加密保存"
+	}
+	writeJSON(w, 200, map[string]any{"success": true, "message": message, "url_masked": masked})
 }
 
 func (s *Server) handleTestFixedProxy(w http.ResponseWriter, r *http.Request) {
