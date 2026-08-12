@@ -3431,6 +3431,39 @@ func testAdminConfirmationToken(t *testing.T, handler http.Handler, cookie *http
 	return body.Token
 }
 
+func TestNormalUserCanAccessOwnFixedProxyConfiguration(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{PublicBaseURL: "https://mail.example", AutoLoginSecret: "test-fixed-proxy-encryption-secret"}, store, discardLogger())
+
+	adminCookie, _ := registerTestUser(t, handler, "admin", "admin123")
+	_ = adminCookie
+	userCookie, _ := registerTestUser(t, handler, "alice", "alice123")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/user/fixed-proxy", nil)
+	req.AddCookie(userCookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("normal user get fixed proxy = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/user/fixed-proxy", strings.NewReader(`{"url":"http://1.1.1.1:8080","enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(userCookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("normal user save fixed proxy = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/user/fixed-proxy", nil)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous get fixed proxy = %d body=%s, want 401", rr.Code, rr.Body.String())
+	}
+}
+
 func TestSensitiveKeysAreNotAcceptedFromQueryString(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewServer(Config{APIKey: "global-secret"}, store, discardLogger())
