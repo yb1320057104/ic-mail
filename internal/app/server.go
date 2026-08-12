@@ -1798,41 +1798,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClaimMailbox(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizedGlobalAPI(r) {
-		writeError(w, http.StatusUnauthorized, errCode("global_api_key_required", "自动取号需要配置并提交全局 API Key", false))
-		return
-	}
-	var payload struct {
-		Project string `json:"project"`
-		Purpose string `json:"purpose"`
-		Count   int    `json:"count"`
-	}
-	if r.ContentLength != 0 {
-		if err := decodeJSON(r, &payload); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-	} else {
-		_ = r.Body.Close()
-	}
-	note := strings.TrimSpace(payload.Project)
-	if strings.TrimSpace(payload.Purpose) != "" {
-		note = strings.TrimSpace(note + " " + payload.Purpose)
-	}
-	if note == "" {
-		note = "外部 API 已领取"
-	} else {
-		note = "外部 API 已领取：" + note
-	}
-	mailbox, err := s.store.ClaimAvailableMailbox(note)
-	if err != nil {
-		writeError(w, http.StatusOK, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"success": true,
-		"mailbox": s.publicMailbox(r, mailbox),
-	})
+	writeError(w, http.StatusGone, errCode("mailbox_claim_disabled", "全局自动取号接口已关闭", false))
 }
 
 func (s *Server) handleLookupMailboxes(w http.ResponseWriter, r *http.Request) {

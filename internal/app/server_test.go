@@ -3275,8 +3275,12 @@ func TestSensitiveKeysAreNotAcceptedFromQueryString(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(`{}`))
 			req.Header.Set("Content-Type", "application/json")
 			handler.ServeHTTP(rr, req)
-			if rr.Code != http.StatusUnauthorized {
-				t.Fatalf("%s %s = %d body=%s, want 401", tt.method, tt.path, rr.Code, rr.Body.String())
+			want := http.StatusUnauthorized
+			if strings.HasPrefix(tt.path, "/api/v1/mailboxes/claim") {
+				want = http.StatusGone
+			}
+			if rr.Code != want {
+				t.Fatalf("%s %s = %d body=%s, want %d", tt.method, tt.path, rr.Code, rr.Body.String(), want)
 			}
 		})
 	}
@@ -4424,7 +4428,7 @@ func TestStoreMigratesLegacyMailboxesToSoleOwnerAccount(t *testing.T) {
 	}
 }
 
-func TestClaimMailboxRequiresGlobalAPIKeyAndMarksUsed(t *testing.T) {
+func TestClaimMailboxIsDisabledEvenWithGlobalAPIKey(t *testing.T) {
 	store := newTestStore(t)
 	mailbox, err := store.AddMailbox("", "UPI-1", "alias@icloud.com")
 	if err != nil {
@@ -4436,8 +4440,8 @@ func TestClaimMailboxRequiresGlobalAPIKeyAndMarksUsed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mailboxes/claim", strings.NewReader(`{"project":"openai","purpose":"register"}`))
 	req.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("claim without key = %d, want 401", rr.Code)
+	if rr.Code != http.StatusGone || !strings.Contains(rr.Body.String(), "mailbox_claim_disabled") {
+		t.Fatalf("claim without key = %d body=%s, want 410", rr.Code, rr.Body.String())
 	}
 
 	rr = httptest.NewRecorder()
@@ -4445,24 +4449,11 @@ func TestClaimMailboxRequiresGlobalAPIKeyAndMarksUsed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer global-key")
 	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("claim with key = %d, body=%s", rr.Code, rr.Body.String())
-	}
-	var body struct {
-		Success bool          `json:"success"`
-		Mailbox publicMailbox `json:"mailbox"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if !body.Success || body.Mailbox.ID != mailbox.ID || body.Mailbox.Status != StatusUsed {
-		t.Fatalf("claim body = %+v", body)
-	}
-	if !strings.HasPrefix(body.Mailbox.APIURL, "https://mail.example/") {
-		t.Fatalf("api_url = %q", body.Mailbox.APIURL)
+	if rr.Code != http.StatusGone || !strings.Contains(rr.Body.String(), "mailbox_claim_disabled") {
+		t.Fatalf("claim with key = %d body=%s, want 410", rr.Code, rr.Body.String())
 	}
 	updated, ok := store.FindMailboxByID(mailbox.ID)
-	if !ok || updated.Status != StatusUsed {
+	if !ok || updated.Status != StatusAvailable {
 		t.Fatalf("stored mailbox = %+v ok=%v", updated, ok)
 	}
 }
