@@ -1508,6 +1508,8 @@
             <button onclick="addSelectedToRedemptionPool()">加入兑换池</button>
             <button onclick="batchRotateMailboxAPIs(false)">重置所选取码 API</button>
             <button class="danger" onclick="batchRotateMailboxAPIs(true)">一键重置全部取码 API</button>
+            <button onclick="openRefreshAPIImport()">导入旧地址并更新导出</button>
+            <input id="refreshAPIImportFile" type="file" accept=".txt,text/plain" hidden onchange="refreshImportedMailboxAPIs(this)">
             <button class="danger" onclick="batchDeleteMailboxes()">删除选中邮箱</button>
           </div>
           <div id="mailboxAccountTabs" class="account-tabs"></div>
@@ -3142,6 +3144,42 @@
         alert(`重置取码 API 失败：${error.message || error}`);
       } finally {
         buttons.forEach(button => { button.disabled = false; button.textContent = button.dataset.oldText || '重置取码 API'; });
+      }
+    }
+
+    function openRefreshAPIImport() {
+      const input = $('refreshAPIImportFile');
+      input.value = '';
+      input.click();
+    }
+
+    async function refreshImportedMailboxAPIs(input) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      if (file.size > 1024 * 1024) { alert('导入文件不能超过 1 MB'); return; }
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter(line => line.trim());
+      if (!lines.length) { alert('导入文件中没有可处理的数据'); return; }
+      if (lines.length > 10000) { alert('单次最多导入 10000 行'); return; }
+      if (!confirm(`将按照邮箱地址匹配 ${lines.length} 行旧数据，并导出当前的新取码地址。\n旧文件中的密钥不会恢复或保存，是否继续？`)) return;
+      const fallbackType = (($('batchMailboxAPIExportType') || {}).value || 'json');
+      try {
+        const data = await api('/api/mailboxes/import-refresh-apis', {method:'POST', body:JSON.stringify({lines, api_type:fallbackType})});
+        const blob = new Blob([data.content || ''], {type:'text/plain;charset=utf-8'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `icloud-mailbox-apis-refreshed-${Date.now()}.txt`;
+        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+        const details = [`成功更新导出 ${data.updated || 0} 个`];
+        if (data.missing_count) details.push(`未匹配 ${data.missing_count} 个`);
+        if (data.skipped_locked) details.push(`跳过兑换池邮箱 ${data.skipped_locked} 个`);
+        alert(details.join('，') + '。'); log(details.join('，'));
+        await loadMailboxPage();
+      } catch (error) {
+        alert(`导入更新失败：${error.message || error}`);
+      } finally {
+        input.value = '';
       }
     }
 

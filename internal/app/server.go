@@ -540,6 +540,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/mailboxes", s.handleListMailboxes)
 	s.mux.HandleFunc("POST /api/mailboxes", s.handleCreateMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/remote-clean", s.handleCleanRemoteMailboxes)
+	s.mux.HandleFunc("POST /api/mailboxes/import-refresh-apis", s.handleImportRefreshMailboxAPIs)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/verify", s.handleVerifyMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/disable", s.handleDisableMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/status", s.handleSetMailboxStatus)
@@ -3501,6 +3502,95 @@ func (s *Server) handleRotateMailboxAPITokens(w http.ResponseWriter, r *http.Req
 		"rotated":        count,
 		"skipped_locked": skippedLocked,
 		"message":        fmt.Sprintf("已重置 %d 个邮箱的取码 API，旧地址立即失效", count),
+	})
+}
+
+func (s *Server) handleImportRefreshMailboxAPIs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, private")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	var payload struct {
+		Lines   []string `json:"lines"`
+		APIType string   `json:"api_type"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(payload.Lines) == 0 {
+		writeError(w, http.StatusBadRequest, errCode("import_file_empty", "导入文件中没有可处理的取码地址", false))
+		return
+	}
+	if len(payload.Lines) > 10000 {
+		writeError(w, http.StatusBadRequest, errCode("too_many_import_lines", "单次最多导入 10000 行", false))
+		return
+	}
+	state := s.store.SnapshotForOwner(requestOwnerID(r, s.store))
+	if s.isAdminRequest(r) {
+		state = s.store.Snapshot()
+	}
+	byEmail := make(map[string]Mailbox, len(state.Mailboxes))
+	for _, mailbox := range state.Mailboxes {
+		byEmail[strings.ToLower(strings.TrimSpace(mailbox.Email))] = mailbox
+	}
+	seen := make(map[string]bool)
+	missing := make([]string, 0)
+	skippedLocked := 0
+	var out strings.Builder
+	updatedIDs := make([]string, 0)
+	for _, rawLine := range payload.Lines {
+		line := strings.TrimSpace(strings.TrimPrefix(rawLine, "\ufeff"))
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "----", 2)
+		email := strings.ToLower(strings.TrimSpace(parts[0]))
+		if email == "" || seen[email] {
+			continue
+		}
+		seen[email] = true
+		mailbox, ok := byEmail[email]
+		if !ok {
+			missing = append(missing, email)
+			continue
+		}
+		if !s.isAdminRequest(r) && s.store.MailboxRedemptionLocked(mailbox.ID) {
+			skippedLocked++
+			continue
+		}
+		apiType := payload.APIType
+		if len(parts) == 2 {
+			oldURL := strings.ToLower(strings.TrimSpace(parts[1]))
+			switch {
+			case strings.Contains(oldURL, "/view"):
+				apiType = "visual"
+			case strings.Contains(oldURL, "/content"):
+				apiType = "content"
+			case strings.Contains(oldURL, "/code"):
+				apiType = "json"
+			}
+		}
+		out.WriteString(mailbox.Email)
+		out.WriteString("----")
+		out.WriteString(s.mailboxExportAPIURL(r, mailbox, apiType))
+		out.WriteByte('\n')
+		updatedIDs = append(updatedIDs, mailbox.ID)
+	}
+	if len(updatedIDs) == 0 {
+		writeError(w, http.StatusBadRequest, errCode("no_matching_mailboxes", "没有匹配到可更新导出的邮箱", false))
+		return
+	}
+	_ = s.store.MarkMailboxesExported(updatedIDs, time.Now())
+	if len(missing) > 100 {
+		missing = missing[:100]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":          true,
+		"content":          out.String(),
+		"updated":          len(updatedIDs),
+		"missing_count":    len(seen) - len(updatedIDs) - skippedLocked,
+		"missing_examples": missing,
+		"skipped_locked":   skippedLocked,
 	})
 }
 

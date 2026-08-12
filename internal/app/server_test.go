@@ -94,6 +94,31 @@ func TestBatchRotateMailboxAPIsRespectsOwnerAndRedemptionLock(t *testing.T) {
 	}
 }
 
+func TestImportRefreshMailboxAPIsPreservesThreeExportTypes(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{ConfigPath: "test"}, store, discardLogger())
+	cookie, user := registerTestUser(t, handler, "admin", "secret1")
+	mailbox, err := store.AddMailboxForOwner(user.ID, "account-a", "mail", "alias@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"lines":["alias@icloud.com----https://old.example/api/v1/access/old/mailboxes/alias@icloud.com/view"],"api_type":"json"}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailboxes/import-refresh-apis", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "/view") || !strings.Contains(rr.Body.String(), url.PathEscape(mailbox.APIToken)) {
+		t.Fatalf("visual URL was not refreshed: %s", rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store, private" {
+		t.Fatalf("Cache-Control=%q", got)
+	}
+}
+
 func TestExtractOTP(t *testing.T) {
 	tests := []struct {
 		name string
