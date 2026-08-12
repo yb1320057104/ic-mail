@@ -119,6 +119,51 @@ func TestImportRefreshMailboxAPIsPreservesThreeExportTypes(t *testing.T) {
 	}
 }
 
+func TestMailboxStatusFilterPaginationAndGroupsUseFilteredTotal(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{ConfigPath: "test"}, store, discardLogger())
+	cookie, user := registerTestUser(t, handler, "admin", "secret1")
+	available, _ := store.AddMailboxForOwner(user.ID, "account-a", "available", "available@icloud.com")
+	usedA, _ := store.AddMailboxForOwner(user.ID, "account-a", "used-a", "used-a@icloud.com")
+	usedB, _ := store.AddMailboxForOwner(user.ID, "account-b", "used-b", "used-b@icloud.com")
+	if _, err := store.SetMailboxStatus(usedA.ID, nil, nil, StatusUsed, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetMailboxStatus(usedB.ID, nil, nil, StatusUsed, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mailboxes?status=used&page=1&page_size=1", nil)
+	req.AddCookie(cookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		Mailboxes  []publicMailbox      `json:"mailboxes"`
+		Groups     []publicMailboxGroup `json:"groups"`
+		Pagination publicPagination     `json:"pagination"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Pagination.Total != 2 || response.Pagination.TotalAll != 2 || response.Pagination.TotalPages != 2 || len(response.Mailboxes) != 1 {
+		t.Fatalf("pagination=%+v mailboxes=%d", response.Pagination, len(response.Mailboxes))
+	}
+	groupTotal := 0
+	for _, group := range response.Groups {
+		groupTotal += group.Count
+	}
+	if groupTotal != 2 {
+		t.Fatalf("filtered group total=%d groups=%+v", groupTotal, response.Groups)
+	}
+	unchanged, _ := store.FindMailboxByID(available.ID)
+	if unchanged.Status != StatusAvailable {
+		t.Fatalf("filter changed mailbox status to %q", unchanged.Status)
+	}
+}
+
 func TestExtractOTP(t *testing.T) {
 	tests := []struct {
 		name string

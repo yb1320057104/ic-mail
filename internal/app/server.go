@@ -3092,7 +3092,12 @@ func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 	state := s.scopedState(r)
 	accountsByID := mailboxAccountMap(state.Accounts)
 	base := filterMailboxesByOwner(state.Mailboxes, strings.TrimSpace(r.URL.Query().Get("owner_id")), scopedOwnerID(r, s.store), s.isAdminRequest(r))
-	groups := publicMailboxGroups(base, accountsByID)
+	groupValues := cloneURLValues(r.URL.Query())
+	groupValues.Del("account_key")
+	groupValues.Del("account_id")
+	groupBase := filterMailboxesForList(base, accountsByID, groupValues)
+	groupBase = s.filterMailboxesByReceiveCode(groupBase, r.URL.Query().Get("receive_code_status"))
+	groups := publicMailboxGroups(groupBase, accountsByID)
 	filtered := filterMailboxesForList(base, accountsByID, r.URL.Query())
 	filtered = s.filterMailboxesByReceiveCode(filtered, r.URL.Query().Get("receive_code_status"))
 	sortMailboxesForList(filtered, accountsByID)
@@ -3114,11 +3119,19 @@ func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 			Page:       page,
 			PageSize:   pageSize,
 			Total:      len(filtered),
-			TotalAll:   len(base),
+			TotalAll:   len(groupBase),
 			TotalPages: totalPages(len(filtered), pageSize),
 		},
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func cloneURLValues(values url.Values) url.Values {
+	out := make(url.Values, len(values))
+	for key, rows := range values {
+		out[key] = append([]string(nil), rows...)
+	}
+	return out
 }
 
 func (s *Server) filterMailboxesByReceiveCode(mailboxes []Mailbox, filter string) []Mailbox {

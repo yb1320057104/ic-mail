@@ -3021,10 +3021,9 @@
       const pageSize = Math.max(1, Number(lastMailboxPagination.page_size || mailboxPageSize || 10));
       if ($('mailboxPageInfo')) {
         const total = Number(lastMailboxPagination.total || rows.length || 0);
-        const totalAll = Number(lastMailboxPagination.total_all || total);
         const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
         const rangeEnd = Math.min(page * pageSize, total);
-        $('mailboxPageInfo').textContent = `${page}/${totalPages} 页 · ${rangeStart}-${rangeEnd}/${total} · 总 ${totalAll}`;
+        $('mailboxPageInfo').textContent = `${page}/${totalPages} 页 · 当前 ${rangeStart}-${rangeEnd} · 筛选结果 ${total} 个`;
       }
       if ($('mailboxPrevPage')) $('mailboxPrevPage').disabled = page <= 1;
       if ($('mailboxNextPage')) $('mailboxNextPage').disabled = page >= totalPages;
