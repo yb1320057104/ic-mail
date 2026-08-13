@@ -37,6 +37,9 @@ coverage.out
 .codex-go-cache/
 .codex-run/
 .gocache/
+.gocache-easy-proxies/
+.gomodcache/
+.run/
 
 # IDE / OS
 .claude/

@@ -268,6 +268,75 @@ func (s *FileStore) AutoLoginBindings() []AutoLoginBinding {
 	return append([]AutoLoginBinding(nil), s.state.AutoLoginBindings...)
 }
 
+func (s *FileStore) StartAutoLoginAttempt(ownerID, accountID, appleID string) (AutoLoginAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row := AutoLoginAttempt{ID: s.nextIDLocked("autolog"), OwnerID: strings.TrimSpace(ownerID), AccountID: strings.TrimSpace(accountID), AppleID: strings.TrimSpace(appleID), Status: "running", StartedAt: time.Now()}
+	row.Steps = append(row.Steps, AutoLoginStep{Stage: "start", Message: "自动接码登录任务开始", OK: true, At: row.StartedAt})
+	s.state.AutoLoginLogs = append(s.state.AutoLoginLogs, row)
+	// Each account keeps only its latest ten attempts; other accounts are untouched.
+	seen := 0
+	kept := make([]AutoLoginAttempt, 0, len(s.state.AutoLoginLogs))
+	for i := len(s.state.AutoLoginLogs) - 1; i >= 0; i-- {
+		item := s.state.AutoLoginLogs[i]
+		if item.OwnerID == row.OwnerID && item.AccountID == row.AccountID {
+			seen++
+			if seen > 10 {
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	s.state.AutoLoginLogs = kept
+	return row, s.saveLocked()
+}
+
+func (s *FileStore) AppendAutoLoginStep(id, stage, message, code string, ok bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginLogs {
+		if s.state.AutoLoginLogs[i].ID == id {
+			s.state.AutoLoginLogs[i].Steps = append(s.state.AutoLoginLogs[i].Steps, AutoLoginStep{Stage: stage, Message: message, Code: code, OK: ok, At: time.Now()})
+			return s.saveLocked()
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) FinishAutoLoginAttempt(id, status, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginLogs {
+		if s.state.AutoLoginLogs[i].ID == id {
+			s.state.AutoLoginLogs[i].Status = status
+			s.state.AutoLoginLogs[i].Error = strings.TrimSpace(message)
+			s.state.AutoLoginLogs[i].FinishedAt = time.Now()
+			return s.saveLocked()
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) AutoLoginAttempts(ownerID, accountID string, limit int) []AutoLoginAttempt {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > 10 {
+		limit = 10
+	}
+	out := make([]AutoLoginAttempt, 0, limit)
+	for i := len(s.state.AutoLoginLogs) - 1; i >= 0 && len(out) < limit; i-- {
+		row := s.state.AutoLoginLogs[i]
+		if row.OwnerID == ownerID && row.AccountID == accountID {
+			row.Steps = append([]AutoLoginStep(nil), row.Steps...)
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
 func (s *FileStore) SaveUserProxyConfig(config UserProxyConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1246,6 +1315,21 @@ func (s *FileStore) ICloudSessionForOwnerAccount(ownerID, accountID string) (ICl
 	return ICloudSession{}, false
 }
 
+func (s *FileStore) SetICloudSessionProxy(ownerID, accountID, nodeTag, nodeName string) (ICloudSession, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID, accountID = strings.TrimSpace(ownerID), strings.TrimSpace(accountID)
+	for i := range s.state.ICloudSessions {
+		if constantTimeEqual(s.state.ICloudSessions[i].OwnerID, ownerID) && constantTimeEqual(s.state.ICloudSessions[i].AccountID, accountID) {
+			s.state.ICloudSessions[i].ProxyNodeTag = strings.TrimSpace(nodeTag)
+			s.state.ICloudSessions[i].ProxyNodeName = strings.TrimSpace(nodeName)
+			out := cloneICloudSession(s.state.ICloudSessions[i])
+			return out, true, s.saveLocked()
+		}
+	}
+	return ICloudSession{}, false, nil
+}
+
 func (s *FileStore) FindAccountByID(id string) (Account, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2034,6 +2118,72 @@ func (s *FileStore) RedeemMultipleCodes(poolToken string, codes []string, health
 	return resultCodes, resultBoxes, nil
 }
 
+func (s *FileStore) CreateRedemptionOrder(poolToken, password string, codes []RedemptionCode, boxes []Mailbox) (RedemptionOrder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	password = strings.TrimSpace(password)
+	if len([]rune(password)) < 4 || len([]rune(password)) > 64 {
+		return RedemptionOrder{}, errCode("invalid_lookup_password", "查单密码需为 4 到 64 个字符", false)
+	}
+	var pool *RedemptionPool
+	for i := range s.state.RedemptionPools {
+		if s.state.RedemptionPools[i].Enabled && constantTimeEqual(s.state.RedemptionPools[i].PublicToken, poolToken) {
+			pool = &s.state.RedemptionPools[i]
+			break
+		}
+	}
+	if pool == nil {
+		return RedemptionOrder{}, errCode("pool_not_found", "兑换池不存在或已停用", false)
+	}
+	row := RedemptionOrder{ID: s.nextIDLocked("order"), PoolID: pool.ID, OwnerID: pool.OwnerID, PasswordHash: sessionTokenHash(password), RedeemedAt: time.Now()}
+	for _, code := range codes {
+		row.CodeIDs = append(row.CodeIDs, code.ID)
+	}
+	for _, mailbox := range boxes {
+		row.MailboxIDs = append(row.MailboxIDs, mailbox.ID)
+	}
+	s.state.RedemptionOrders = append(s.state.RedemptionOrders, row)
+	return row, s.saveLocked()
+}
+
+func (s *FileStore) RedemptionOrdersByPassword(poolToken, password string) ([]RedemptionOrder, []Mailbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pool *RedemptionPool
+	for i := range s.state.RedemptionPools {
+		if s.state.RedemptionPools[i].Enabled && constantTimeEqual(s.state.RedemptionPools[i].PublicToken, poolToken) {
+			pool = &s.state.RedemptionPools[i]
+			break
+		}
+	}
+	if pool == nil {
+		return nil, nil, errCode("pool_not_found", "兑换池不存在或已停用", false)
+	}
+	hash := sessionTokenHash(strings.TrimSpace(password))
+	orders := make([]RedemptionOrder, 0)
+	boxes := make([]Mailbox, 0)
+	mailboxByID := make(map[string]Mailbox, len(s.state.Mailboxes))
+	for _, mailbox := range s.state.Mailboxes {
+		mailboxByID[mailbox.ID] = mailbox
+	}
+	for i := len(s.state.RedemptionOrders) - 1; i >= 0; i-- {
+		row := s.state.RedemptionOrders[i]
+		if row.PoolID != pool.ID || !constantTimeEqual(row.PasswordHash, hash) {
+			continue
+		}
+		orders = append(orders, row)
+		for _, id := range row.MailboxIDs {
+			if mailbox, ok := mailboxByID[id]; ok {
+				boxes = append(boxes, mailbox)
+			}
+		}
+	}
+	if len(orders) == 0 {
+		return nil, nil, errCode("order_not_found", "未找到与该查单密码匹配的兑换记录", false)
+	}
+	return orders, boxes, nil
+}
+
 func (s *FileStore) RotateRedemptionCode(ownerID, code string) (RedemptionCode, []Mailbox, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2440,6 +2590,10 @@ func cloneState(in State) State {
 	out.Announcements = append([]Announcement(nil), in.Announcements...)
 	out.AnnouncementReads = append([]AnnouncementRead(nil), in.AnnouncementReads...)
 	out.AutoLoginBindings = append([]AutoLoginBinding(nil), in.AutoLoginBindings...)
+	out.AutoLoginLogs = append([]AutoLoginAttempt(nil), in.AutoLoginLogs...)
+	for i := range out.AutoLoginLogs {
+		out.AutoLoginLogs[i].Steps = append([]AutoLoginStep(nil), in.AutoLoginLogs[i].Steps...)
+	}
 	out.UserProxyConfigs = append([]UserProxyConfig(nil), in.UserProxyConfigs...)
 	out.RedemptionPools = append([]RedemptionPool(nil), in.RedemptionPools...)
 	out.RedemptionCodes = append([]RedemptionCode(nil), in.RedemptionCodes...)
@@ -2447,6 +2601,11 @@ func cloneState(in State) State {
 		out.RedemptionCodes[i].RedeemedMailboxIDs = append([]string(nil), in.RedemptionCodes[i].RedeemedMailboxIDs...)
 	}
 	out.RedemptionItems = append([]RedemptionItem(nil), in.RedemptionItems...)
+	out.RedemptionOrders = append([]RedemptionOrder(nil), in.RedemptionOrders...)
+	for i := range out.RedemptionOrders {
+		out.RedemptionOrders[i].CodeIDs = append([]string(nil), in.RedemptionOrders[i].CodeIDs...)
+		out.RedemptionOrders[i].MailboxIDs = append([]string(nil), in.RedemptionOrders[i].MailboxIDs...)
+	}
 	out.Accounts = append([]Account(nil), in.Accounts...)
 	for i := range out.Accounts {
 		out.Accounts[i].Tags = append([]string(nil), in.Accounts[i].Tags...)
@@ -2506,6 +2665,8 @@ func mergeICloudSession(existing, incoming ICloudSession) ICloudSession {
 		out.LastCheckOK = existing.LastCheckOK
 	}
 	out.LastStatusMessage = firstNonEmpty(incoming.LastStatusMessage, existing.LastStatusMessage)
+	out.ProxyNodeTag = firstNonEmpty(incoming.ProxyNodeTag, existing.ProxyNodeTag)
+	out.ProxyNodeName = firstNonEmpty(incoming.ProxyNodeName, existing.ProxyNodeName)
 	return out
 }
 
@@ -2618,6 +2779,24 @@ func filterStateByOwnerLocked(in State, ownerID string) State {
 	for _, item := range in.RedemptionItems {
 		if constantTimeEqual(ownerID, item.OwnerID) {
 			out.RedemptionItems = append(out.RedemptionItems, item)
+		}
+	}
+	for _, row := range in.RedemptionOrders {
+		if constantTimeEqual(ownerID, row.OwnerID) {
+			row.CodeIDs = append([]string(nil), row.CodeIDs...)
+			row.MailboxIDs = append([]string(nil), row.MailboxIDs...)
+			out.RedemptionOrders = append(out.RedemptionOrders, row)
+		}
+	}
+	for _, row := range in.AutoLoginBindings {
+		if constantTimeEqual(ownerID, row.OwnerID) {
+			out.AutoLoginBindings = append(out.AutoLoginBindings, row)
+		}
+	}
+	for _, row := range in.AutoLoginLogs {
+		if constantTimeEqual(ownerID, row.OwnerID) {
+			row.Steps = append([]AutoLoginStep(nil), row.Steps...)
+			out.AutoLoginLogs = append(out.AutoLoginLogs, row)
 		}
 	}
 	return out

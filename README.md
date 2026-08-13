@@ -170,6 +170,21 @@ http://127.0.0.1:8787/login
 
 同一平台账号可以保存多个 Apple 登录态。保存成功后会生成一个内部 `account_id`，后续创建、同步、导出都会用这个 `account_id` 绑定数据；前端会用 TAB 展示不同 Apple 账号，避免多个账号的邮箱混在一起。
 
+### 账号级代理池（easy-proxies）
+
+登录态页面可通过订阅 URL 或 Clash/Mihomo YAML 导入代理节点，并为每个 Apple 登录态选择一个固定节点。绑定后，新接口、旧接口、IMAP、后台保活、邮箱创建/同步和自动接码登录都会使用该节点；节点不可用时请求会明确失败，不会偷偷回落直连。
+
+`easy-proxies` 需要以 `multi-port` 或 `hybrid` 模式运行，并让管理 API 与节点端口可被本程序访问。默认配置：
+
+```json
+{
+  "easy_proxies_url": "http://127.0.0.1:9091",
+  "easy_proxies_host": "127.0.0.1"
+}
+```
+
+如果 easy-proxies 管理台配置了密码，通过环境变量 `IPM_EASY_PROXIES_PASSWORD` 提供；不要把密码写进公开配置或 Git。未绑定节点的账号继续使用原用户固定代理，固定代理也未配置时才直连。
+
 ### 2. 保存新接口登录态
 
 这是正式面板功能，不是 live 测试专用代码。它用于保存 Apple Account 新接口登录态，后续创建 Hide My Email 时走 `account/manage/email/private/*` 新接口。

@@ -26,5 +26,7 @@
   "login_rate_limit_per_username": 5,
   "login_rate_limit_window_seconds": 600,
   "login_backoff_max_seconds": 600,
-  "login_captcha_enabled": true
+  "login_captcha_enabled": true,
+  "easy_proxies_url": "http://127.0.0.1:9091",
+  "easy_proxies_host": "127.0.0.1"
 }

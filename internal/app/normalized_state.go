@@ -108,6 +108,9 @@ func (s *FileStore) loadNormalizedStateLocked(db *sql.DB) (bool, error) {
 	if s.state.AutoLoginBindings, err = loadNormalizedRows[AutoLoginBinding](db, "auto_login_bindings"); err != nil {
 		return false, err
 	}
+	if s.state.AutoLoginLogs, err = loadNormalizedRows[AutoLoginAttempt](db, "auto_login_logs"); err != nil {
+		return false, err
+	}
 	if s.state.UserProxyConfigs, err = loadNormalizedRows[UserProxyConfig](db, "user_proxy_configs"); err != nil {
 		return false, err
 	}
@@ -118,6 +121,9 @@ func (s *FileStore) loadNormalizedStateLocked(db *sql.DB) (bool, error) {
 		return false, err
 	}
 	if s.state.RedemptionItems, err = loadNormalizedRows[RedemptionItem](db, "redemption_items"); err != nil {
+		return false, err
+	}
+	if s.state.RedemptionOrders, err = loadNormalizedRows[RedemptionOrder](db, "redemption_orders"); err != nil {
 		return false, err
 	}
 	if s.state.RecycleBin, err = loadNormalizedRows[RecycleBinItem](db, "recycle_bin"); err != nil {
@@ -139,9 +145,11 @@ func (s *FileStore) saveNormalizedStateTx(tx *sql.Tx, now string) error {
 		{"invites", mapRows(s.state.Invites, func(v InviteCode) (string, string) { return v.ID, v.CreatedBy })}, {"invite_uses", mapRows(s.state.InviteUses, func(v InviteUse) (string, string) { return v.InviteID + ":" + v.UserID, v.UserID })},
 		{"audit_events", mapRows(s.state.AuditEvents, func(v AuditEvent) (string, string) { return v.ID, v.ActorID })}, {"announcements", mapRows(s.state.Announcements, func(v Announcement) (string, string) { return v.ID, v.CreatedBy })},
 		{"announcement_reads", mapRows(s.state.AnnouncementReads, func(v AnnouncementRead) (string, string) { return v.AnnouncementID + ":" + v.UserID, v.UserID })}, {"auto_login_bindings", mapRows(s.state.AutoLoginBindings, func(v AutoLoginBinding) (string, string) { return v.OwnerID + ":" + v.AccountID, v.OwnerID })},
+		{"auto_login_logs", mapRows(s.state.AutoLoginLogs, func(v AutoLoginAttempt) (string, string) { return v.ID, v.OwnerID })},
 		{"user_proxy_configs", mapRows(s.state.UserProxyConfigs, func(v UserProxyConfig) (string, string) { return v.OwnerID, v.OwnerID })},
 		{"redemption_pools", mapRows(s.state.RedemptionPools, func(v RedemptionPool) (string, string) { return v.ID, v.OwnerID })}, {"redemption_codes", mapRows(s.state.RedemptionCodes, func(v RedemptionCode) (string, string) { return v.ID, v.OwnerID })},
 		{"redemption_items", mapRows(s.state.RedemptionItems, func(v RedemptionItem) (string, string) { return v.PoolID + ":" + v.MailboxID, v.OwnerID })}, {"recycle_bin", mapRows(s.state.RecycleBin, func(v RecycleBinItem) (string, string) { return v.ID, v.UserID })},
+		{"redemption_orders", mapRows(s.state.RedemptionOrders, func(v RedemptionOrder) (string, string) { return v.ID, v.OwnerID })},
 	}
 	for _, set := range sets {
 		if err := replaceNormalizedRows(tx, set.table, set.rows, now); err != nil {

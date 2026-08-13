@@ -329,6 +329,20 @@ func (s *Server) handleBindAutoLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "自动接码登录配置已加密保存"})
 }
 
+func (s *Server) handleAutoLoginLogs(w http.ResponseWriter, r *http.Request) {
+	ownerID := requestOwnerID(r, s.store)
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if ownerID == "" || accountID == "" {
+		writeError(w, http.StatusBadRequest, errCode("account_required", "请选择要查看日志的账号", false))
+		return
+	}
+	if !s.canAccessAccountIDForOwner(ownerID, accountID) {
+		writeError(w, http.StatusNotFound, errCode("account_not_found", "账号不存在", false))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "logs": s.store.AutoLoginAttempts(ownerID, accountID, 10)})
+}
+
 func autoLoginKey(ownerID, accountID string) string {
 	return ownerID + "|" + accountID
 }
@@ -387,30 +401,72 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 	if saved, err := s.store.SaveAutoLoginProgress(binding); err != nil || !saved {
 		return
 	}
+	attempt, attemptErr := s.store.StartAutoLoginAttempt(session.OwnerID, session.AccountID, session.AppleID)
+	if attemptErr != nil {
+		if s.logger != nil {
+			s.logger.Warn("自动登录日志创建失败", "account_id", session.AccountID, "err", attemptErr)
+		}
+	}
+	metricStarted := time.Now()
+	finished := false
+	step := func(stage, message, code string, ok bool) {
+		if attempt.ID != "" {
+			_ = s.store.AppendAutoLoginStep(attempt.ID, stage, message, code, ok)
+		}
+	}
+	finish := func(status string, finishErr error) {
+		if finished {
+			return
+		}
+		finished = true
+		message := ""
+		if finishErr != nil {
+			message = keepAliveChineseError(finishErr)
+		}
+		if attempt.ID != "" {
+			_ = s.store.FinishAutoLoginAttempt(attempt.ID, status, message)
+		}
+		_ = s.store.RecordRuntimeMetric("auto_login", finishErr == nil, time.Since(metricStarted), firstNonEmpty(message, status))
+	}
+	defer func() {
+		if !finished {
+			finish("cancelled", fmt.Errorf("自动接码登录已暂停或任务被取消"))
+		}
+	}()
 	if s.logger != nil {
 		s.logger.Info("自动接码登录开始", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID)
 	}
 	password, err := decryptAutoSecret(s.cfg.AutoLoginSecret, binding.PasswordCipher)
 	if err != nil {
+		step("decrypt_password", "登录密码解密失败", "", false)
+		finish("failed", err)
 		s.autoLoginFailed(binding, err)
 		return
 	}
+	step("decrypt_password", "登录密码读取成功", "", true)
 	codeURL, err := decryptAutoSecret(s.cfg.AutoLoginSecret, binding.URLCipher)
 	if err != nil {
+		step("decrypt_code_url", "接码地址解密失败", "", false)
+		finish("failed", err)
 		s.autoLoginFailed(binding, err)
 		return
 	}
-	client, clientErr := s.appleAuthClientForOwner(session.OwnerID)
+	step("decrypt_code_url", "接码地址读取成功", "", true)
+	client, clientErr := s.appleAuthClientForAccount(ctx, session.OwnerID, session.AccountID)
 	if clientErr != nil {
+		step("prepare_client", "Apple 登录客户端初始化失败", "", false)
+		finish("failed", clientErr)
 		s.autoLoginFailed(binding, clientErr)
 		return
 	}
+	step("prepare_client", "Apple 登录客户端初始化成功，已应用账号代理配置", "", true)
 	var successes []string
 	if state, saved := appleAccountLoginState(session); saved && state.LastCheckedAt.IsZero() == false && !state.LastCheckOK {
 		if ctx.Err() != nil || !s.autoLoginEnabled(session.OwnerID, session.AccountID) {
 			return
 		}
 		store := newAppleAuthPendingStore()
+		step("apple_account_start", "开始新接口自动登录", "", true)
 		result, e := client.StartAppleAccountManageLogin(ctx, session.AppleID, password, store, "phone")
 		if e == nil && !result.Needs2FA {
 			refreshed := result.Session
@@ -419,11 +475,14 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 			e = s.store.SaveICloudSessionForOwner(session.OwnerID, refreshed)
 		}
 		if e == nil && result.Needs2FA {
+			step("apple_account_wait_code", "新接口已请求验证码，开始轮询六位验证码", "", true)
 			if code, ce := pollAutoCode(ctx, codeURL); ce == nil {
+				step("apple_account_code", "新接口提取到六位验证码", code, true)
 				if s.logger != nil {
 					s.logger.Info("自动接码已识别六位验证码", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "interface", "apple_account")
 				}
 				if pending, found := store.get(result.PendingID); found {
+					step("apple_account_submit_code", "正在向新接口提交验证码", code, true)
 					var refreshed ICloudSession
 					refreshed, e = client.SubmitAppleAccountManage2FA(ctx, pending, code, nil)
 					if e == nil {
@@ -433,12 +492,15 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 					}
 				}
 			} else {
+				step("apple_account_wait_code", keepAliveChineseError(ce), "", false)
 				e = ce
 			}
 		}
 		if e == nil {
+			step("apple_account_done", "新接口登录态保存成功", "", true)
 			successes = append(successes, "新接口")
 		} else {
+			step("apple_account_failed", keepAliveChineseError(e), "", false)
 			err = e
 		}
 	}
@@ -447,6 +509,7 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 			return
 		}
 		store := newAppleAuthPendingStore()
+		step("icloud_web_start", "开始旧接口自动登录", "", true)
 		result, e := client.StartLogin(ctx, session.AppleID, password, s.cfg.ICloudDefaultHost, s.cfg.ICloudClientID, store, "phone")
 		if e == nil && !result.Needs2FA {
 			refreshed := result.Session
@@ -455,11 +518,14 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 			e = s.store.SaveICloudSessionForOwner(session.OwnerID, refreshed)
 		}
 		if e == nil && result.Needs2FA {
+			step("icloud_web_wait_code", "旧接口已请求验证码，开始轮询六位验证码", "", true)
 			if code, ce := pollAutoCode(ctx, codeURL); ce == nil {
+				step("icloud_web_code", "旧接口提取到六位验证码", code, true)
 				if s.logger != nil {
 					s.logger.Info("自动接码已识别六位验证码", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "interface", "icloud_web")
 				}
 				if pending, found := store.get(result.PendingID); found {
+					step("icloud_web_submit_code", "正在向旧接口提交验证码", code, true)
 					var refreshed ICloudSession
 					refreshed, e = client.Submit2FA(ctx, pending, code)
 					if e == nil {
@@ -469,12 +535,15 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 					}
 				}
 			} else {
+				step("icloud_web_wait_code", keepAliveChineseError(ce), "", false)
 				e = ce
 			}
 		}
 		if e == nil {
+			step("icloud_web_done", "旧接口登录态保存成功", "", true)
 			successes = append(successes, "旧接口")
 		} else {
+			step("icloud_web_failed", keepAliveChineseError(e), "", false)
 			err = e
 		}
 	}
@@ -487,11 +556,15 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 		if s.logger != nil {
 			s.logger.Info("自动接码登录成功", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "interfaces", strings.Join(successes, ","))
 		}
+		step("done", binding.Status, "", true)
+		finish("success", nil)
 		return
 	}
 	if err == nil {
 		err = fmt.Errorf("没有需要自动登录的异常接口")
 	}
+	step("failed", keepAliveChineseError(err), "", false)
+	finish("failed", err)
 	s.autoLoginFailed(binding, err)
 }
 

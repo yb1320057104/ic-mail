@@ -37,10 +37,12 @@ type State struct {
 	Announcements     []Announcement     `json:"announcements,omitempty"`
 	AnnouncementReads []AnnouncementRead `json:"announcement_reads,omitempty"`
 	AutoLoginBindings []AutoLoginBinding `json:"auto_login_bindings,omitempty"`
+	AutoLoginLogs     []AutoLoginAttempt `json:"auto_login_logs,omitempty"`
 	UserProxyConfigs  []UserProxyConfig  `json:"user_proxy_configs,omitempty"`
 	RedemptionPools   []RedemptionPool   `json:"redemption_pools,omitempty"`
 	RedemptionCodes   []RedemptionCode   `json:"redemption_codes,omitempty"`
 	RedemptionItems   []RedemptionItem   `json:"redemption_items,omitempty"`
+	RedemptionOrders  []RedemptionOrder  `json:"redemption_orders,omitempty"`
 	RecycleBin        []RecycleBinItem   `json:"recycle_bin,omitempty"`
 }
 
@@ -220,6 +222,36 @@ type AutoLoginBinding struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type AutoLoginAttempt struct {
+	ID         string          `json:"id"`
+	OwnerID    string          `json:"owner_id"`
+	AccountID  string          `json:"account_id"`
+	AppleID    string          `json:"apple_id,omitempty"`
+	Status     string          `json:"status"`
+	Error      string          `json:"error,omitempty"`
+	StartedAt  time.Time       `json:"started_at"`
+	FinishedAt time.Time       `json:"finished_at,omitempty"`
+	Steps      []AutoLoginStep `json:"steps,omitempty"`
+}
+
+type AutoLoginStep struct {
+	Stage   string    `json:"stage"`
+	Message string    `json:"message"`
+	Code    string    `json:"code,omitempty"`
+	OK      bool      `json:"ok"`
+	At      time.Time `json:"at"`
+}
+
+type RedemptionOrder struct {
+	ID           string    `json:"id"`
+	PoolID       string    `json:"pool_id"`
+	OwnerID      string    `json:"owner_id"`
+	PasswordHash string    `json:"password_hash"`
+	CodeIDs      []string  `json:"code_ids,omitempty"`
+	MailboxIDs   []string  `json:"mailbox_ids,omitempty"`
+	RedeemedAt   time.Time `json:"redeemed_at"`
+}
+
 type Mailbox struct {
 	ID                string    `json:"id"`
 	OwnerID           string    `json:"owner_id,omitempty"`
@@ -278,6 +310,8 @@ type ICloudSession struct {
 	LastCheckedAt      time.Time       `json:"last_checked_at,omitempty"`
 	LastCheckOK        bool            `json:"last_check_ok,omitempty"`
 	LastStatusMessage  string          `json:"last_status_message,omitempty"`
+	ProxyNodeTag       string          `json:"proxy_node_tag,omitempty"`
+	ProxyNodeName      string          `json:"proxy_node_name,omitempty"`
 }
 
 type LoginState struct {
@@ -309,6 +343,7 @@ type LoginState struct {
 	KeepAliveLastOK   time.Time       `json:"keep_alive_last_ok,omitempty"`
 	KeepAliveNextTry  time.Time       `json:"keep_alive_next_try,omitempty"`
 	KeepAliveError    string          `json:"keep_alive_error,omitempty"`
+	ProxyURL          string          `json:"-"`
 }
 
 type CreateSettings struct {
@@ -596,6 +631,8 @@ type publicICloudSession struct {
 	AutoLoginError               string `json:"auto_login_error,omitempty"`
 	AutoLoginLastAttemptAt       string `json:"auto_login_last_attempt_at,omitempty"`
 	AutoLoginLastSuccessAt       string `json:"auto_login_last_success_at,omitempty"`
+	ProxyNodeTag                 string `json:"proxy_node_tag,omitempty"`
+	ProxyNodeName                string `json:"proxy_node_name,omitempty"`
 }
 
 type apiError struct {

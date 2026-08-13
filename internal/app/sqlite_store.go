@@ -46,10 +46,12 @@ func (s *FileStore) openSQLite() error {
 		`CREATE TABLE IF NOT EXISTS announcements (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS announcement_reads (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS auto_login_bindings (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS auto_login_logs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS user_proxy_configs (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS redemption_pools (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS redemption_codes (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS redemption_items (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS redemption_orders (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS recycle_bin (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {

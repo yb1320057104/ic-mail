@@ -455,6 +455,10 @@
           <div class="stat-card"><strong id="accountCount">0</strong><span>登录账号</span></div>
           <div class="stat-card"><strong id="mailboxCount">0</strong><span>隐私邮箱</span></div>
           <div class="stat-card"><strong id="messageCount">0</strong><span>验证码邮件</span></div>
+          <div class="stat-card"><strong id="codeSuccessRate">-</strong><span>接码成功率（24小时）</span></div>
+          <div class="stat-card"><strong id="appleKeepaliveRate">-</strong><span>新接口保活成功率</span></div>
+          <div class="stat-card"><strong id="icloudKeepaliveRate">-</strong><span>旧接口保活成功率</span></div>
+          <div class="stat-card"><strong id="autoLoginSuccessRate">-</strong><span>自动接码登录成功率</span></div>
         </section>
 
         <section class="panel view-section" id="accountManagePanel" data-view="accountManage">
@@ -541,9 +545,9 @@
         </section>
 
         <section class="panel view-section admin-only" data-view="invites">
-          <div class="panel-head"><div><h2>注册邀请码</h2><p>可批量生成独立邀请码；有效期从用户实际注册兑换当天开始计算。</p></div><button class="btn" onclick="exportInvites()">导出邀请码</button></div>
+          <div class="panel-head"><div><h2>注册邀请码</h2><p>可按批次批量生成和导出；TXT 文件每行一个邀请码。</p></div><div class="panel-tools"><select id="inviteExportBatch" title="选择导出批次"><option value="">全部批次</option></select><button class="btn" onclick="exportInvites()">导出 TXT</button></div></div>
           <div class="form-grid" id="inviteForm">
-            <label class="field">用途名称<input id="inviteName" placeholder="例如：团队A八月邀请"></label>
+            <label class="field">批次名称<input id="inviteName" placeholder="例如：团队A八月邀请"></label>
             <label class="field">生成数量<input id="inviteCount" type="number" min="1" max="1000" value="10"></label>
             <label class="field">每码可注册次数<input id="inviteMaxUses" type="number" min="1" max="10000" value="1"></label>
             <label class="field">注册后有效天数<input id="inviteValidDays" type="number" min="1" max="3650" value="30"></label>
@@ -919,9 +923,23 @@
 
       $('currentScope').textContent = scopeName;
       $('userCount').textContent = selectedOwner === 'all' ? users.length : (selectedSummary ? 1 : usersInScope.length);
-      $('accountCount').textContent = accounts.length;
-      $('mailboxCount').textContent = mailboxes.length;
+      $('accountCount').textContent = selectedOwner === 'all' ? Number(data.account_count || accountsAll.length || 0) : (selectedSummary ? Number(selectedSummary.account_count || 0) : accounts.length);
+      $('mailboxCount').textContent = selectedOwner === 'all' ? Number(data.mailbox_count || 0) : (selectedSummary ? Number(selectedSummary.mailbox_count || 0) : mailboxes.length);
       $('messageCount').textContent = messageCount;
+      const metricMap = new Map((data.runtime_metrics || []).map(row => [row.kind, row]));
+      const rateText = kind => { const metric=metricMap.get(kind), window=metric&&metric.last_24h; return window&&Number(window.total||0)>0 ? `${Number(window.success_rate||0).toFixed(1)}%` : '暂无样本'; };
+      $('codeSuccessRate').textContent = rateText('code');
+      $('appleKeepaliveRate').textContent = rateText('keepalive_apple');
+      $('icloudKeepaliveRate').textContent = rateText('keepalive_icloud');
+      $('autoLoginSuccessRate').textContent = rateText('auto_login');
+
+      const inviteBatchSelect = $('inviteExportBatch');
+      if (inviteBatchSelect) {
+        const selectedBatch = inviteBatchSelect.value;
+        const batches = [...new Set((data.invites || []).map(row => row.name).filter(Boolean))].sort();
+        inviteBatchSelect.innerHTML = '<option value="">全部批次</option>' + batches.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
+        inviteBatchSelect.value = batches.includes(selectedBatch) ? selectedBatch : '';
+      }
 
       const totalAccounts = summaries.reduce((n, s) => n + (s.account_count || 0), 0);
       const totalMailboxes = summaries.reduce((n, s) => n + (s.mailbox_count || 0), 0);
@@ -1168,7 +1186,7 @@
       log(`已批量生成邀请码：${name}，共 ${data.count || 0} 个`);
     }
 
-    function exportInvites() { window.location.href = '/api/admin/invites/export'; }
+    function exportInvites() { const batch=($('inviteExportBatch')||{}).value||''; window.location.href = '/api/admin/invites/export' + (batch ? '?batch=' + encodeURIComponent(batch) : ''); }
 
     async function setInviteStatus(id, enabled) {
       await api('/api/admin/invites/' + encodeURIComponent(id) + '/status', {method:'POST', body:JSON.stringify({enabled})});

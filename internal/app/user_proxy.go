@@ -97,7 +97,16 @@ func testFixedProxy(ctx context.Context, raw string) (string, int64, bool, error
 	return strings.TrimSpace(body.IP), time.Since(start).Milliseconds(), res.TLS != nil, nil
 }
 
-func (s *Server) appleHTTPClientForOwner(ownerID string) (*http.Client, error) {
+func (s *Server) appleHTTPClientForAccount(ctx context.Context, ownerID, accountID string) (*http.Client, error) {
+	if raw, _, err := s.proxyURLForAccount(ctx, ownerID, accountID); err != nil {
+		return nil, errCode("proxy_node_unavailable", "账号绑定代理不可用："+err.Error(), true)
+	} else if raw != "" {
+		client, err := proxyHTTPClient(raw, 30*time.Second)
+		if err != nil {
+			return nil, errCode("proxy_unavailable", "账号绑定代理异常："+err.Error(), true)
+		}
+		return client, nil
+	}
 	config, ok := s.store.UserProxyConfig(ownerID)
 	if !ok || !config.Enabled {
 		return &http.Client{Timeout: 30 * time.Second}, nil
@@ -111,6 +120,41 @@ func (s *Server) appleHTTPClientForOwner(ownerID string) (*http.Client, error) {
 		return nil, errCode("proxy_unavailable", "代理异常，已停止 Apple 请求："+err.Error(), true)
 	}
 	return client, nil
+}
+
+func (s *Server) appleHTTPClientForOwner(ownerID string) (*http.Client, error) {
+	return s.appleHTTPClientForAccount(context.Background(), ownerID, "")
+}
+
+func (s *Server) iCloudClientForAccount(ctx context.Context, ownerID, accountID string) (*ICloudClient, error) {
+	client, err := s.appleHTTPClientForAccount(ctx, ownerID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return NewICloudClientWithHTTPClient(client), nil
+}
+
+func (s *Server) appleAuthClientForAccount(ctx context.Context, ownerID, accountID string) (*AppleAuthClient, error) {
+	client, err := s.appleHTTPClientForAccount(ctx, ownerID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return NewAppleAuthClientWithHTTPClient(client), nil
+}
+
+func (s *Server) appleAuthClientForLogin(ctx context.Context, ownerID, accountID, appleID string) (*AppleAuthClient, error) {
+	raw, _, err := s.proxyURLForAppleLogin(ctx, ownerID, accountID, appleID)
+	if err != nil {
+		return nil, errCode("proxy_node_unavailable", "账号绑定代理不可用："+err.Error(), true)
+	}
+	if raw != "" {
+		client, err := proxyHTTPClient(raw, 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return NewAppleAuthClientWithHTTPClient(client), nil
+	}
+	return s.appleAuthClientForAccount(ctx, ownerID, accountID)
 }
 
 func (s *Server) iCloudClientForOwner(ownerID string) (*ICloudClient, error) {

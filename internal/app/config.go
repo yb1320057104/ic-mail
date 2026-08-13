@@ -42,6 +42,9 @@ type Config struct {
 	LoginBackoffMaxSeconds       int    `json:"login_backoff_max_seconds"`
 	LoginCaptchaEnabled          bool   `json:"login_captcha_enabled"`
 	AutoLoginSecret              string `json:"-"`
+	EasyProxiesURL               string `json:"easy_proxies_url"`
+	EasyProxiesPassword          string `json:"-"`
+	EasyProxiesHost              string `json:"easy_proxies_host"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -78,6 +81,9 @@ func LoadConfig(path string) (Config, error) {
 		LoginBackoffMaxSeconds:       envPositiveInt("IPM_LOGIN_BACKOFF_MAX_SECONDS", 600),
 		LoginCaptchaEnabled:          envBool("IPM_LOGIN_CAPTCHA_ENABLED", true),
 		AutoLoginSecret:              strings.TrimSpace(os.Getenv("IPM_AUTO_LOGIN_SECRET")),
+		EasyProxiesURL:               firstNonEmptyString(strings.TrimRight(strings.TrimSpace(os.Getenv("IPM_EASY_PROXIES_URL")), "/"), "http://127.0.0.1:9091"),
+		EasyProxiesPassword:          strings.TrimSpace(os.Getenv("IPM_EASY_PROXIES_PASSWORD")),
+		EasyProxiesHost:              firstNonEmptyString(strings.TrimSpace(os.Getenv("IPM_EASY_PROXIES_HOST")), "127.0.0.1"),
 	}
 	if path == "" {
 		return cfg, nil
@@ -202,6 +208,12 @@ func LoadConfig(path string) (Config, error) {
 		if err := json.Unmarshal(rawValue, &cfg.LoginCaptchaEnabled); err != nil {
 			return Config{}, err
 		}
+	}
+	if strings.TrimSpace(fromFile.EasyProxiesURL) != "" {
+		cfg.EasyProxiesURL = strings.TrimRight(strings.TrimSpace(fromFile.EasyProxiesURL), "/")
+	}
+	if strings.TrimSpace(fromFile.EasyProxiesHost) != "" {
+		cfg.EasyProxiesHost = strings.TrimSpace(fromFile.EasyProxiesHost)
 	}
 	return cfg, nil
 }
