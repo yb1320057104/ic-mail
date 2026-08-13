@@ -550,6 +550,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/user/fixed-proxy/test", s.handleTestFixedProxy)
 	s.mux.HandleFunc("GET /api/proxy-pool/nodes", s.handleProxyPoolNodes)
 	s.mux.HandleFunc("POST /api/proxy-pool/test", s.handleProxyPoolTest)
+	s.mux.HandleFunc("GET /api/proxy-pool/test-status", s.handleProxyPoolTestStatus)
 	s.mux.HandleFunc("POST /api/proxy-pool/import", s.handleProxyPoolImport)
 	s.mux.HandleFunc("POST /api/proxy-pool/bind", s.handleBindAccountProxy)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/create", s.handleCreateICloudMailbox)
@@ -909,6 +910,7 @@ func (s *Server) handleSaveCreateSettings(w http.ResponseWriter, r *http.Request
 		ICloudWebTwoFactorMethod      string   `json:"icloud_web_two_factor_method"`
 		SchedulerIntervalMinutes      int      `json:"scheduler_interval_minutes"`
 		SchedulerRoundIntervalSeconds int      `json:"scheduler_round_interval_seconds"`
+		TargetMailboxCount            int      `json:"target_mailbox_count"`
 		MailboxPageSize               int      `json:"mailbox_page_size"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
@@ -932,6 +934,7 @@ func (s *Server) handleSaveCreateSettings(w http.ResponseWriter, r *http.Request
 		ICloudWebTwoFactorMethod:      payload.ICloudWebTwoFactorMethod,
 		SchedulerIntervalMinutes:      payload.SchedulerIntervalMinutes,
 		SchedulerRoundIntervalSeconds: payload.SchedulerRoundIntervalSeconds,
+		TargetMailboxCount:            payload.TargetMailboxCount,
 		MailboxPageSize:               payload.MailboxPageSize,
 	})
 	if err != nil {
@@ -6259,6 +6262,7 @@ func publicCreateSettings(settings CreateSettings) map[string]any {
 		"icloud_web_two_factor_method":     normalizeAppleTwoFactorMethod(settings.ICloudWebTwoFactorMethod),
 		"scheduler_interval_minutes":       settings.SchedulerIntervalMinutes,
 		"scheduler_round_interval_seconds": settings.SchedulerRoundIntervalSeconds,
+		"target_mailbox_count":             settings.TargetMailboxCount,
 		"mailbox_page_size":                settings.MailboxPageSize,
 		"updated_at":                       formatTime(settings.UpdatedAt),
 	}

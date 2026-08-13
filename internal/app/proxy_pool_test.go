@@ -39,7 +39,7 @@ func TestProxyPoolImportAcceptsTagPrefixJSONField(t *testing.T) {
 
 func TestProxyPoolTestUsesPoolScope(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/managed-nodes/batch-test", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/managed-nodes/batch-test/start", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Scopes []string `json:"scopes"`
 			Retest bool     `json:"retest"`
@@ -50,7 +50,7 @@ func TestProxyPoolTestUsesPoolScope(t *testing.T) {
 		if len(body.Scopes) != 1 || body.Scopes[0] != "pool" || !body.Retest {
 			t.Fatalf("unexpected test request: %#v", body)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"total": 2, "retested": 2, "passed": 1, "failed": 1})
+		_ = json.NewEncoder(w).Encode(map[string]any{"job_id": "job-1"})
 	})
 	upstream := httptest.NewServer(mux)
 	defer upstream.Close()
@@ -58,7 +58,42 @@ func TestProxyPoolTestUsesPoolScope(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/test", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 	h.handleProxyPoolTest(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "job-1") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyPoolTestStatusProxiesProgress(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/managed-nodes/batch-test/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("id") != "job-1" {
+			t.Fatalf("id=%q", r.URL.Query().Get("id"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "job-1", "status": "finished", "total": 2, "done": 2, "passed": 1, "failed": 1})
+	})
+	upstream := httptest.NewServer(mux)
+	defer upstream.Close()
+	h := NewServer(Config{EasyProxiesURL: upstream.URL}, newTestStore(t), discardLogger()).(*Server)
+	req := httptest.NewRequest(http.MethodGet, "/api/proxy-pool/test-status?id=job-1", nil)
+	rec := httptest.NewRecorder()
+	h.handleProxyPoolTestStatus(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "\u53ef\u7528 1") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBindAccountProxyAcceptsSnakeCaseJSON(t *testing.T) {
+	store := newTestStore(t)
+	h := NewServer(Config{}, store, discardLogger()).(*Server)
+	cookie, user := registerTestUser(t, h, "proxy-user", "password-123")
+	if err := store.SaveICloudSessionForOwner(user.ID, ICloudSession{AccountID: "acc-a", AppleID: "a@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/bind", bytes.NewBufferString(`{"account_id":"acc-a","node_tag":""}`))
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

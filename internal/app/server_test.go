@@ -5267,6 +5267,39 @@ func TestMailboxSchedulerBatchWaitsBetweenCreateRounds(t *testing.T) {
 	}
 }
 
+func TestMailboxSchedulerStopsAccountAtConfiguredTarget(t *testing.T) {
+	store := newTestStore(t)
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	ownerID := "owner-target"
+	if err := store.SaveICloudSessionForOwner(ownerID, ICloudSession{AccountID: "acc-target", AppleID: "target@example.com", DSID: "dsid", IsICloudPlus: true, CanCreateHME: true, Cookies: []SessionCookie{{Name: "a", Value: "1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 2; i++ {
+		if _, err := store.AddMailboxForOwner(ownerID, "acc-target", "existing", fmt.Sprintf("existing-%d@icloud.com", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	called := false
+	server.createMailboxForOwner = func(context.Context, string, string, string, string) (Mailbox, ICloudRemoteMailbox, error) {
+		called = true
+		return Mailbox{}, ICloudRemoteMailbox{}, errors.New("must not create")
+	}
+	job := &mailboxSchedulerJob{state: mailboxSchedulerState{Running: true}}
+	allReached := server.runMailboxSchedulerBatch(context.Background(), ownerID, job, mailboxSchedulerConfig{AccountIDs: []string{"acc-target"}, TargetMailboxCount: 2}, 1)
+	if !allReached || called {
+		t.Fatalf("allReached=%v called=%v", allReached, called)
+	}
+}
+
+func TestNormalizeCreateSettingsClampsTargetMailboxCount(t *testing.T) {
+	if got := normalizeCreateSettings("owner", CreateSettings{TargetMailboxCount: 999}).TargetMailboxCount; got != 750 {
+		t.Fatalf("target=%d want 750", got)
+	}
+	if got := normalizeCreateSettings("owner", CreateSettings{}).TargetMailboxCount; got != 750 {
+		t.Fatalf("default target=%d want 750", got)
+	}
+}
+
 func TestMailboxSchedulerSkipsFailedAccountWithinCurrentBatch(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewServer(Config{PublicBaseURL: "https://mail.example"}, store, discardLogger())

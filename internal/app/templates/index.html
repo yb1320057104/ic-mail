@@ -1487,7 +1487,7 @@
 
         <section class="view-section panel" data-view="create">
           <div class="panel-head"><h2>创建隐私邮箱</h2><p>默认新接口优先，失败自动使用旧接口；每小时一轮，轮内每 120 秒创建一次。</p></div>
-          <div class="field-grid"><div class="full field-label"><div class="selector-label-row"><span>参与创建账号</span><span><button id="createCheckSessionButton" type="button" onclick="checkICloudSession()">检测全部登录态</button><span id="createSessionCheckStatus" class="muted">检测后会刷新新旧接口状态。</span></span></div><div id="protoAccountSelector" class="create-account-selector muted">保存登录态后可在这里勾选参与创建的 Apple 账号。</div></div></div>
+          <div class="field-grid"><div class="full field-label"><div class="selector-label-row"><span>参与创建账号</span><span><button id="createCheckSessionButton" type="button" onclick="checkICloudSession()">检测全部登录态</button><span id="createSessionCheckStatus" class="muted">检测后会刷新新旧接口状态。</span></span></div><div id="protoAccountSelector" class="create-account-selector muted">保存登录态后可在这里勾选参与创建的 Apple 账号。</div></div><label>每账号目标邮箱数量<input id="targetMailboxCount" type="number" min="1" max="750" value="750"><span class="muted">达到该总数后，本账号自动停止创建；全部达到后任务自动停止。</span></label></div>
           <div class="toolbar"><button id="startScheduleButton" class="primary" onclick="quickStartMailboxScheduler()">一键开始创建</button><button id="stopScheduleButton" class="danger" onclick="stopMailboxScheduler()">停止自动创建</button><span id="scheduleStatus" class="muted">尚未启动；点击后立即执行第一轮。</span><span id="protoBatchProgress" class="muted"></span><span id="createSettingsStatus" class="muted"></span></div>
           <details class="guide" style="margin:16px 18px"><summary>高级设置（可选）</summary><div>
             <div class="field-grid"><label>标签<input id="protoLabel" placeholder="UPI-70-13"></label><label>备注<input id="protoNote" placeholder="选填"></label><label>手动创建接口<select id="createChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>自动创建接口<select id="scheduleCreateChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>每轮间隔分钟<input id="scheduleIntervalMinutes" type="number" min="1" max="1440" value="60"></label><label>轮内创建间隔秒<input id="scheduleRoundIntervalSeconds" type="number" min="1" max="600" value="120"></label></div>
@@ -2252,6 +2252,7 @@
         icloud_web_two_factor_method: twoFactorMethodPayloadValue('iCloudWeb2FAMethod'),
         scheduler_interval_minutes: boundedInt('scheduleIntervalMinutes', 60, 1, 1440),
         scheduler_round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 120, 1, 600),
+        target_mailbox_count: boundedInt('targetMailboxCount', 750, 1, 750),
         mailbox_page_size: boundedInt('mailboxPageSize', 10, 1, 500)
       };
     }
@@ -2265,6 +2266,7 @@
       setTwoFactorMethodSelect('iCloudWeb2FAMethod', settings.icloud_web_two_factor_method);
       if ($('scheduleIntervalMinutes')) $('scheduleIntervalMinutes').value = String(settings.scheduler_interval_minutes || 60);
       if ($('scheduleRoundIntervalSeconds')) $('scheduleRoundIntervalSeconds').value = String(settings.scheduler_round_interval_seconds || 120);
+      if ($('targetMailboxCount')) $('targetMailboxCount').value = String(settings.target_mailbox_count || 750);
       mailboxPageSize = Math.max(1, Math.min(500, Number(settings.mailbox_page_size || 10)));
       if ($('mailboxPageSize')) $('mailboxPageSize').value = String(mailboxPageSize);
       if (Array.isArray(settings.account_ids)) {
@@ -2722,7 +2724,23 @@
     function sessionLoginError(message) {
       const value = String(message || '').trim();
       if (!value) return '';
-      return `<span class="session-login-error" title="${esc(value)}">原因：${esc(value)}</span>`;
+      const guidance = loginStatusGuidance(value);
+      return `<span class="session-login-error" title="${esc(value)}">原因：${esc(value)}${guidance ? `<br><strong>${esc(guidance)}</strong>` : ''}</span>`;
+    }
+
+    function loginStatusGuidance(message) {
+      const value = String(message || '');
+      if (/HTTP\s*401\b/i.test(value)) return '凭据已过期，请点击“立即重新登录”更新登录态。';
+      if (/HTTP\s*403\b/i.test(value)) return '账号或接口拒绝访问，请完成账号安全验证后重新登录。';
+      if (/HTTP\s*409\b/i.test(value)) return '登录流程状态冲突，请重新发起登录。';
+      if (/HTTP\s*429\b/i.test(value)) return '请求过于频繁，请暂停自动登录并等待一段时间。';
+      if (/HTTP\s*5\d\d\b/i.test(value)) return 'Apple 服务或代理链路暂时异常，请稍后再检测。';
+      return '';
+    }
+
+    function sessionNeedsRelogin(session) {
+      return [session && session.apple_account_login_error, session && session.icloud_web_login_error, session && session.last_status_message]
+        .some(value => /HTTP\s*401\b/i.test(String(value || '')));
     }
 
     function sessionCheckEnabled() {
@@ -2901,12 +2919,13 @@
         note: $('protoNote').value.trim(),
         create_channel: createChannelPayloadValue('scheduleCreateChannelSelect'),
         interval_minutes: boundedInt('scheduleIntervalMinutes', 60, 1, 1440),
-        round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 120, 1, 600)
+        round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 120, 1, 600),
+        target_mailbox_count: boundedInt('targetMailboxCount', 750, 1, 750)
       };
       const data = await api('/api/icloud/scheduler/start', {method:'POST', body: JSON.stringify(payload)});
       renderMailboxScheduler(data.scheduler || {});
       ensureSchedulerPolling();
-      log(`定时创建已启动：${createChannelLabel(payload.create_channel)}，每 ${payload.interval_minutes} 分钟开始一次；每轮创建间隔 ${payload.round_interval_seconds} 秒；失败账号本轮临时跳过，其他账号继续创建；参与账号=${accountNames}`);
+      log(`定时创建已启动：${createChannelLabel(payload.create_channel)}，每账号目标 ${payload.target_mailbox_count} 个；每 ${payload.interval_minutes} 分钟开始一次；每轮创建间隔 ${payload.round_interval_seconds} 秒；参与账号=${accountNames}`);
     }
 
     async function quickStartMailboxScheduler() {
@@ -3574,7 +3593,7 @@
           <td>${loginChip('旧接口', session.icloud_web_login_status || (iCloudWebLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudWebLoginSaved(session),session.icloud_web_login_checked,session.icloud_web_login_ok))}${sessionLoginError(session.icloud_web_login_error)}${sessionOldKeepAliveBadge(session)}</td>
           <td>${loginChip('IMAP', session.icloud_imap_login_status || (iCloudIMAPLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudIMAPLoginSaved(session),session.icloud_imap_login_checked,session.icloud_imap_login_ok))}${sessionLoginError(session.icloud_imap_login_error)}<br><span class="muted">${esc(session.icloud_imap_email || '-')}</span></td>
           <td><strong>${childCount}</strong> 个${childCount >= 750 ? '<br><span class="login-chip warn">隐私邮件已达上限</span>' : ''}</td><td>${esc(session.last_checked_at ? exactTimeText(session.last_checked_at) : '未检测')}</td>
-          <td><div class="row-actions"><button type="button" class="primary" onclick="editICloudSession(${esc(JSON.stringify(key))})">编辑/重新登录</button><button type="button" onclick="openAutoLoginLogs(${esc(JSON.stringify(session.account_id || ''))})">自动登录日志</button><button type="button" onclick="toggleSessionChildren(${esc(JSON.stringify(key))})">${expanded?'收起':'查看子邮箱'}</button></div></td></tr>
+          <td>${sessionNeedsRelogin(session)?'<span class="login-chip warn">登录已过期，需要重新登录</span>':''}<div class="row-actions"><button type="button" class="primary" onclick="editICloudSession(${esc(JSON.stringify(key))})">${sessionNeedsRelogin(session)?'立即重新登录':'编辑/重新登录'}</button><button type="button" onclick="openAutoLoginLogs(${esc(JSON.stringify(session.account_id || ''))})">自动登录日志</button><button type="button" onclick="toggleSessionChildren(${esc(JSON.stringify(key))})">${expanded?'收起':'查看子邮箱'}</button></div></td></tr>
           <tr class="session-submailboxes" ${expanded?'':'hidden'}><td colspan="7"><div class="submailbox-grid">${childHTML}</div></td></tr>`;
       }).join('') : '<tr><td colspan="7" class="muted">没有符合筛选条件的登录态</td></tr>';
       renderCreateAccountSelector();
@@ -3889,8 +3908,20 @@
       if(button){button.disabled=true;button.textContent='测速中…';}
       $('proxyPoolStatus').textContent='正在测试全部代理池节点，请稍候…';
       try{
-        const data=await apiWithTimeout('/api/proxy-pool/test',{method:'POST',body:'{}',loadingText:'正在测试代理节点...'},180000);
-        $('proxyPoolStatus').textContent=data.message||'代理池测速完成';
+        const data=await api('/api/proxy-pool/test',{method:'POST',body:'{}',loadingText:'正在启动测速任务...'});
+        const jobID=String(data.job_id||'');
+        if(!jobID) throw new Error('服务器未返回测速任务编号');
+        const deadline=Date.now()+5*60*1000;
+        let finished=false;
+        while(Date.now()<deadline){
+          const status=await api('/api/proxy-pool/test-status?id='+encodeURIComponent(jobID),{showLoading:false});
+          const result=status.result||{};
+          $('proxyPoolStatus').textContent=status.message||'正在测速…';
+          if(result.status==='finished'){finished=true;break;}
+          if(result.status==='failed'||result.status==='canceled') throw new Error(status.message||result.error||'测速任务失败');
+          await new Promise(resolve=>setTimeout(resolve,1000));
+        }
+        if(!finished) throw new Error('测速超过 5 分钟，请稍后刷新查看节点状态');
         await loadProxyPoolNodes();
       }catch(err){$('proxyPoolStatus').textContent='测速失败：'+err.message;}
       finally{if(button){button.disabled=false;button.textContent='全部节点测速';}}

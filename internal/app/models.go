@@ -357,6 +357,7 @@ type CreateSettings struct {
 	ICloudWebTwoFactorMethod      string    `json:"icloud_web_two_factor_method,omitempty"`
 	SchedulerIntervalMinutes      int       `json:"scheduler_interval_minutes,omitempty"`
 	SchedulerRoundIntervalSeconds int       `json:"scheduler_round_interval_seconds,omitempty"`
+	TargetMailboxCount            int       `json:"target_mailbox_count,omitempty"`
 	MailboxPageSize               int       `json:"mailbox_page_size,omitempty"`
 	UpdatedAt                     time.Time `json:"updated_at,omitempty"`
 }

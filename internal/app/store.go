@@ -2821,6 +2821,7 @@ func defaultCreateSettings(ownerID string) CreateSettings {
 		ICloudWebTwoFactorMethod:      appleTwoFactorMethodTrustedDevice,
 		SchedulerIntervalMinutes:      int(defaultMailboxSchedulerInterval.Round(time.Minute).Minutes()),
 		SchedulerRoundIntervalSeconds: 120,
+		TargetMailboxCount:            750,
 		MailboxPageSize:               10,
 	}
 }
@@ -2851,6 +2852,12 @@ func normalizeCreateSettings(ownerID string, settings CreateSettings) CreateSett
 	}
 	if out.SchedulerRoundIntervalSeconds > 600 {
 		out.SchedulerRoundIntervalSeconds = 600
+	}
+	if out.TargetMailboxCount < 1 {
+		out.TargetMailboxCount = defaults.TargetMailboxCount
+	}
+	if out.TargetMailboxCount > 750 {
+		out.TargetMailboxCount = 750
 	}
 	if out.MailboxPageSize < 1 {
 		out.MailboxPageSize = defaults.MailboxPageSize

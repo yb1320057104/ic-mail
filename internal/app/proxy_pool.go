@@ -215,12 +215,6 @@ func (s *Server) handleProxyPoolNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProxyPoolTest(w http.ResponseWriter, r *http.Request) {
-	var result struct {
-		Total    int `json:"total"`
-		Retested int `json:"retested"`
-		Passed   int `json:"passed"`
-		Failed   int `json:"failed"`
-	}
 	request := map[string]any{
 		"scopes":         []string{"pool"},
 		"retest":         true,
@@ -228,15 +222,52 @@ func (s *Server) handleProxyPoolTest(w http.ResponseWriter, r *http.Request) {
 		"promote_passed": false,
 		"auto_reload":    true,
 	}
-	if err := s.easyProxies.request(r.Context(), http.MethodPost, "/api/managed-nodes/batch-test", request, &result); err != nil {
+	var result struct {
+		JobID string `json:"job_id"`
+	}
+	if err := s.easyProxies.request(r.Context(), http.MethodPost, "/api/managed-nodes/batch-test/start", request, &result); err != nil {
 		writeError(w, http.StatusBadGateway, errCode("proxy_test_failed", err.Error(), true))
+		return
+	}
+	if strings.TrimSpace(result.JobID) == "" {
+		writeError(w, http.StatusBadGateway, errCode("proxy_test_failed", "代理服务未返回测速任务编号", true))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
-		"message": fmt.Sprintf("测速完成：节点 %d，可用 %d，失败 %d", result.Total, result.Passed, result.Failed),
-		"result":  result,
+		"message": "全部节点测速任务已启动",
+		"job_id":  result.JobID,
 	})
+}
+
+func (s *Server) handleProxyPoolTestStatus(w http.ResponseWriter, r *http.Request) {
+	jobID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if jobID == "" {
+		writeError(w, http.StatusBadRequest, errCode("proxy_test_job_required", "缺少测速任务编号", false))
+		return
+	}
+	var result struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Total  int    `json:"total"`
+		Done   int    `json:"done"`
+		Passed int    `json:"passed"`
+		Failed int    `json:"failed"`
+		Phase  string `json:"phase"`
+		Error  string `json:"error"`
+	}
+	path := "/api/managed-nodes/batch-test/status?id=" + url.QueryEscape(jobID)
+	if err := s.easyProxies.request(r.Context(), http.MethodGet, path, nil, &result); err != nil {
+		writeError(w, http.StatusBadGateway, errCode("proxy_test_status_failed", err.Error(), true))
+		return
+	}
+	message := fmt.Sprintf("测速中：%d/%d，可用 %d，失败 %d", result.Done, result.Total, result.Passed, result.Failed)
+	if result.Status == "finished" {
+		message = fmt.Sprintf("测速完成：节点 %d，可用 %d，失败 %d", result.Total, result.Passed, result.Failed)
+	} else if result.Status == "failed" || result.Status == "canceled" {
+		message = firstNonEmpty(strings.TrimSpace(result.Error), "测速任务未完成")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": message, "result": result})
 }
 
 func (s *Server) handleProxyPoolImport(w http.ResponseWriter, r *http.Request) {
@@ -287,7 +318,10 @@ func (s *Server) handleProxyPoolImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBindAccountProxy(w http.ResponseWriter, r *http.Request) {
-	var p struct{ AccountID, NodeTag string }
+	var p struct {
+		AccountID string `json:"account_id"`
+		NodeTag   string `json:"node_tag"`
+	}
 	if err := decodeJSON(r, &p); err != nil {
 		writeError(w, 400, err)
 		return
