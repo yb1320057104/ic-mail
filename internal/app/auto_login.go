@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,7 +21,13 @@ import (
 )
 
 var autoLoginLocks sync.Map
-var smsCodePattern = regexp.MustCompile(`(?:^|\D)(\d{4,8})(?:\D|$)`)
+var appleSixDigitCodePattern = regexp.MustCompile(`(?:^|\D)(\d{6})(?:\D|$)`)
+var appleSplitSixDigitCodePattern = regexp.MustCompile(`(?:^|\D)(\d{3})[\s-]+(\d{3})(?:\D|$)`)
+var appleCodeKeywordPattern = regexp.MustCompile(`(?i)(?:验证码|驗證碼|校验码|校驗碼|动态码|動態碼|verification\s*code|security\s*code|passcode|one[ -]?time\s*(?:code|password)|otp)[^0-9]{0,40}(\d{6})(?:\D|$)`)
+var appleCodeJSONKeys = map[string]bool{
+	"code": true, "smscode": true, "verificationcode": true, "securitycode": true,
+	"passcode": true, "otp": true, "verifycode": true, "captcha": true,
+}
 
 func encryptAutoSecret(master, plain string) (string, error) {
 	if strings.TrimSpace(master) == "" {
@@ -118,19 +125,120 @@ func fetchAutoCode(ctx context.Context, rawURL string) (string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("接码地址 HTTP %d", resp.StatusCode)
 	}
-	var object map[string]any
-	if json.Unmarshal(data, &object) == nil {
-		if value, ok := object["code"]; ok {
-			code := strings.TrimSpace(fmt.Sprint(value))
-			if regexp.MustCompile(`^\d{4,8}$`).MatchString(code) {
-				return code, nil
+	return extractAppleVerificationCode(data)
+}
+
+func normalizeVerificationText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= '０' && r <= '９' {
+			return '0' + (r - '０')
+		}
+		return r
+	}, value)
+}
+
+func normalizedCodeKey(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		case r >= 'a' && r <= 'z':
+			return r
+		default:
+			return -1
+		}
+	}, value)
+}
+
+func exactAppleCode(value any) (string, bool) {
+	text := strings.TrimSpace(normalizeVerificationText(fmt.Sprint(value)))
+	if len(text) == 6 {
+		for _, r := range text {
+			if r < '0' || r > '9' {
+				return "", false
 			}
 		}
+		return text, true
 	}
-	if match := smsCodePattern.FindSubmatch(data); len(match) > 1 {
-		return string(match[1]), nil
+	return "", false
+}
+
+func codeFromJSON(value any) (string, bool) {
+	switch current := value.(type) {
+	case map[string]any:
+		for key, child := range current {
+			if appleCodeJSONKeys[normalizedCodeKey(key)] {
+				if code, ok := exactAppleCode(child); ok {
+					return code, true
+				}
+				if text, ok := child.(string); ok {
+					if code, ok := codeNearKeyword(normalizeVerificationText(text)); ok {
+						return code, true
+					}
+				}
+			}
+		}
+		for _, child := range current {
+			if code, ok := codeFromJSON(child); ok {
+				return code, true
+			}
+		}
+	case []any:
+		for i := len(current) - 1; i >= 0; i-- {
+			if code, ok := codeFromJSON(current[i]); ok {
+				return code, true
+			}
+		}
+	case string:
+		return codeNearKeyword(normalizeVerificationText(current))
 	}
-	return "", fmt.Errorf("响应中未找到 4 至 8 位验证码")
+	return "", false
+}
+
+func codeNearKeyword(text string) (string, bool) {
+	if match := appleCodeKeywordPattern.FindStringSubmatch(text); len(match) > 1 {
+		return match[1], true
+	}
+	return "", false
+}
+
+func uniqueAppleCode(text string) (string, int) {
+	candidates := map[string]struct{}{}
+	for _, match := range appleSixDigitCodePattern.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			candidates[match[1]] = struct{}{}
+		}
+	}
+	for _, match := range appleSplitSixDigitCodePattern.FindAllStringSubmatch(text, -1) {
+		if len(match) > 2 {
+			candidates[match[1]+match[2]] = struct{}{}
+		}
+	}
+	if len(candidates) == 1 {
+		for code := range candidates {
+			return code, 1
+		}
+	}
+	return "", len(candidates)
+}
+
+func extractAppleVerificationCode(data []byte) (string, error) {
+	text := normalizeVerificationText(string(data))
+	var payload any
+	if json.Unmarshal(data, &payload) == nil {
+		if code, ok := codeFromJSON(payload); ok {
+			return code, nil
+		}
+	}
+	if code, ok := codeNearKeyword(text); ok {
+		return code, nil
+	}
+	if code, count := uniqueAppleCode(text); count == 1 {
+		return code, nil
+	} else if count > 1 {
+		return "", fmt.Errorf("接码响应中有 %d 个六位数候选，无法安全确定 Apple 验证码", count)
+	}
+	return "", fmt.Errorf("接码响应中未找到六位 Apple 验证码")
 }
 
 func maskPhone(value string) string {
@@ -163,6 +271,20 @@ func (s *Server) handleBindAutoLogin(w http.ResponseWriter, r *http.Request) {
 	session, ok := s.sessionForOwnerAccount(ownerID, payload.AccountID)
 	if !ok {
 		writeError(w, http.StatusNotFound, errCode("account_not_found", "账号不存在", false))
+		return
+	}
+	if !payload.Enabled {
+		_, found, err := s.store.SetAutoLoginBindingEnabled(ownerID, payload.AccountID, false)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, errCode("auto_binding_not_found", "尚未绑定自动接码登录", false))
+			return
+		}
+		s.cancelAutoLogin(ownerID, payload.AccountID)
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "已暂停自动接码登录"})
 		return
 	}
 	parts := strings.SplitN(strings.TrimSpace(payload.Binding), "----", 2)
@@ -207,22 +329,67 @@ func (s *Server) handleBindAutoLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "自动接码登录配置已加密保存"})
 }
 
+func autoLoginKey(ownerID, accountID string) string {
+	return ownerID + "|" + accountID
+}
+
+func (s *Server) cancelAutoLogin(ownerID, accountID string) {
+	s.autoLoginMu.Lock()
+	cancel := s.autoLoginCancels[autoLoginKey(ownerID, accountID)]
+	s.autoLoginMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (s *Server) registerAutoLoginCancel(ownerID, accountID string, cancel context.CancelFunc) func() {
+	key := autoLoginKey(ownerID, accountID)
+	s.autoLoginMu.Lock()
+	s.autoLoginCancels[key] = cancel
+	s.autoLoginMu.Unlock()
+	return func() {
+		s.autoLoginMu.Lock()
+		delete(s.autoLoginCancels, key)
+		s.autoLoginMu.Unlock()
+	}
+}
+
+func (s *Server) autoLoginEnabled(ownerID, accountID string) bool {
+	binding, ok := s.store.AutoLoginBinding(ownerID, accountID)
+	return ok && binding.Enabled
+}
+
 func (s *Server) tryAutoLogin(session ICloudSession) {
 	binding, ok := s.store.AutoLoginBinding(session.OwnerID, session.AccountID)
 	if !ok || !binding.Enabled || (!binding.NextAttemptAt.IsZero() && time.Now().Before(binding.NextAttemptAt)) {
 		return
 	}
-	lockValue, _ := autoLoginLocks.LoadOrStore(session.OwnerID+"|"+session.AccountID, &sync.Mutex{})
+	lockValue, _ := autoLoginLocks.LoadOrStore(autoLoginKey(session.OwnerID, session.AccountID), &sync.Mutex{})
 	lock := lockValue.(*sync.Mutex)
 	if !lock.TryLock() {
 		return
 	}
 	defer lock.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	unregister := s.registerAutoLoginCancel(session.OwnerID, session.AccountID, cancel)
+	defer func() {
+		cancel()
+		unregister()
+	}()
+	binding, ok = s.store.AutoLoginBinding(session.OwnerID, session.AccountID)
+	if !ok || !binding.Enabled || (!binding.NextAttemptAt.IsZero() && time.Now().Before(binding.NextAttemptAt)) {
+		return
+	}
 	binding.Status = "自动登录中"
 	binding.LastError = ""
 	binding.LastAttemptAt = time.Now()
 	binding.NextAttemptAt = time.Now().Add(10 * time.Minute)
-	_ = s.store.SaveAutoLoginBinding(binding)
+	if saved, err := s.store.SaveAutoLoginProgress(binding); err != nil || !saved {
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("自动接码登录开始", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID)
+	}
 	password, err := decryptAutoSecret(s.cfg.AutoLoginSecret, binding.PasswordCipher)
 	if err != nil {
 		s.autoLoginFailed(binding, err)
@@ -233,8 +400,6 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 		s.autoLoginFailed(binding, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
 	client, clientErr := s.appleAuthClientForOwner(session.OwnerID)
 	if clientErr != nil {
 		s.autoLoginFailed(binding, clientErr)
@@ -242,6 +407,9 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 	}
 	var successes []string
 	if state, saved := appleAccountLoginState(session); saved && state.LastCheckedAt.IsZero() == false && !state.LastCheckOK {
+		if ctx.Err() != nil || !s.autoLoginEnabled(session.OwnerID, session.AccountID) {
+			return
+		}
 		store := newAppleAuthPendingStore()
 		result, e := client.StartAppleAccountManageLogin(ctx, session.AppleID, password, store, "phone")
 		if e == nil && !result.Needs2FA {
@@ -252,6 +420,9 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 		}
 		if e == nil && result.Needs2FA {
 			if code, ce := pollAutoCode(ctx, codeURL); ce == nil {
+				if s.logger != nil {
+					s.logger.Info("自动接码已识别六位验证码", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "interface", "apple_account")
+				}
 				if pending, found := store.get(result.PendingID); found {
 					var refreshed ICloudSession
 					refreshed, e = client.SubmitAppleAccountManage2FA(ctx, pending, code, nil)
@@ -272,6 +443,9 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 		}
 	}
 	if state, saved := iCloudWebLoginState(session); saved && !state.LastCheckedAt.IsZero() && !state.LastCheckOK {
+		if ctx.Err() != nil || !s.autoLoginEnabled(session.OwnerID, session.AccountID) {
+			return
+		}
 		store := newAppleAuthPendingStore()
 		result, e := client.StartLogin(ctx, session.AppleID, password, s.cfg.ICloudDefaultHost, s.cfg.ICloudClientID, store, "phone")
 		if e == nil && !result.Needs2FA {
@@ -282,6 +456,9 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 		}
 		if e == nil && result.Needs2FA {
 			if code, ce := pollAutoCode(ctx, codeURL); ce == nil {
+				if s.logger != nil {
+					s.logger.Info("自动接码已识别六位验证码", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "interface", "icloud_web")
+				}
 				if pending, found := store.get(result.PendingID); found {
 					var refreshed ICloudSession
 					refreshed, e = client.Submit2FA(ctx, pending, code)
@@ -306,7 +483,10 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 		binding.LastSuccessAt = time.Now()
 		binding.LastError = ""
 		binding.NextAttemptAt = time.Time{}
-		_ = s.store.SaveAutoLoginBinding(binding)
+		_, _ = s.store.SaveAutoLoginProgress(binding)
+		if s.logger != nil {
+			s.logger.Info("自动接码登录成功", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "interfaces", strings.Join(successes, ","))
+		}
 		return
 	}
 	if err == nil {
@@ -318,13 +498,21 @@ func (s *Server) tryAutoLogin(session ICloudSession) {
 func pollAutoCode(ctx context.Context, rawURL string) (string, error) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+	var lastErr error
 	for {
 		code, err := fetchAutoCode(ctx, rawURL)
 		if err == nil {
 			return code, nil
 		}
+		lastErr = err
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return "", fmt.Errorf("自动接码登录已暂停")
+			}
+			if lastErr != nil {
+				return "", fmt.Errorf("等待六位短信验证码超时：%w", lastErr)
+			}
 			return "", fmt.Errorf("等待短信验证码超时")
 		case <-ticker.C:
 		}
@@ -334,5 +522,8 @@ func (s *Server) autoLoginFailed(binding AutoLoginBinding, err error) {
 	binding.Status = "自动登录失败"
 	binding.LastError = keepAliveChineseError(err)
 	binding.NextAttemptAt = time.Now().Add(30 * time.Minute)
-	_ = s.store.SaveAutoLoginBinding(binding)
+	_, _ = s.store.SaveAutoLoginProgress(binding)
+	if s.logger != nil {
+		s.logger.Warn("自动接码登录失败", "owner", s.ownerName(binding.OwnerID), "account_id", binding.AccountID, "err", keepAliveChineseError(err))
+	}
 }

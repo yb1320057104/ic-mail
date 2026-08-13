@@ -200,6 +200,57 @@ func (s *FileStore) SaveAutoLoginBinding(binding AutoLoginBinding) error {
 	return s.saveLocked()
 }
 
+func (s *FileStore) SetAutoLoginBindingEnabled(ownerID, accountID string, enabled bool) (AutoLoginBinding, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginBindings {
+		binding := &s.state.AutoLoginBindings[i]
+		if binding.OwnerID != ownerID || binding.AccountID != accountID {
+			continue
+		}
+		binding.Enabled = enabled
+		binding.UpdatedAt = time.Now()
+		binding.LastError = ""
+		binding.NextAttemptAt = time.Time{}
+		if enabled {
+			binding.Status = "等待登录态异常时自动登录"
+		} else {
+			binding.Status = "已暂停自动接码登录"
+		}
+		if err := s.saveLocked(); err != nil {
+			return AutoLoginBinding{}, true, err
+		}
+		return *binding, true, nil
+	}
+	return AutoLoginBinding{}, false, nil
+}
+
+// SaveAutoLoginProgress updates only runtime fields and never re-enables a
+// binding that was paused while an automatic login attempt was running.
+func (s *FileStore) SaveAutoLoginProgress(progress AutoLoginBinding) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginBindings {
+		binding := &s.state.AutoLoginBindings[i]
+		if binding.OwnerID != progress.OwnerID || binding.AccountID != progress.AccountID {
+			continue
+		}
+		if !binding.Enabled {
+			return false, nil
+		}
+		binding.Status = progress.Status
+		binding.LastError = progress.LastError
+		binding.LastAttemptAt = progress.LastAttemptAt
+		binding.LastSuccessAt = progress.LastSuccessAt
+		binding.NextAttemptAt = progress.NextAttemptAt
+		if err := s.saveLocked(); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 func (s *FileStore) AutoLoginBinding(ownerID, accountID string) (AutoLoginBinding, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -3759,11 +3759,12 @@
       if (!activeICloudSessionKey) { $('autoLoginStatus').textContent = '新增账号请先完成新接口或旧接口登录，再点击编辑账号进行绑定'; return; }
       const session = activeICloudSessionForBinding();
       if (!session || !session.account_id) { $('autoLoginStatus').textContent = '请先保存账号登录态，再绑定自动接码登录'; return; }
+      const enabled = $('autoLoginEnabled').value === 'true';
       const binding = $('autoLoginBinding').value.trim();
-      if (!binding.includes('----')) { $('autoLoginStatus').textContent = '格式错误，必须是：手机号----接码地址'; return; }
+      if (enabled && !binding.includes('----')) { $('autoLoginStatus').textContent = '格式错误，必须是：手机号----接码地址'; return; }
       const button = $('autoLoginSaveButton'); button.disabled=true; button.textContent='正在加密保存...';
       try {
-        const data = await api('/api/icloud/auto-login/bind',{method:'POST',body:JSON.stringify({account_id:session.account_id,binding,password:$('autoLoginPassword').value,enabled:$('autoLoginEnabled').value==='true'})});
+        const data = await api('/api/icloud/auto-login/bind',{method:'POST',body:JSON.stringify({account_id:session.account_id,binding,password:$('autoLoginPassword').value,enabled})});
         $('autoLoginPassword').value=''; $('autoLoginBinding').value=''; $('autoLoginStatus').textContent=data.message || '自动接码登录配置已保存'; await refresh();
       } catch(err) { $('autoLoginStatus').textContent='保存失败：'+err.message; }
       finally { button.disabled=false; button.textContent='保存自动接码登录'; }

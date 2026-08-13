@@ -79,6 +79,8 @@ type Server struct {
 	mailWatcherInitialFetchLimit   int
 	mailWatcherLookback            time.Duration
 	mailWatcherActiveUntil         map[string]time.Time
+	autoLoginMu                    sync.Mutex
+	autoLoginCancels               map[string]context.CancelFunc
 	appleAccountKeepAliveMu        sync.Mutex
 	appleAccountKeepAliveCancel    context.CancelFunc
 	appleAccountKeepAliveEnabled   bool
@@ -259,6 +261,7 @@ func NewServer(cfg Config, store *FileStore, logger *slog.Logger) http.Handler {
 		mailWatcherInitialFetchLimit:  defaultMailWatcherInitialFetchLimit,
 		mailWatcherLookback:           defaultMailWatcherLookback,
 		mailWatcherActiveUntil:        make(map[string]time.Time),
+		autoLoginCancels:              make(map[string]context.CancelFunc),
 		appleAccountKeepAliveEnabled:  cfg.AppleAccountKeepAliveEnabled,
 		appleAccountKeepAliveInterval: appleAccountKeepAliveDefaultInterval,
 		mailboxSchedulers:             make(map[string]*mailboxSchedulerJob),
@@ -4019,36 +4022,89 @@ func (s *Server) handleMailboxVisualByEmail(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	s.markMailWatcherActive(mailbox.ID)
+	limit := parseBoundedPositiveInt(r.URL.Query().Get("limit"), 5, 1, 20)
+	if truthy(r.URL.Query().Get("refresh")) {
+		s.handleMailboxVisualRefresh(w, r, mailbox, limit)
+		return
+	}
+	cards, count, revision := s.mailboxVisualCards(mailbox, limit)
+	escape := func(value string) string {
+		return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;", "'", "&#39;").Replace(value)
+	}
+	page := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{EMAIL}} 的最近邮件</title><style>
+:root{color-scheme:light;--bg:#f3f6fa;--panel:#fff;--ink:#142033;--muted:#68778b;--line:#dce3ec;--accent:#2563eb;--accent-soft:#eaf1ff;--ok:#047857;--warn:#b45309}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#edf3ff 0,#f6f8fb 240px);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}.top{background:linear-gradient(135deg,#0f172a,#173b72);color:#fff;padding:24px 18px;box-shadow:0 12px 35px rgba(15,23,42,.18)}.top-inner,.shell{max-width:1040px;margin:auto}.eyebrow{font-size:12px;letter-spacing:.14em;color:#9fc2ff;text-transform:uppercase}.top h1{margin:4px 0 2px;font-size:22px;word-break:break-all}.top p{margin:0;color:#c5d5eb}.shell{padding:18px 14px 44px}.toolbar{position:sticky;top:10px;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:11px 13px;background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 30px rgba(30,41,59,.08);backdrop-filter:blur(12px)}.status-dot{width:9px;height:9px;border-radius:50%;background:#f59e0b;box-shadow:0 0 0 4px #fef3c7}.status-dot.ok{background:#10b981;box-shadow:0 0 0 4px #d1fae5}.status{flex:1;min-width:220px;color:var(--muted)}button{border:0;border-radius:9px;padding:8px 13px;background:var(--accent);color:#fff;font:600 13px inherit;cursor:pointer}button:disabled{opacity:.55;cursor:wait}.toggle{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px}.mail{background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-bottom:16px;overflow:hidden;box-shadow:0 12px 32px rgba(30,41,59,.07)}.mail-head{padding:16px 18px;border-bottom:1px solid var(--line);background:#fbfcff}.mail h2{margin:0;font-size:17px;line-height:1.4}.meta{display:grid;gap:3px;margin-top:7px;color:var(--muted);font-size:13px}.mail-frame{display:block;width:100%;min-height:330px;height:520px;border:0;background:#fff}.mail-plain{background:#fff;color:#172033;padding:28px;line-height:1.75}.mail-code{display:inline-block;margin:0 0 18px;padding:10px 18px;border-radius:10px;background:var(--accent-soft);color:#174ea6;font:700 28px/1.2 ui-monospace,monospace;letter-spacing:5px}.mail-text{white-space:pre-wrap;word-break:break-word}.empty{padding:64px 22px;text-align:center;color:var(--muted)}.empty strong{display:block;color:var(--ink);font-size:18px;margin-bottom:5px}@media(max-width:640px){.top{padding:20px 15px}.top h1{font-size:18px}.toolbar{top:6px}.mail-head{padding:14px}.mail-frame{min-height:380px}.mail-plain{padding:20px}}
+</style></head><body><header class="top"><div class="top-inner"><div class="eyebrow">iCloud Privacy Mail</div><h1>{{EMAIL}}</h1><p>最近邮件·页面先显示本地缓存，后台自动同步</p></div></header><main class="shell"><div class="toolbar"><span class="status-dot" id="statusDot"></span><span class="status" id="syncStatus">已快速加载 {{COUNT}} 封缓存邮件，正在同步最新邮件…</span><label class="toggle"><input id="autoRefresh" type="checkbox" checked>15 秒自动同步</label><button id="refreshButton" type="button">立即同步</button></div><section id="mailList">{{CARDS}}</section></main><script>
+const statusEl=document.getElementById('syncStatus'),dotEl=document.getElementById('statusDot'),buttonEl=document.getElementById('refreshButton'),autoEl=document.getElementById('autoRefresh'),listEl=document.getElementById('mailList');let revision={{REVISION}},timer=null,countdownTimer=null,nextAt=0;function fitFrames(){document.querySelectorAll('.mail-frame').forEach(frame=>{try{const doc=frame.contentDocument;if(!doc||!doc.body)return;frame.style.height=Math.min(Math.max(doc.body.scrollHeight,doc.documentElement.scrollHeight,330)+24,1800)+'px'}catch(_){}})}function schedule(){clearTimeout(timer);clearInterval(countdownTimer);if(!autoEl.checked)return;nextAt=Date.now()+15000;countdownTimer=setInterval(()=>{if(buttonEl.disabled)return;const seconds=Math.max(1,Math.ceil((nextAt-Date.now())/1000));statusEl.textContent='已展示最新缓存，'+seconds+'秒后自动同步'},1000);timer=setTimeout(refresh,15000)}async function refresh(){clearTimeout(timer);clearInterval(countdownTimer);buttonEl.disabled=true;buttonEl.textContent='同步中…';dotEl.classList.remove('ok');statusEl.textContent='正在后台同步最新邮件，当前内容仍可浏览…';try{const u=new URL(location.href);u.searchParams.set('refresh','1');const response=await fetch(u,{cache:'no-store',headers:{Accept:'application/json'}});const data=await response.json();if(!response.ok)throw new Error(data.message||('请求失败 HTTP '+response.status));if(data.revision!==revision){listEl.innerHTML=data.html;revision=data.revision;fitFrames()}dotEl.classList.add('ok');statusEl.textContent=data.sync_error?('已显示本地邮件；'+data.sync_error):('同步完成，共显示 '+data.message_count+' 封最近邮件')}catch(error){statusEl.textContent='同步失败，已继续显示本地缓存：'+error.message}finally{buttonEl.disabled=false;buttonEl.textContent='立即同步';schedule()}}document.querySelectorAll('.mail-frame').forEach(frame=>frame.addEventListener('load',fitFrames));buttonEl.addEventListener('click',refresh);autoEl.addEventListener('change',()=>autoEl.checked?refresh():schedule());setTimeout(fitFrames,150);setTimeout(refresh,350);
+</script></body></html>`
+	page = strings.NewReplacer(
+		"{{EMAIL}}", escape(mailbox.Email),
+		"{{COUNT}}", strconv.Itoa(count),
+		"{{CARDS}}", cards,
+		"{{REVISION}}", strconv.Quote(revision),
+	).Replace(page)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store, private")
+	_, _ = io.WriteString(w, page)
+}
+
+func (s *Server) handleMailboxVisualRefresh(w http.ResponseWriter, r *http.Request, mailbox Mailbox, limit int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	_, _ = s.syncMailbox(ctx, mailbox, time.Now().Add(-24*time.Hour), "")
+	synced, syncErr := s.syncMailbox(ctx, mailbox, time.Now().Add(-24*time.Hour), "")
+	cards, count, revision := s.mailboxVisualCards(mailbox, limit)
+	payload := map[string]any{
+		"success":       true,
+		"html":          cards,
+		"message_count": count,
+		"revision":      revision,
+		"synced":        synced,
+		"updated_at":    formatTime(time.Now()),
+	}
+	if syncErr != nil {
+		payload["sync_error"] = "后台邮件同步暂时失败，请检查 IMAP 取码登录"
+		if s.logger != nil {
+			s.logger.Warn("visual mailbox background sync failed", "mailbox_id", mailbox.ID, "err", syncErr)
+		}
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) mailboxVisualCards(mailbox Mailbox, limit int) (string, int, string) {
 	messages := s.store.MessagesForMailbox(mailbox.ID)
 	sort.SliceStable(messages, func(i, j int) bool {
 		return firstNonZeroTime(messages[i].ReceivedAt, messages[i].CreatedAt).After(firstNonZeroTime(messages[j].ReceivedAt, messages[j].CreatedAt))
 	})
-	if len(messages) > 20 {
-		messages = messages[:20]
+	if limit <= 0 {
+		limit = 5
+	}
+	if len(messages) > limit {
+		messages = messages[:limit]
 	}
 	escape := func(value string) string {
 		return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;", "'", "&#39;").Replace(value)
 	}
 	var cards strings.Builder
 	for _, msg := range messages {
-		fmt.Fprintf(&cards, `<article><h2>%s</h2><div class="meta">发件人：%s · %s</div>%s</article>`, escape(decodeMIMEHeader(msg.Subject)), escape(decodeMIMEHeader(msg.From)), escape(formatTime(msg.ReceivedAt)), mailboxVisualMessageContent(msg))
+		fmt.Fprintf(&cards, `<article class="mail"><div class="mail-head"><h2>%s</h2><div class="meta"><span>发件人：%s</span><span>时间：%s</span></div></div>%s</article>`, escape(decodeMIMEHeader(msg.Subject)), escape(decodeMIMEHeader(msg.From)), escape(formatTime(msg.ReceivedAt)), mailboxVisualMessageContent(msg))
 	}
 	if len(messages) == 0 {
-		cards.WriteString(`<article><h2>暂未收到邮件</h2><div class="meta">请稍后刷新页面。</div></article>`)
+		cards.WriteString(`<div class="mail empty"><strong>暂未收到邮件</strong><span>页面会在后台自动同步，无需手动重复刷新。</span></div>`)
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>%s 邮件</title><style>body{margin:0;background:#020817;color:#eaf2ff;font:14px system-ui;padding:24px}main{max-width:980px;margin:auto}header,article{background:#061a3b;border:1px solid #1d4ed8;border-radius:10px;padding:18px;margin-bottom:14px}h1,h2{margin:0 0 10px}.meta{color:#93c5fd;margin-bottom:14px}pre{white-space:pre-wrap;word-break:break-word;font:14px/1.7 system-ui;color:#eaf2ff}.mail-frame{display:block;width:100%%;height:560px;border:0;border-radius:8px;background:#fff}.mail-plain{background:#fff;color:#172033;border-radius:8px;padding:30px;line-height:1.75}.mail-code{display:inline-block;margin:8px 0 20px;padding:10px 20px;border-radius:8px;background:#e8f0ff;color:#0b3a82;font:700 28px/1.2 ui-monospace,monospace;letter-spacing:5px}.mail-text{white-space:pre-wrap;word-break:break-word}</style></head><body><main><header><h1>%s</h1><div class="meta">最近邮件，可刷新页面重新同步</div></header>%s</main></body></html>`, escape(mailbox.Email), escape(mailbox.Email), cards.String())
+	revision := strconv.Itoa(len(messages))
+	if len(messages) > 0 {
+		latest := messages[0]
+		revision = latest.ID + "|" + firstNonZeroTime(latest.ReceivedAt, latest.CreatedAt).UTC().Format(time.RFC3339Nano) + "|" + revision
+	}
+	return cards.String(), len(messages), revision
 }
 
 func mailboxVisualMessageContent(msg Message) string {
 	if strings.TrimSpace(msg.HTMLBody) != "" {
 		// srcdoc is attribute-escaped and isolated in a sandbox without scripts,
 		// forms, popups or top-level navigation. Email CSS remains available.
-		return `<iframe class="mail-frame" sandbox="" referrerpolicy="no-referrer" loading="lazy" title="邮件正文" srcdoc="` + html.EscapeString(msg.HTMLBody) + `"></iframe>`
+		return `<iframe class="mail-frame" sandbox="allow-same-origin" referrerpolicy="no-referrer" loading="lazy" title="邮件正文" srcdoc="` + html.EscapeString(msg.HTMLBody) + `"></iframe>`
 	}
 	plain := cleanMailboxVisualPlainText(msg.Body)
 	code := extractOTP(msg.Subject + "\n" + plain)
@@ -4602,7 +4658,9 @@ func (s *Server) keepAliveICloudWebRoundWithForce(ctx context.Context, force boo
 				state.KeepAliveStatus = "保活失败，等待自动重试"
 				state.KeepAliveNextTry = checkedAt.Add(delays[index])
 				s.saveICloudWebKeepAliveState(session, state)
-				go s.tryAutoLogin(withICloudWebLoginState(session, state))
+				if shouldTriggerICloudWebAutoLogin(err) {
+					go s.tryAutoLogin(withICloudWebLoginState(session, state))
+				}
 				if s.logger != nil {
 					s.logger.Warn("icloud web keepalive failed", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "err", err)
 				}
