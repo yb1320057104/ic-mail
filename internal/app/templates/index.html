@@ -802,6 +802,19 @@
     }
     .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px 18px; }
     .field-grid .full, .form .full { grid-column: 1 / -1; }
+    .session-global-tools { display:grid; grid-template-columns:minmax(260px,1.4fr) minmax(280px,1fr); gap:12px; padding:14px 18px; border-bottom:1px solid var(--line); background:var(--bg-soft); }
+    .session-tool-card,.account-editor-section { border:1px solid var(--line); border-radius:14px; background:var(--panel); }
+    .session-tool-card { padding:14px; }
+    .session-global-tools .session-tool-card:last-child { grid-column:1 / -1; }
+    .session-tool-card h3,.account-editor-section h3 { margin:0 0 5px; font-size:15px; }
+    .session-tool-card p,.account-editor-section .section-copy { margin:0; color:var(--muted); font-size:12px; line-height:1.6; }
+    .session-tool-card .toolbar { padding:12px 0 0; }
+    .account-editor-layout { display:grid; gap:12px; padding-top:12px; }
+    .account-editor-layout[hidden] { display:none; }
+    .account-editor-section { overflow:hidden; }
+    .account-editor-section-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:14px 18px; border-bottom:1px solid var(--line); background:var(--bg-soft); }
+    .account-editor-section .toolbar { padding:0 18px 16px; }
+    .account-scope-badge { display:inline-flex; padding:5px 9px; border-radius:999px; color:var(--brand); background:var(--brand-soft); font-size:12px; font-weight:800; white-space:nowrap; }
     .panel-body { padding-bottom: 2px; }
     label, .field-label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 700; }
     input, textarea, select {
@@ -997,7 +1010,8 @@
       .content-actions, .content-actions > button, .account-dock, .appearance-controls, .version-dock { width: 100%; }
       .account-dock { grid-template-columns: 1fr 1fr; }
       .account-dock .user-badge { grid-column: 1 / -1; }
-      .grid, .quick-grid, .field-grid { grid-template-columns: 1fr; }
+      .grid, .quick-grid, .field-grid, .session-global-tools { grid-template-columns: 1fr; }
+      .session-global-tools .session-tool-card:last-child { grid-column:auto; }
       .card strong { font-size: 28px; }
     }
     /* ===== motion & polish layer ===== */
@@ -1359,6 +1373,23 @@
             <button type="button" class="primary" onclick="addICloudSession()">添加账号</button>
           </div>
           <div class="notice" id="icloudSessionInfo">未完成创建登录。建议先点“新接口登录”或“旧接口登录”；收到 2FA 后提交对应验证码。取码登录会单独保存。</div>
+          <div class="session-global-tools">
+            <section class="session-tool-card">
+              <h3>全部账号检测</h3>
+              <p>这是全局操作，将依次检测列表中的所有 Apple 新接口、旧接口和取码登录。</p>
+              <div class="toolbar"><button id="sessionCheckAllButton" type="button" onclick="checkICloudSession()">检测全部账号</button><span id="sessionCheckStatus" class="muted">尚未执行全局检测。</span></div>
+            </section>
+            <section class="session-tool-card">
+              <h3>全局自动检测</h3>
+              <p>开启后按固定间隔检测全部账号，不属于某一个账号。</p>
+              <div class="toolbar"><input id="sessionCheckMinutes" aria-label="自动检测间隔（分钟）" type="number" min="1" max="120" value="3" onchange="saveSessionCheckSettings()" style="width:90px"><button id="autoSessionCheck" type="button" onclick="toggleSessionCheck()" aria-pressed="false">开启自动检测</button></div>
+            </section>
+            <section class="session-tool-card">
+              <h3>用户固定可信代理</h3>
+              <p>这是当前用户全部 Apple 请求共用的全局代理，不属于弹窗内的某一个账号。</p>
+              <div class="field-grid" style="padding:12px 0 0"><label class="full">代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="http://user:pass@host:port 或 socks5://host:port；留空保留"></label><label>运行状态<select id="fixedProxyEnabled"><option value="true">开启全局代理</option><option value="false">暂停全局代理</option></select></label><div class="full toolbar" style="padding:0"><button type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测代理</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div></div>
+            </section>
+          </div>
           <div class="table-filter-bar">
             <label>搜索账号或子邮箱<input id="sessionSearch" name="session_list_filter_query" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" readonly placeholder="Apple ID、账号ID、子邮箱" onfocus="this.removeAttribute('readonly')" onpointerdown="this.removeAttribute('readonly')" onkeydown="allowSessionSearchInput(event)" onbeforeinput="allowSessionSearchInput(event)" onpaste="allowSessionSearchInput(event)" oncut="allowSessionSearchInput(event)" oninput="handleSessionSearchInput(event)"></label>
             <label>登录态状态<select id="sessionHealthFilter" onchange="renderICloudSessions(lastICloudSessions)"><option value="">全部状态</option><option value="normal">全部正常</option><option value="partial">部分正常</option><option value="failed">异常</option><option value="unchecked">未检测</option></select></label>
@@ -1366,8 +1397,10 @@
             <button type="button" onclick="clearSessionFilters()">清空条件</button>
           </div>
           <div class="table-wrap session-table-wrap"><table class="session-table"><thead><tr><th>Apple账号 / ID</th><th>新接口</th><th>旧接口</th><th>取码登录</th><th>子邮箱</th><th>最后检测</th><th>操作</th></tr></thead><tbody id="sessionRows"></tbody></table></div>
-          <div id="sessionAccountFormContent" hidden>
-          <div class="notice" id="sessionEditInfo">当前为新增登录模式；点击上方账号的“编辑/重新登录”可自动带入历史账号资料。</div>
+          <div id="sessionAccountFormContent" class="account-editor-layout" hidden>
+          <div class="notice" id="sessionEditInfo">当前为新增登录模式；每个功能区独立保存，未操作的功能不会被开启或修改。</div>
+          <section class="account-editor-section">
+          <div class="account-editor-section-head"><div><h3>1. Apple 创建登录</h3><p class="section-copy">新接口、旧接口可分别登录；点击下方检测只检查当前正在编辑的账号。</p></div><span class="account-scope-badge" id="sessionEditScope">新增账号</span></div>
           <div class="field-grid" id="sessionLoginEditor">
             <label>Apple ID<input id="protocolAppleId" autocomplete="username" placeholder="name@icloud.com"></label>
             <label>密码<input id="protocolPassword" type="password" autocomplete="current-password" placeholder="Apple ID 密码"></label>
@@ -1390,11 +1423,13 @@
             <button id="appleAccount2FAButton" onclick="submitAppleAccount2FA()">提交新接口验证码</button>
             <button id="protocolLoginButton" onclick="startProtocolLogin()">旧接口登录</button>
             <button id="protocol2FAButton" onclick="submitProtocol2FA()">提交旧接口验证码</button>
-            <button type="button" onclick="saveCreateSettings()">保存配置</button>
-            <button id="sessionCheckButton" onclick="checkICloudSession()">检测登录态</button>
+            <button id="sessionCheckButton" onclick="checkCurrentICloudSession()">只检测当前账号</button>
             <span id="loginSettingsStatus" class="muted"></span>
           </div>
           <div class="hint">新接口每小时约可创建 20 个，旧接口每小时约可创建 5 个；两种登录态都保存后可一起创建，合计约 25 个/小时。</div>
+          </section>
+          <section class="account-editor-section">
+          <div class="account-editor-section-head"><div><h3>2. 邮件取码登录（IMAP）</h3><p class="section-copy">仅负责读取当前账号关联邮箱的验证码，不会开启 Apple 创建接口。</p></div><span class="account-scope-badge">当前账号</span></div>
           <div class="field-grid">
             <label>邮件服务<select id="imapProvider" onchange="applyIMAPPreset()"><option value="icloud">iCloud IMAP</option><option value="outlook">Outlook / Exchange IMAP</option><option value="gmail">Gmail IMAP</option><option value="custom">其他第三方 IMAP</option></select></label>
             <label>邮箱账号<input id="imapEmail" autocomplete="username" placeholder="name@example.com"></label>
@@ -1404,28 +1439,20 @@
             <label>邮箱密码 / 应用密码<input id="imapAppPassword" type="password" autocomplete="new-password"></label>
             <div class="full toolbar">
               <button id="imapSaveButton" type="button" onclick="saveICloudIMAPLogin()">保存取码登录</button>
-              <button id="imapCheckButton" type="button" onclick="checkICloudIMAPLogin()">检测取码登录</button>
+              <button id="imapCheckButton" type="button" onclick="checkICloudIMAPLogin()">只检测当前账号取码</button>
               <span id="imapLoginStatus" class="muted">取码登录用于 IMAP 收件和快速获取验证码，不参与创建邮箱。</span>
             </div>
           </div>
-          <div class="notice"><strong>自动接码登录功能</strong><br>仅在新接口或旧接口登录态异常时，通过短信/手机号验证码自动重新登录。Apple 密码和接码地址会在服务器加密保存。</div>
-          <div class="notice"><strong>用户固定可信代理</strong><br>每个用户最多一个固定出口，仅用于自己的 Apple 请求，不轮换。支持 http://、https://、socks5://，认证信息加密保存。</div>
-          <div class="field-grid">
-            <label class="full">固定代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="http://user:pass@host:port 或 socks5://host:port；留空保留原配置"></label>
-            <label>启用状态<select id="fixedProxyEnabled"><option value="true">启用固定代理</option><option value="false">暂停固定代理</option></select></label>
-            <div class="full toolbar"><button type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测连通性</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div>
-          </div>
+          </section>
+          <section class="account-editor-section">
+          <div class="account-editor-section-head"><div><h3>3. 自动接码登录</h3><p class="section-copy">仅在当前账号的新接口或旧接口明确失效时自动重新登录。选择“暂停”会立即停止当前账号任务。</p></div><span class="account-scope-badge">当前账号</span></div>
           <div class="field-grid">
             <label class="full">手机号----接码地址<input id="autoLoginBinding" autocomplete="off" placeholder="13800138000----https://example.com/code?token=xxx"></label>
             <label>Apple ID 密码<input id="autoLoginPassword" type="password" autocomplete="new-password" placeholder="首次绑定必填；留空保留已保存密码"></label>
-            <label>启用状态<select id="autoLoginEnabled"><option value="true">启用自动接码登录</option><option value="false">暂停自动接码登录</option></select></label>
+            <label>当前账号运行状态<select id="autoLoginEnabled"><option value="false">暂停（不自动登录）</option><option value="true">开启（异常时自动登录）</option></select></label>
             <div class="full toolbar"><button id="autoLoginSaveButton" type="button" onclick="saveAutoLoginBinding()">保存自动接码登录</button><span id="autoLoginStatus" class="muted">尚未绑定</span></div>
           </div>
-          </div>
-          <div class="field-grid">
-            <label>自动检测间隔（分钟）<input id="sessionCheckMinutes" type="number" min="1" max="120" value="3" onchange="saveSessionCheckSettings()" placeholder="3"></label>
-            <label>自动检测<button id="autoSessionCheck" type="button" onclick="toggleSessionCheck()" aria-pressed="false">开启自动检测</button></label>
-            <div class="full muted" id="sessionCheckStatus">自动检测未开启。</div>
+          </section>
           </div>
         </section>
 
@@ -2745,30 +2772,52 @@
     async function checkICloudSession(options = {}) {
       if (sessionCheckInFlight) return false;
       sessionCheckInFlight = true;
-      const buttons = ['sessionCheckButton', 'createCheckSessionButton'].map(id => $(id)).filter(Boolean);
+      const accountID = String(options.accountID || '').trim();
+      const isSingle = !!accountID;
+      const buttons = ['sessionCheckAllButton', 'sessionCheckButton', 'createCheckSessionButton'].map(id => $(id)).filter(Boolean);
       buttons.forEach(button => { button.disabled = true; });
-      if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '正在检测新接口和旧接口登录态...';
-      if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '正在检测...';
+      if (isSingle) {
+        if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '正在检测当前账号的新接口、旧接口和取码登录...';
+      } else {
+        if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '正在检测全部账号的新接口、旧接口和取码登录...';
+        if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '正在检测全部账号...';
+      }
       try {
-        const data = await api('/api/icloud/session/check', {method:'POST', showLoading: !options.auto, loadingText:'正在检测登录态，请稍候...', body:'{}'});
+        const data = await api('/api/icloud/session/check', {method:'POST', showLoading: !options.auto, loadingText:isSingle ? '正在检测当前账号，请稍候...' : '正在检测全部账号，请稍候...', body:JSON.stringify({account_id:accountID})});
         lastICloudSessions = data.sessions || (data.session && data.session.saved ? [data.session] : []);
         renderICloudSessions(lastICloudSessions);
-        if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = data.message || '登录态检测完成';
-        if ($('createSessionCheckStatus')) {
-          $('createSessionCheckStatus').textContent = data.message || '检测完成，账号状态已刷新。';
+        if (isSingle) {
+          if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = `当前账号：${data.message || '检测完成'}`;
+          updateSessionEditSummary();
+        } else {
+          if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = `全部账号：${data.message || '检测完成'}`;
+          if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = data.message || '全部账号检测完成。';
         }
-        log(data.message || '登录态检测正常：新旧接口状态已刷新');
+        log(`${isSingle ? '当前账号' : '全部账号'}检测：${data.message || '状态已刷新'}`);
         return true;
       } catch (err) {
-        if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '登录态检测失败；请按失败提示重新保存对应登录态。';
-        if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '检测失败，请查看运行日志。';
-        log('登录态检测失败：' + err.message + '；请按失败提示重新保存对应登录态');
+        if (isSingle) {
+          if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '当前账号检测失败：' + err.message;
+        } else {
+          if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '全部账号检测失败：' + err.message;
+          if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '全部账号检测失败，请查看运行日志。';
+        }
+        log(`${isSingle ? '当前账号' : '全部账号'}检测失败：${err.message}`);
         await refresh().catch(() => {});
         throw err;
       } finally {
         buttons.forEach(button => { button.disabled = false; });
         sessionCheckInFlight = false;
       }
+    }
+
+    function checkCurrentICloudSession() {
+      const session = activeICloudSessionForBinding();
+      if (!activeICloudSessionKey || !session || !session.account_id) {
+        if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '新增账号尚未保存，不能执行单账号检测。';
+        return Promise.resolve(false);
+      }
+      return checkICloudSession({accountID:session.account_id});
     }
 
     async function refresh() {
@@ -3537,7 +3586,6 @@
       if (content) content.hidden = false;
       $('sessionAccountModalTitle').textContent = title || '添加 Apple 账号';
       $('sessionAccountModal').classList.add('show');
-      loadFixedProxy();
       setTimeout(() => $('protocolAppleId').focus({preventScroll:true}), 50);
     }
 
@@ -3563,8 +3611,10 @@
       $('imapAppPassword').value = '';
       $('autoLoginBinding').value = '';
       $('autoLoginPassword').value = '';
-      $('autoLoginEnabled').value = 'true';
+      $('autoLoginEnabled').value = 'false';
       $('autoLoginStatus').textContent = '请先完成账号登录，再绑定自动接码登录';
+      $('sessionEditScope').textContent = '新增账号';
+      $('sessionCheckButton').disabled = true;
       $('sessionEditInfo').textContent = '当前为新增账号模式。输入 Apple ID 和密码后，可分别完成新接口或旧接口登录；IMAP 取码登录可按需配置。';
       $('imapLoginStatus').textContent = '取码登录用于 IMAP 收件和快速获取验证码，不参与创建邮箱。';
       if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '';
@@ -3596,6 +3646,9 @@
       $('autoLoginPassword').value = '';
       $('autoLoginEnabled').value = session.auto_login_enabled ? 'true' : 'false';
       $('autoLoginStatus').textContent = session.auto_login_enabled ? `已绑定：${session.auto_login_phone || '-'}----${session.auto_login_url || '-'}；${session.auto_login_status || '等待自动登录'}${session.auto_login_error ? '；错误：'+session.auto_login_error : ''}` : '尚未启用自动接码登录';
+      $('sessionEditScope').textContent = `仅此账号 · ${session.account_id || '-'}`;
+      $('sessionCheckButton').disabled = !session.account_id;
+      updateSessionEditSummary(session);
       renderICloudSessions(lastICloudSessions);
       showSessionAccountModal(`编辑账号：${session.apple_id || email || key}`);
       $('protocolPassword').focus({preventScroll:true});
@@ -3617,8 +3670,20 @@
 
     function activeICloudSessionAccountID() {
       const session = activeICloudSessionForBinding();
-      if (!session || !createLoginSaved(session)) return '';
+      if (!session) return '';
       return session.account_id || '';
+    }
+
+    function updateSessionEditSummary(session) {
+      session = session || activeICloudSessionForBinding();
+      if (!session || !activeICloudSessionKey) return;
+      const parts = [
+        `新接口：${session.apple_account_login_status || (appleAccountLoginSaved(session) ? '已保存' : '未开启')}`,
+        `旧接口：${session.icloud_web_login_status || (iCloudWebLoginSaved(session) ? '已保存' : '未开启')}`,
+        `取码：${session.icloud_imap_login_status || (iCloudIMAPLoginSaved(session) ? '已保存' : '未开启')}`,
+        `自动登录：${session.auto_login_enabled ? '已开启' : '已暂停'}`
+      ];
+      $('sessionEditInfo').textContent = `当前账号：${session.apple_id || session.account_id || '-'}。${parts.join('；')}。每个功能区独立操作，未点击保存或登录的功能不会改变。`;
     }
 
     async function syncICloudMailboxes() {
@@ -3799,13 +3864,19 @@
 
     async function checkICloudIMAPLogin() {
       const button = $('imapCheckButton');
+      const session = activeICloudSessionForBinding();
+      const accountID = activeICloudSessionKey && session ? String(session.account_id || '').trim() : '';
+      if (!accountID) {
+        $('imapLoginStatus').textContent = '新增账号尚未保存，不能执行单账号取码检测。';
+        return;
+      }
       button.disabled = true;
-      $('imapLoginStatus').textContent = '正在检测已保存的取码登录...';
+      $('imapLoginStatus').textContent = '正在检测当前账号的取码登录...';
       try {
-        const data = await api('/api/icloud/imap-login/check', {method:'POST', body: JSON.stringify({})});
+        const data = await api('/api/icloud/imap-login/check', {method:'POST', body: JSON.stringify({account_id:accountID})});
         if (data.sessions) renderICloudSessions(data.sessions);
-        $('imapLoginStatus').textContent = data.message || '取码登录检测完成';
-        log(data.message || '取码登录检测完成');
+        $('imapLoginStatus').textContent = '当前账号：' + (data.message || '取码登录检测完成');
+        log('当前账号取码检测：' + (data.message || '检测完成'));
         await refresh();
       } catch (err) {
         $('imapLoginStatus').textContent = '取码登录检测失败：' + err.message;
@@ -4219,7 +4290,7 @@
     ensureAuth()
       .then(() => checkUnreadAnnouncements().catch(err => log('读取公告失败：' + err.message)))
       .then(() => currentUser && currentUser.expired ? null : loadCreateSettings().catch(err => log('读取创建配置失败：' + err.message)))
-      .then(() => currentUser && currentUser.expired ? null : Promise.all([refresh(), refreshMailboxScheduler({silent: true})]))
+      .then(() => currentUser && currentUser.expired ? null : Promise.all([refresh(), refreshMailboxScheduler({silent: true}), loadFixedProxy()]))
       .then(() => currentUser && currentUser.expired ? null : loadUpdateStatus().catch(err => log('检查更新失败：' + err.message)))
       .then(() => currentUser && currentUser.expired ? null : ensureSchedulerPolling())
       .catch(err => log('登录检查失败：' + err.message));

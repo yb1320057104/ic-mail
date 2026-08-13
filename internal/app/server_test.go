@@ -2686,6 +2686,65 @@ func TestSaveICloudIMAPLoginStoresStateWithoutReturningPassword(t *testing.T) {
 	}
 }
 
+func TestIMAPLoginCheckScopesToRequestedAccount(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{}, store, discardLogger())
+	server := handler.(*Server)
+	cookie, user := registerTestUser(t, handler, "imap-scope-user", "imap123")
+	for _, session := range []ICloudSession{
+		testIMAPSession(user.ID, "acc-first", "first@icloud.com"),
+		testIMAPSession(user.ID, "acc-second", "second@icloud.com"),
+	} {
+		session.LoginStates[0].LastCheckedAt = time.Time{}
+		session.LoginStates[0].LastCheckOK = false
+		if err := store.SaveICloudSessionForOwner(user.ID, session); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	checked := make([]string, 0, 1)
+	server.checkIMAPLogin = func(_ context.Context, email, _ string) error {
+		checked = append(checked, email)
+		return nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/icloud/imap-login/check", strings.NewReader(`{"account_id":"acc-second"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("check scoped IMAP login = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(checked) != 1 || checked[0] != "second@icloud.com" {
+		t.Fatalf("checked IMAP accounts = %#v, want only second account", checked)
+	}
+	first, ok := store.ICloudSessionForOwnerAccount(user.ID, "acc-first")
+	if !ok {
+		t.Fatal("first session missing")
+	}
+	firstState, ok := iCloudIMAPLoginState(first)
+	if !ok || !firstState.LastCheckedAt.IsZero() {
+		t.Fatalf("unrequested account was modified: %+v", firstState)
+	}
+}
+
+func TestPruneBackupsKeepsAvailableRowsWhenBelowLimit(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.CreateBackup("prune-boundary"); err != nil {
+		t.Fatal(err)
+	}
+	if removed := store.PruneBackups(14); removed != 0 {
+		t.Fatalf("removed backups = %d, want 0", removed)
+	}
+	backups, err := store.Backups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("backups = %d, want 1", len(backups))
+	}
+}
+
 func TestSaveICloudIMAPLoginCanAttachICloudMailAliasToDifferentAppleID(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewServer(Config{}, store, discardLogger())
