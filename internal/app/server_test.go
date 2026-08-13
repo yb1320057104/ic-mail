@@ -4595,6 +4595,91 @@ func TestMailWatcherIMAPGroupSignatureIgnoresMailboxSyncCursor(t *testing.T) {
 	if before != after {
 		t.Fatalf("signature changed after LastSyncUID update: %q vs %q", before, after)
 	}
+	state.IMAPAppPassword = "new-app-specific-password"
+	changedPassword := mailWatcherIMAPGroupSignature(state, []Mailbox{{
+		ID:    "mbx_1",
+		Email: "alias@icloud.com",
+	}})
+	if before == changedPassword {
+		t.Fatal("signature did not change after IMAP password update")
+	}
+}
+
+func TestSyncMailboxCodeBatchDeduplicatesSharedIMAPLogin(t *testing.T) {
+	oldInterval := mailboxMailSyncMinInterval
+	mailboxMailSyncMinInterval = 0
+	t.Cleanup(func() { mailboxMailSyncMinInterval = oldInterval })
+
+	store := newTestStore(t)
+	ownerID := "owner-shared-qq-imap"
+	bad := testIMAPSession(ownerID, "acc-bad", "shared@qq.com")
+	bad.AppleID = "bad-apple@example.com"
+	bad.DSID = "dsid-bad"
+	bad.Cookies = []SessionCookie{{Name: "session", Value: "bad"}}
+	bad.LoginStates[0].IMAPHost = "imap.qq.com"
+	bad.LoginStates[0].IMAPAppPassword = "stale-password"
+	bad.LoginStates[0].LastCheckOK = false
+	bad.LoginStates[0].LastCheckedAt = time.Now()
+	good := testIMAPSession(ownerID, "acc-good", "shared@qq.com")
+	good.AppleID = "good-apple@example.com"
+	good.DSID = "dsid-good"
+	good.Cookies = []SessionCookie{{Name: "session", Value: "good"}}
+	good.LoginStates[0].IMAPHost = "imap.qq.com"
+	good.LoginStates[0].IMAPAppPassword = "working-password"
+	good.LoginStates[0].LastCheckOK = true
+	good.LoginStates[0].LastCheckedAt = time.Now().Add(-time.Minute)
+	if err := store.SaveICloudSessionForOwner(ownerID, bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveICloudSessionForOwner(ownerID, good); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.AddMailboxForOwner(ownerID, "acc-bad", "first", "first@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.AddMailboxForOwner(ownerID, "acc-good", "second", "second@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	calls := 0
+	server.syncCodeMailboxBatchWithCursor = func(ctx context.Context, state LoginState, mailboxes []Mailbox, after time.Time, keyword string, maxMessages int) (iCloudIMAPSyncResult, error) {
+		calls++
+		if state.IMAPAppPassword != "working-password" {
+			t.Fatalf("selected password = %q, want checked working credential", state.IMAPAppPassword)
+		}
+		if len(mailboxes) != 2 {
+			t.Fatalf("mailboxes = %d, want both aliases in one IMAP fetch", len(mailboxes))
+		}
+		return iCloudIMAPSyncResult{LastUID: "321", MessagesByMailbox: map[string][]ICloudSyncedMessage{}}, nil
+	}
+	if _, err := server.syncMailboxCodeBatchForOwnerWithLimit(context.Background(), ownerID, []Mailbox{first, second}, time.Time{}, "OpenAI", 8); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("IMAP fetch calls = %d, want 1", calls)
+	}
+	for _, accountID := range []string{"acc-bad", "acc-good"} {
+		session, ok := store.ICloudSessionForOwnerAccount(ownerID, accountID)
+		if !ok {
+			t.Fatalf("session %s missing", accountID)
+		}
+		state, ok := iCloudIMAPLoginState(session)
+		if !ok || state.IMAPLastSyncUID != "321" {
+			t.Fatalf("session %s cursor = %q, want 321", accountID, state.IMAPLastSyncUID)
+		}
+	}
+}
+
+func TestMailWatcherQQLoginBackoffAndFallbackInterval(t *testing.T) {
+	if got := nextMailWatcherIdleBackoff(errors.New("A001 NO Login fail: login frequency limited"), time.Second); got != 5*time.Minute {
+		t.Fatalf("QQ frequency-limit backoff = %s, want 5m", got)
+	}
+	if got := mailWatcherFallbackSyncInterval(3 * time.Second); got != time.Minute {
+		t.Fatalf("fallback sync interval = %s, want 1m", got)
+	}
 }
 
 func TestLoginProtectsManagementAPI(t *testing.T) {
