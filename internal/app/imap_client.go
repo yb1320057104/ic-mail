@@ -557,16 +557,42 @@ func imapWaitForExists(ctx context.Context, conn net.Conn, reader *bufio.Reader,
 	if _, err := fmt.Fprintf(conn, "%s IDLE\r\n", tag); err != nil {
 		return err
 	}
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return err
+	pendingExists := false
+	lastLine := ""
+	entered := false
+	for i := 0; i < 50; i++ {
+		_ = conn.SetReadDeadline(time.Now().Add(imapIdleReadTimeout))
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		lastLine = strings.TrimSpace(line)
+		if strings.HasPrefix(lastLine, "+") {
+			entered = true
+			break
+		}
+		// Some IMAP servers (including QQ in production) can emit an
+		// unsolicited EXISTS response before the IDLE continuation line.
+		// Preserve that notification and keep reading until IDLE is entered.
+		if imapLineHasExistsEvent(lastLine) {
+			pendingExists = true
+			continue
+		}
+		if strings.HasPrefix(strings.ToUpper(lastLine), strings.ToUpper(tag)+" ") {
+			return fmt.Errorf("IMAP IDLE 被服务器拒绝：%s", lastLine)
+		}
 	}
-	if !strings.HasPrefix(strings.TrimSpace(line), "+") {
-		return fmt.Errorf("IMAP IDLE 未进入等待状态：%s", strings.TrimSpace(line))
+	if !entered {
+		return fmt.Errorf("IMAP IDLE 未进入等待状态：%s", lastLine)
+	}
+	if pendingExists {
+		_, _ = fmt.Fprint(conn, "DONE\r\n")
+		_, err := imapReadUntilTag(reader, tag)
+		return err
 	}
 	for ctx.Err() == nil {
 		_ = conn.SetReadDeadline(time.Now().Add(imapIdleReadTimeout))
-		line, err = reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			_, _ = fmt.Fprint(conn, "DONE\r\n")
 			return err
