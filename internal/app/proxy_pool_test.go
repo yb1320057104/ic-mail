@@ -1,12 +1,40 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestProxyPoolImportAcceptsTagPrefixJSONField(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/import/parse", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["tag_prefix"] != "icloud" || body["url"] != "https://example.com/sub" {
+			t.Fatalf("unexpected parse request: %#v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"import_id": "imp-1", "nodes": []map[string]any{}})
+	})
+	mux.HandleFunc("/api/import/imp-1/commit", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	})
+	upstream := httptest.NewServer(mux)
+	defer upstream.Close()
+	store := newTestStore(t)
+	h := NewServer(Config{EasyProxiesURL: upstream.URL}, store, discardLogger()).(*Server)
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/import", bytes.NewBufferString(`{"url":"https://example.com/sub","yaml":"","tag_prefix":"icloud"}`))
+	rec := httptest.NewRecorder()
+	h.handleProxyPoolImport(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
 
 func TestAccountProxyBindingPersistsAcrossSessionMerge(t *testing.T) {
 	store := newTestStore(t)

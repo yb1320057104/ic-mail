@@ -215,7 +215,11 @@ func (s *Server) handleProxyPoolNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProxyPoolImport(w http.ResponseWriter, r *http.Request) {
-	var p struct{ URL, YAML, TagPrefix string }
+	var p struct {
+		URL       string `json:"url"`
+		YAML      string `json:"yaml"`
+		TagPrefix string `json:"tag_prefix"`
+	}
 	if err := decodeJSON(r, &p); err != nil {
 		writeError(w, 400, err)
 		return
