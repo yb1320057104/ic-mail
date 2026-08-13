@@ -17,7 +17,7 @@ const (
 	maxMailboxSchedulerEvents        = 200
 )
 
-var defaultMailboxSchedulerRoundInterval = 5 * time.Second
+var defaultMailboxSchedulerRoundInterval = 120 * time.Second
 
 type mailboxSchedulerConfig struct {
 	AccountIDs    []string

@@ -4990,8 +4990,8 @@ func TestMailboxSchedulerStatusDefaultsRoundInterval(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Scheduler.RoundIntervalSeconds != 5 {
-		t.Fatalf("default round interval = %d, want 5", body.Scheduler.RoundIntervalSeconds)
+	if body.Scheduler.RoundIntervalSeconds != 120 {
+		t.Fatalf("default round interval = %d, want 120", body.Scheduler.RoundIntervalSeconds)
 	}
 }
 

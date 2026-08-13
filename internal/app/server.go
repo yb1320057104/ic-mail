@@ -549,6 +549,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/user/fixed-proxy", s.handleSaveFixedProxy)
 	s.mux.HandleFunc("POST /api/user/fixed-proxy/test", s.handleTestFixedProxy)
 	s.mux.HandleFunc("GET /api/proxy-pool/nodes", s.handleProxyPoolNodes)
+	s.mux.HandleFunc("POST /api/proxy-pool/test", s.handleProxyPoolTest)
 	s.mux.HandleFunc("POST /api/proxy-pool/import", s.handleProxyPoolImport)
 	s.mux.HandleFunc("POST /api/proxy-pool/bind", s.handleBindAccountProxy)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/create", s.handleCreateICloudMailbox)

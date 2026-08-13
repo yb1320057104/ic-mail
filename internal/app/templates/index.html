@@ -1360,7 +1360,7 @@
             <button class="quick-card" onclick="setActiveView('mailboxes')">
               <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.4 6.3 6.7A2 2 0 0 1 8.2 5.4h7.6a2 2 0 0 1 1.9 1.3L20 13.4"/><path d="M4 13.4h4.2l1.3 2.2h5l1.3-2.2H20v3.7A1.9 1.9 0 0 1 18.1 19.2H5.9A1.9 1.9 0 0 1 4 17.1z"/></svg></i>
               <strong>邮箱池</strong>
-              <span>搜索邮箱、复制 API、取码和同步邮件。</span>
+              <span>搜索邮箱、复制 API、取码和查看自动同步邮件。</span>
             </button>
             <button class="quick-card" onclick="openRunConfig()">
               <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.8v10.4"/><path d="m15.6 10.6-3.6 3.6-3.6-3.6"/><path d="M4.6 16.2v1.4A2.4 2.4 0 0 0 7 20h10a2.4 2.4 0 0 0 2.4-2.4v-1.4"/></svg></i>
@@ -1479,66 +1479,26 @@
             <section class="session-tool-card" style="grid-column:1/-1">
               <h3>账号代理池</h3>
               <p>由 easy-proxies 运行节点。可粘贴订阅链接，或导入 Clash/Mihomo YAML；导入后自动测速并分配本地端口。</p>
-              <div class="field-grid" style="padding:12px 0 0"><label class="full">订阅链接<input id="proxySubscriptionURL" placeholder="https://example.com/subscription"></label><label class="full">Clash / Mihomo YAML<textarea id="proxyYAML" rows="5" placeholder="proxies:&#10;  - name: 节点名称&#10;    type: hysteria2&#10;    server: ..."></textarea></label><div class="full toolbar" style="padding:0"><button class="primary" type="button" onclick="importProxyPool()">导入并测速</button><button type="button" onclick="loadProxyPoolNodes()">刷新代理池</button><span id="proxyPoolStatus" class="muted">正在读取代理池…</span></div></div>
+              <div class="field-grid" style="padding:12px 0 0"><label class="full">订阅链接<input id="proxySubscriptionURL" placeholder="https://example.com/subscription"></label><label class="full">Clash / Mihomo YAML<textarea id="proxyYAML" rows="5" placeholder="proxies:&#10;  - name: 节点名称&#10;    type: hysteria2&#10;    server: ..."></textarea></label><div class="full toolbar" style="padding:0"><button class="primary" type="button" onclick="importProxyPool()">导入并测速</button><button id="proxyPoolTestButton" type="button" onclick="testProxyPool()">全部节点测速</button><button type="button" onclick="loadProxyPoolNodes()">刷新代理池</button><span id="proxyPoolStatus" class="muted">正在读取代理池…</span></div></div>
               <div class="table-wrap"><table><thead><tr><th>节点</th><th>端口</th><th>状态</th><th>延迟</th><th>已绑定账号</th></tr></thead><tbody id="proxyPoolRows"><tr><td colspan="5" class="muted">暂无节点</td></tr></tbody></table></div>
             </section>
           </div>
         </section>
 
         <section class="view-section panel" data-view="create">
-          <div class="panel-head">
-            <h2>创建隐私邮箱</h2>
-            <p>优先用 Apple Account 新接口创建，达到上限后回落 iCloud 旧接口。</p>
-          </div>
-          <div class="field-grid">
-            <label>标签<input id="protoLabel" placeholder="UPI-70-13"></label>
-            <label>备注<input id="protoNote" placeholder="选填"></label>
-            <label>普通创建接口
-              <select id="createChannelSelect">
-                <option value="auto">自动接口：新接口优先，失败用旧接口</option>
-                <option value="apple_account">只用新接口</option>
-                <option value="icloud_web">只用旧接口</option>
-              </select>
-            </label>
-            <div class="full field-label">
-              <div class="selector-label-row">
-                <span>参与创建账号</span>
-                <span>
-                  <button id="createCheckSessionButton" type="button" onclick="checkICloudSession()">检测登录态</button>
-                  <span id="createSessionCheckStatus" class="muted">检测后会刷新新旧接口状态。</span>
-                </span>
-              </div>
-              <div id="protoAccountSelector" class="create-account-selector muted">保存登录态后可在这里勾选参与创建的 Apple 账号。</div>
-            </div>
-          </div>
-          <div class="toolbar">
-            <button id="createICloudButton" class="primary" onclick="createICloudMailbox()">开始创建</button>
-            <button id="saveCreateSettingsButton" type="button" onclick="saveCreateSettings()">保存配置</button>
-            <span id="protoBatchProgress" class="muted">每次点击会让当前勾选账号同时创建 1 轮，并记录本次成功/失败数量。</span>
-            <span id="createSettingsStatus" class="muted"></span>
-          </div>
-          <div class="field-grid">
-            <label>定时间隔分钟<input id="scheduleIntervalMinutes" type="number" min="1" max="1440" value="60" placeholder="默认 60"></label>
-            <label>每轮创建间隔秒<input id="scheduleRoundIntervalSeconds" type="number" min="1" max="600" value="5" placeholder="默认 5"></label>
-            <label>定时创建接口
-              <select id="scheduleCreateChannelSelect">
-                <option value="auto">自动接口：新接口优先，失败用旧接口</option>
-                <option value="apple_account">只用新接口</option>
-                <option value="icloud_web">只用旧接口</option>
-              </select>
-            </label>
-          </div>
-          <div class="toolbar">
-            <button id="startScheduleButton" class="primary" onclick="startMailboxScheduler()">开始定时创建</button>
-            <button id="stopScheduleButton" class="danger" onclick="stopMailboxScheduler()">停止定时创建</button>
-            <span id="scheduleStatus" class="muted">定时创建未启动；刷新页面不会停止后台任务。</span>
-          </div>
+          <div class="panel-head"><h2>创建隐私邮箱</h2><p>默认新接口优先，失败自动使用旧接口；每小时一轮，轮内每 120 秒创建一次。</p></div>
+          <div class="field-grid"><div class="full field-label"><div class="selector-label-row"><span>参与创建账号</span><span><button id="createCheckSessionButton" type="button" onclick="checkICloudSession()">检测全部登录态</button><span id="createSessionCheckStatus" class="muted">检测后会刷新新旧接口状态。</span></span></div><div id="protoAccountSelector" class="create-account-selector muted">保存登录态后可在这里勾选参与创建的 Apple 账号。</div></div></div>
+          <div class="toolbar"><button id="startScheduleButton" class="primary" onclick="quickStartMailboxScheduler()">一键开始创建</button><button id="stopScheduleButton" class="danger" onclick="stopMailboxScheduler()">停止自动创建</button><span id="scheduleStatus" class="muted">尚未启动；点击后立即执行第一轮。</span><span id="protoBatchProgress" class="muted"></span><span id="createSettingsStatus" class="muted"></span></div>
+          <details class="guide" style="margin:16px 18px"><summary>高级设置（可选）</summary><div>
+            <div class="field-grid"><label>标签<input id="protoLabel" placeholder="UPI-70-13"></label><label>备注<input id="protoNote" placeholder="选填"></label><label>手动创建接口<select id="createChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>自动创建接口<select id="scheduleCreateChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>每轮间隔分钟<input id="scheduleIntervalMinutes" type="number" min="1" max="1440" value="60"></label><label>轮内创建间隔秒<input id="scheduleRoundIntervalSeconds" type="number" min="1" max="600" value="120"></label></div>
+            <div class="toolbar"><button id="createICloudButton" onclick="createICloudMailbox()">仅手动创建一轮</button><button id="saveCreateSettingsButton" type="button" onclick="saveCreateSettings()">保存高级设置</button></div>
+          </div></details>
         </section>
 
         <section class="view-section panel" data-view="mailboxes">
           <div class="panel-head">
             <h2>隐私邮箱池</h2>
-            <p>复制 API、取验证码、同步邮件和修改状态。</p>
+            <p>复制 API、取验证码、查看自动同步邮件和修改状态。</p>
           </div>
           <div class="toolbar list-toolbar">
             <label class="search-field">全局搜索邮箱
@@ -2291,7 +2251,7 @@
         apple_account_two_factor_method: twoFactorMethodPayloadValue('appleAccount2FAMethod'),
         icloud_web_two_factor_method: twoFactorMethodPayloadValue('iCloudWeb2FAMethod'),
         scheduler_interval_minutes: boundedInt('scheduleIntervalMinutes', 60, 1, 1440),
-        scheduler_round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 5, 1, 600),
+        scheduler_round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 120, 1, 600),
         mailbox_page_size: boundedInt('mailboxPageSize', 10, 1, 500)
       };
     }
@@ -2304,7 +2264,7 @@
       setTwoFactorMethodSelect('appleAccount2FAMethod', settings.apple_account_two_factor_method);
       setTwoFactorMethodSelect('iCloudWeb2FAMethod', settings.icloud_web_two_factor_method);
       if ($('scheduleIntervalMinutes')) $('scheduleIntervalMinutes').value = String(settings.scheduler_interval_minutes || 60);
-      if ($('scheduleRoundIntervalSeconds')) $('scheduleRoundIntervalSeconds').value = String(settings.scheduler_round_interval_seconds || 5);
+      if ($('scheduleRoundIntervalSeconds')) $('scheduleRoundIntervalSeconds').value = String(settings.scheduler_round_interval_seconds || 120);
       mailboxPageSize = Math.max(1, Math.min(500, Number(settings.mailbox_page_size || 10)));
       if ($('mailboxPageSize')) $('mailboxPageSize').value = String(mailboxPageSize);
       if (Array.isArray(settings.account_ids)) {
@@ -2941,12 +2901,26 @@
         note: $('protoNote').value.trim(),
         create_channel: createChannelPayloadValue('scheduleCreateChannelSelect'),
         interval_minutes: boundedInt('scheduleIntervalMinutes', 60, 1, 1440),
-        round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 5, 1, 600)
+        round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 120, 1, 600)
       };
       const data = await api('/api/icloud/scheduler/start', {method:'POST', body: JSON.stringify(payload)});
       renderMailboxScheduler(data.scheduler || {});
       ensureSchedulerPolling();
       log(`定时创建已启动：${createChannelLabel(payload.create_channel)}，每 ${payload.interval_minutes} 分钟开始一次；每轮创建间隔 ${payload.round_interval_seconds} 秒；失败账号本轮临时跳过，其他账号继续创建；参与账号=${accountNames}`);
+    }
+
+    async function quickStartMailboxScheduler() {
+      const button = $('startScheduleButton');
+      if (button) { button.disabled = true; button.textContent = '正在启动…'; }
+      try {
+        await api('/api/create-settings', {method:'POST', body:JSON.stringify(collectCreateSettingsPayload())});
+        await startMailboxScheduler();
+      } catch (err) {
+        if ($('scheduleStatus')) $('scheduleStatus').textContent = '启动失败：' + err.message;
+        log('一键创建启动失败：' + err.message);
+      } finally {
+        if (button) { button.disabled = false; button.textContent = '一键开始创建'; }
+      }
     }
 
     async function stopMailboxScheduler() {
@@ -2989,12 +2963,12 @@
       if ($('stopScheduleButton')) $('stopScheduleButton').disabled = !running;
       if ($('scheduleStatus')) {
         const interval = scheduler.interval_minutes || Math.round((scheduler.interval_seconds || 0) / 60) || 60;
-        const roundInterval = scheduler.round_interval_seconds || 5;
+        const roundInterval = scheduler.round_interval_seconds || 120;
         const next = scheduler.next_run_at ? `；下次：${scheduler.next_run_at}` : '';
         const channel = createChannelLabel(scheduler.create_channel);
         const statusText = running
           ? `运行中：${channel}；每 ${interval} 分钟开始一次；每轮间隔 ${roundInterval} 秒；已创建 ${scheduler.success || 0}，失败 ${scheduler.failed || 0}${next}`
-          : `未运行：默认自动接口，每 60 分钟开始一次，每轮间隔 5 秒；历史创建 ${scheduler.success || 0}，失败 ${scheduler.failed || 0}`;
+          : `未运行：默认自动接口，每 60 分钟开始一次，轮内间隔 120 秒；历史创建 ${scheduler.success || 0}，失败 ${scheduler.failed || 0}`;
         $('scheduleStatus').textContent = scheduler.last_error ? `${statusText}；最近错误：${scheduler.last_error}` : statusText;
       }
       setScheduleLog(events.length === 0 ? '暂无定时创建记录。' : events.slice(0, 30).map(event => {
@@ -3259,7 +3233,6 @@
               <button id="verifyButton-${esc(row.id)}" onclick="verifyMailbox('${row.id}')">${verifyButtonText(row.id)}</button>
               <button onclick="viewMailbox('${row.id}')">查看邮箱</button>
               ${row.redemption_locked&&!currentUser.is_admin?'':`<button onclick="rotateMailboxAPI('${row.id}')" title="生成新 API key，旧地址立即失效">重置API</button>`}
-              <button class="${syncButtonClass(row.id)}" onclick="syncMailbox('${row.id}')" ${syncButtonDisabled(row.id)}>${syncButtonText(row.id)}</button>
               <button onclick="cleanRemoteMailbox('${row.id}')" title="把本地已同步过的远端邮件移到废纸篓，并清空当前 iCloud 废纸篓">删除邮件</button>
               <select onchange="setMailboxStatus('${row.id}', this.value)">
                 <option value="">改状态</option>
@@ -3392,24 +3365,9 @@
 
     async function viewMailbox(id) {
       const row = (lastMailboxes || []).find(item => item.id === id);
-      $('mailboxViewerTitle').textContent = `查看邮箱：${row ? row.email : id}`;
-      $('mailboxViewerMessages').innerHTML = '<div class="muted">正在读取邮件...</div>';
-      $('mailboxViewerModal').classList.add('show');
-      try {
-        const data = await api(`/api/mailboxes/${encodeURIComponent(id)}/messages`);
-        const messages = [...(data.messages || [])].reverse();
-        $('mailboxViewerMessages').innerHTML = messages.length ? messages.map((message, index) => `
-          <article class="panel" style="padding:16px">
-            <strong>${esc(message.subject || '无主题')}</strong>
-            <div class="muted" style="margin:6px 0">发件人：${esc(message.from || '-')} · ${esc(exactTimeText(message.received_at || message.created_at))}</div>
-            ${message.html_body ? `<iframe class="mail-html-frame" sandbox="" referrerpolicy="no-referrer" title="邮件正文" data-mail-html-index="${index}"></iframe>` : renderLegacyMailBody(message.body)}
-          </article>`).join('') : '<div class="muted">暂无已同步邮件，请先点击“同步邮件”。</div>';
-        messages.forEach((message, index) => {
-          if (!message.html_body) return;
-          const frame = document.querySelector(`[data-mail-html-index="${index}"]`);
-          if (frame) frame.srcdoc = safeMailHTML(message.html_body);
-        });
-      } catch (err) { $('mailboxViewerMessages').innerHTML = `<div class="error">读取邮件失败：${esc(err.message)}</div>`; }
+      if (!row || !row.api_url) { log('查看邮箱失败：取码地址不可用'); return; }
+      window.open(mailboxAccessURL(row, 'visual'), '_blank', 'noopener');
+      log(`已打开可视化邮箱：${row.email}；页面会自动同步新邮件`);
     }
 
     function renderLegacyMailBody(body) {
@@ -3924,6 +3882,18 @@
       const url=$('proxySubscriptionURL').value.trim(), yaml=$('proxyYAML').value.trim(); if(!url&&!yaml){$('proxyPoolStatus').textContent='请输入订阅链接或 YAML 内容';return;}
       $('proxyPoolStatus').textContent='正在解析、测速并生成代理节点，请稍候…';
       try{const data=await api('/api/proxy-pool/import',{method:'POST',loadingText:'正在导入代理池...',body:JSON.stringify({url,yaml,tag_prefix:'icloud'})});$('proxyPoolStatus').textContent=data.message||'代理导入任务已启动';setTimeout(loadProxyPoolNodes,3000);}catch(err){$('proxyPoolStatus').textContent='导入失败：'+err.message;}
+    }
+
+    async function testProxyPool() {
+      const button=$('proxyPoolTestButton');
+      if(button){button.disabled=true;button.textContent='测速中…';}
+      $('proxyPoolStatus').textContent='正在测试全部代理池节点，请稍候…';
+      try{
+        const data=await apiWithTimeout('/api/proxy-pool/test',{method:'POST',body:'{}',loadingText:'正在测试代理节点...'},180000);
+        $('proxyPoolStatus').textContent=data.message||'代理池测速完成';
+        await loadProxyPoolNodes();
+      }catch(err){$('proxyPoolStatus').textContent='测速失败：'+err.message;}
+      finally{if(button){button.disabled=false;button.textContent='全部节点测速';}}
     }
 
     async function bindAccountProxy() {

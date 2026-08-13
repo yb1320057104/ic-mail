@@ -2820,7 +2820,7 @@ func defaultCreateSettings(ownerID string) CreateSettings {
 		AppleAccountTwoFactorMethod:   appleTwoFactorMethodTrustedDevice,
 		ICloudWebTwoFactorMethod:      appleTwoFactorMethodTrustedDevice,
 		SchedulerIntervalMinutes:      int(defaultMailboxSchedulerInterval.Round(time.Minute).Minutes()),
-		SchedulerRoundIntervalSeconds: int(defaultMailboxSchedulerRoundInterval.Round(time.Second).Seconds()),
+		SchedulerRoundIntervalSeconds: 120,
 		MailboxPageSize:               10,
 	}
 }
@@ -2844,6 +2844,10 @@ func normalizeCreateSettings(ownerID string, settings CreateSettings) CreateSett
 	}
 	if out.SchedulerRoundIntervalSeconds < 1 {
 		out.SchedulerRoundIntervalSeconds = defaults.SchedulerRoundIntervalSeconds
+	}
+	// Migrate the former five-second default; explicitly customized values are preserved.
+	if out.SchedulerRoundIntervalSeconds == 5 {
+		out.SchedulerRoundIntervalSeconds = 120
 	}
 	if out.SchedulerRoundIntervalSeconds > 600 {
 		out.SchedulerRoundIntervalSeconds = 600

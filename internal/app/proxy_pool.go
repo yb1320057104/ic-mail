@@ -214,6 +214,31 @@ func (s *Server) handleProxyPoolNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"success": true, "nodes": nodes, "management_url": s.cfg.EasyProxiesURL})
 }
 
+func (s *Server) handleProxyPoolTest(w http.ResponseWriter, r *http.Request) {
+	var result struct {
+		Total    int `json:"total"`
+		Retested int `json:"retested"`
+		Passed   int `json:"passed"`
+		Failed   int `json:"failed"`
+	}
+	request := map[string]any{
+		"scopes":         []string{"pool"},
+		"retest":         true,
+		"country":        false,
+		"promote_passed": false,
+		"auto_reload":    true,
+	}
+	if err := s.easyProxies.request(r.Context(), http.MethodPost, "/api/managed-nodes/batch-test", request, &result); err != nil {
+		writeError(w, http.StatusBadGateway, errCode("proxy_test_failed", err.Error(), true))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("测速完成：节点 %d，可用 %d，失败 %d", result.Total, result.Passed, result.Failed),
+		"result":  result,
+	})
+}
+
 func (s *Server) handleProxyPoolImport(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		URL       string `json:"url"`

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,32 @@ func TestProxyPoolImportAcceptsTagPrefixJSONField(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.handleProxyPoolImport(rec, req)
 	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProxyPoolTestUsesPoolScope(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/managed-nodes/batch-test", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Scopes []string `json:"scopes"`
+			Retest bool     `json:"retest"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Scopes) != 1 || body.Scopes[0] != "pool" || !body.Retest {
+			t.Fatalf("unexpected test request: %#v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": 2, "retested": 2, "passed": 1, "failed": 1})
+	})
+	upstream := httptest.NewServer(mux)
+	defer upstream.Close()
+	h := NewServer(Config{EasyProxiesURL: upstream.URL}, newTestStore(t), discardLogger()).(*Server)
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/test", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	h.handleProxyPoolTest(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "\u53ef\u7528 1") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
