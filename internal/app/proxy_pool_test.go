@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -52,6 +53,48 @@ rules:
 	}
 	if strings.Contains(string(clean), "external-controller") || strings.Contains(string(clean), "mixed-port") {
 		t.Fatalf("runtime config leaked: %s", clean)
+	}
+}
+
+func TestParseProxyPoolSourceAcceptsBase64VLESSSubscription(t *testing.T) {
+	links := strings.Join([]string{
+		"vless://11111111-1111-1111-1111-111111111111@8.8.8.8:443?encryption=none&security=tls&sni=example.com&type=ws&host=cdn.example.com&path=%2Fws#Tokyo",
+		"socks5://user:pass@1.1.1.1:1080#Backup",
+	}, "\n")
+	raw := []byte(base64.StdEncoding.EncodeToString([]byte(links)))
+	clean, nodes, err := parseAndSanitizeProxyPoolSource(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("nodes=%d, want 2", len(nodes))
+	}
+	var document proxyPoolDocument
+	if err := yaml.Unmarshal(clean, &document); err != nil {
+		t.Fatal(err)
+	}
+	var vless map[string]any
+	for _, proxy := range document.Proxies {
+		if proxy["type"] == "vless" {
+			vless = proxy
+		}
+	}
+	if vless == nil || vless["uuid"] != "11111111-1111-1111-1111-111111111111" || vless["tls"] != true || vless["network"] != "ws" {
+		t.Fatalf("unexpected VLESS proxy: %#v", vless)
+	}
+	if vless["servername"] != "example.com" {
+		t.Fatalf("VLESS SNI not preserved: %#v", vless)
+	}
+}
+
+func TestParseProxyPoolSourceKeepsYAMLCompatibility(t *testing.T) {
+	raw := []byte("proxies:\n  - {name: direct-http, type: http, server: 8.8.8.8, port: 8080}\n")
+	_, nodes, err := parseAndSanitizeProxyPoolSource(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].Name != "direct-http" {
+		t.Fatalf("unexpected nodes: %+v", nodes)
 	}
 }
 

@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -121,6 +123,337 @@ func parseAndSanitizeProxyPoolYAML(raw []byte) ([]byte, []ProxyPoolNode, error) 
 		return nil, nil, err
 	}
 	return out, nodes, nil
+}
+
+// parseAndSanitizeProxyPoolSource accepts both a Mihomo/Clash YAML document
+// and the Base64 encoded share-link lists returned by many subscriptions.
+func parseAndSanitizeProxyPoolSource(raw []byte) ([]byte, []ProxyPoolNode, error) {
+	if len(raw) == 0 || len(raw) > maxProxyPoolSourceBytes {
+		return nil, nil, errCode("proxy_pool_source_size", "代理配置为空或超过 4MB", false)
+	}
+	trimmed := strings.TrimSpace(strings.TrimPrefix(string(raw), "\ufeff"))
+	if looksLikeProxyShareList(trimmed) {
+		return sanitizeProxyShareList(trimmed)
+	}
+	if decoded, ok := decodeProxySubscriptionBase64(trimmed); ok && looksLikeProxyShareList(string(decoded)) {
+		return sanitizeProxyShareList(string(decoded))
+	}
+	return parseAndSanitizeProxyPoolYAML([]byte(trimmed))
+}
+
+func decodeProxySubscriptionBase64(raw string) ([]byte, bool) {
+	compact := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, raw)
+	if compact == "" {
+		return nil, false
+	}
+	encodings := []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding}
+	for _, encoding := range encodings {
+		decoded, err := encoding.DecodeString(compact)
+		if err == nil && len(decoded) > 0 && len(decoded) <= maxProxyPoolSourceBytes {
+			return decoded, true
+		}
+	}
+	return nil, false
+}
+
+func looksLikeProxyShareList(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	for _, scheme := range []string{"vless://", "vmess://", "trojan://", "http://", "https://", "socks5://", "ss://", "hysteria2://", "hy2://", "tuic://"} {
+		if strings.HasPrefix(lower, scheme) || strings.Contains(lower, "\n"+scheme) || strings.Contains(lower, "\r"+scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeProxyShareList(raw string) ([]byte, []ProxyPoolNode, error) {
+	lines := strings.FieldsFunc(raw, func(r rune) bool { return r == '\r' || r == '\n' })
+	proxies := make([]map[string]any, 0, len(lines))
+	names := make(map[string]int)
+	for lineNo, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		proxy, err := proxyMapFromShareLink(line)
+		if err != nil {
+			return nil, nil, errCode("proxy_pool_subscription_node", fmt.Sprintf("订阅第 %d 个节点格式错误：%v", lineNo+1, err), false)
+		}
+		name := strings.TrimSpace(fmt.Sprint(proxy["name"]))
+		names[name]++
+		if names[name] > 1 {
+			proxy["name"] = fmt.Sprintf("%s #%d", name, names[name])
+		}
+		proxies = append(proxies, proxy)
+	}
+	if len(proxies) == 0 {
+		return nil, nil, errCode("proxy_pool_empty", "订阅中没有可识别的代理节点", false)
+	}
+	document, err := yaml.Marshal(proxyPoolDocument{Proxies: proxies})
+	if err != nil {
+		return nil, nil, err
+	}
+	return parseAndSanitizeProxyPoolYAML(document)
+}
+
+func proxyMapFromShareLink(raw string) (map[string]any, error) {
+	lower := strings.ToLower(raw)
+	if strings.HasPrefix(lower, "vmess://") {
+		return vmessProxyMap(strings.TrimSpace(raw[len("vmess://"):]))
+	}
+	if strings.HasPrefix(lower, "ss://") {
+		return shadowsocksProxyMap(raw)
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return nil, errors.New("分享链接无效")
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return nil, errors.New("节点端口无效")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "https" {
+		scheme = "http"
+	}
+	if scheme == "hy2" {
+		scheme = "hysteria2"
+	}
+	name, _ := url.QueryUnescape(u.Fragment)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = fmt.Sprintf("%s-%s-%d", scheme, u.Hostname(), port)
+	}
+	proxy := map[string]any{"name": name, "type": scheme, "server": u.Hostname(), "port": port}
+	query := u.Query()
+	username := ""
+	password := ""
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	switch scheme {
+	case "http", "socks5":
+		if username != "" {
+			proxy["username"] = username
+		}
+		if password != "" {
+			proxy["password"] = password
+		}
+		if strings.EqualFold(u.Scheme, "https") {
+			proxy["tls"] = true
+		}
+	case "vless":
+		if username == "" {
+			return nil, errors.New("VLESS UUID 为空")
+		}
+		proxy["uuid"] = username
+		proxy["udp"] = true
+		applyVLESSOptions(proxy, query)
+	case "trojan":
+		if username == "" {
+			return nil, errors.New("Trojan 密码为空")
+		}
+		proxy["password"] = username
+		proxy["udp"] = true
+		proxy["tls"] = true
+		applyTransportOptions(proxy, query)
+	case "hysteria2":
+		secret := username
+		if password != "" {
+			secret = password
+		}
+		if secret == "" {
+			return nil, errors.New("Hysteria2 密码为空")
+		}
+		proxy["password"] = secret
+		if sni := firstQuery(query, "sni", "peer"); sni != "" {
+			proxy["sni"] = sni
+		}
+		if queryBool(query, "insecure", "allowInsecure") {
+			proxy["skip-cert-verify"] = true
+		}
+		if obfs := query.Get("obfs"); obfs != "" {
+			proxy["obfs"] = obfs
+		}
+		if obfsPassword := firstQuery(query, "obfs-password", "obfsPassword"); obfsPassword != "" {
+			proxy["obfs-password"] = obfsPassword
+		}
+	case "tuic":
+		if username == "" || password == "" {
+			return nil, errors.New("TUIC UUID 或密码为空")
+		}
+		proxy["uuid"], proxy["password"], proxy["udp"] = username, password, true
+		if sni := firstQuery(query, "sni", "servername"); sni != "" {
+			proxy["sni"] = sni
+		}
+		if queryBool(query, "insecure", "allowInsecure") {
+			proxy["skip-cert-verify"] = true
+		}
+	default:
+		return nil, fmt.Errorf("暂不支持 %s 分享链接", u.Scheme)
+	}
+	return proxy, nil
+}
+
+func shadowsocksProxyMap(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, errors.New("Shadowsocks 分享链接无效")
+	}
+	name, _ := url.QueryUnescape(u.Fragment)
+	payload := strings.TrimPrefix(strings.SplitN(raw, "#", 2)[0], "ss://")
+	var methodPassword, hostPort string
+	if at := strings.LastIndex(payload, "@"); at >= 0 {
+		methodPassword, hostPort = payload[:at], payload[at+1:]
+		if decoded, ok := decodeProxySubscriptionBase64(methodPassword); ok {
+			methodPassword = string(decoded)
+		}
+	} else {
+		decoded, ok := decodeProxySubscriptionBase64(payload)
+		if !ok {
+			return nil, errors.New("Shadowsocks 节点不是有效的 Base64")
+		}
+		decodedPayload := string(decoded)
+		at = strings.LastIndex(decodedPayload, "@")
+		if at < 0 {
+			return nil, errors.New("Shadowsocks 节点缺少服务器地址")
+		}
+		methodPassword, hostPort = decodedPayload[:at], decodedPayload[at+1:]
+	}
+	methodPassword, _ = url.QueryUnescape(methodPassword)
+	colon := strings.Index(methodPassword, ":")
+	if colon <= 0 {
+		return nil, errors.New("Shadowsocks 加密方式或密码无效")
+	}
+	hostPort, _ = url.QueryUnescape(hostPort)
+	host, portText, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return nil, errors.New("Shadowsocks 服务器地址无效")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return nil, errors.New("Shadowsocks 端口无效")
+	}
+	if strings.TrimSpace(name) == "" {
+		name = fmt.Sprintf("ss-%s-%d", host, port)
+	}
+	return map[string]any{"name": name, "type": "ss", "server": strings.Trim(host, "[]"), "port": port, "cipher": methodPassword[:colon], "password": methodPassword[colon+1:], "udp": true}, nil
+}
+
+func applyVLESSOptions(proxy map[string]any, query url.Values) {
+	security := strings.ToLower(query.Get("security"))
+	if security == "tls" || security == "reality" {
+		proxy["tls"] = true
+	}
+	if flow := query.Get("flow"); flow != "" {
+		proxy["flow"] = flow
+	}
+	if fingerprint := firstQuery(query, "fp", "fingerprint"); fingerprint != "" {
+		proxy["client-fingerprint"] = fingerprint
+	}
+	if security == "reality" {
+		reality := map[string]any{}
+		if publicKey := firstQuery(query, "pbk", "public-key"); publicKey != "" {
+			reality["public-key"] = publicKey
+		}
+		if shortID := firstQuery(query, "sid", "short-id"); shortID != "" {
+			reality["short-id"] = shortID
+		}
+		if len(reality) > 0 {
+			proxy["reality-opts"] = reality
+		}
+	}
+	applyTransportOptions(proxy, query)
+}
+
+func applyTransportOptions(proxy map[string]any, query url.Values) {
+	if sni := firstQuery(query, "sni", "serverName", "servername"); sni != "" {
+		proxy["servername"] = sni
+	}
+	if queryBool(query, "insecure", "allowInsecure") {
+		proxy["skip-cert-verify"] = true
+	}
+	network := strings.ToLower(firstQuery(query, "type", "network"))
+	if network == "" || network == "tcp" {
+		return
+	}
+	proxy["network"] = network
+	switch network {
+	case "ws":
+		options := map[string]any{}
+		if path := query.Get("path"); path != "" {
+			options["path"] = path
+		}
+		if host := query.Get("host"); host != "" {
+			options["headers"] = map[string]any{"Host": host}
+		}
+		if len(options) > 0 {
+			proxy["ws-opts"] = options
+		}
+	case "grpc":
+		if service := firstQuery(query, "serviceName", "service-name"); service != "" {
+			proxy["grpc-opts"] = map[string]any{"grpc-service-name": service}
+		}
+	}
+}
+
+func firstQuery(values url.Values, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(values.Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func queryBool(values url.Values, keys ...string) bool {
+	value := strings.ToLower(firstQuery(values, keys...))
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func vmessProxyMap(encoded string) (map[string]any, error) {
+	decoded, ok := decodeProxySubscriptionBase64(encoded)
+	if !ok {
+		return nil, errors.New("VMess 节点不是有效的 Base64")
+	}
+	var value map[string]any
+	if err := json.Unmarshal(decoded, &value); err != nil {
+		return nil, errors.New("VMess 节点 JSON 无效")
+	}
+	server := strings.TrimSpace(fmt.Sprint(value["add"]))
+	port, err := intValue(value["port"])
+	uuid := strings.TrimSpace(fmt.Sprint(value["id"]))
+	if server == "" || uuid == "" || err != nil || port < 1 || port > 65535 {
+		return nil, errors.New("VMess 服务器、端口或 UUID 无效")
+	}
+	name := strings.TrimSpace(fmt.Sprint(value["ps"]))
+	if name == "" || name == "<nil>" {
+		name = fmt.Sprintf("vmess-%s-%d", server, port)
+	}
+	proxy := map[string]any{"name": name, "type": "vmess", "server": server, "port": port, "uuid": uuid, "alterId": 0, "cipher": "auto", "udp": true}
+	if alterID, alterErr := intValue(value["aid"]); alterErr == nil {
+		proxy["alterId"] = alterID
+	}
+	if cipher := strings.TrimSpace(fmt.Sprint(value["scy"])); cipher != "" && cipher != "<nil>" {
+		proxy["cipher"] = cipher
+	}
+	query := make(url.Values)
+	for source, target := range map[string]string{"net": "type", "host": "host", "path": "path", "sni": "sni"} {
+		if item := strings.TrimSpace(fmt.Sprint(value[source])); item != "" && item != "<nil>" {
+			query.Set(target, item)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(fmt.Sprint(value["tls"])), "tls") {
+		proxy["tls"] = true
+	}
+	applyTransportOptions(proxy, query)
+	return proxy, nil
 }
 
 func intValue(value any) (int, error) {
@@ -425,7 +758,7 @@ func (s *Server) handleImportProxyPool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err)
 		return
 	}
-	clean, nodes, err := parseAndSanitizeProxyPoolYAML(data)
+	clean, nodes, err := parseAndSanitizeProxyPoolSource(data)
 	if err != nil {
 		writeError(w, 400, err)
 		return
@@ -497,7 +830,7 @@ func (s *Server) handleRefreshProxyPool(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 502, err)
 		return
 	}
-	clean, nodes, err := parseAndSanitizeProxyPoolYAML(data)
+	clean, nodes, err := parseAndSanitizeProxyPoolSource(data)
 	if err != nil {
 		writeError(w, 400, err)
 		return

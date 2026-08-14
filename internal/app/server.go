@@ -6696,6 +6696,9 @@ func (s *Server) allowsUserSession(r *http.Request) bool {
 	if r.Method == http.MethodGet && r.URL.Path == "/api/icloud/session" {
 		return true
 	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/icloud/session/") {
+		return true
+	}
 	if r.URL.Path == "/api/user/fixed-proxy" || r.URL.Path == "/api/user/fixed-proxy/test" {
 		return true
 	}

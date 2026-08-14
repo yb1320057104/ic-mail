@@ -6042,6 +6042,28 @@ func TestDeleteICloudSessionKeepsMailboxData(t *testing.T) {
 	}
 }
 
+func TestNormalUserCanDeleteOwnICloudSession(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{PublicBaseURL: "https://mail.example"}, store, discardLogger())
+	_, _ = registerTestUser(t, handler, "admin", "admin123")
+	cookie, user := registerTestUser(t, handler, "delete-session-user", "delete123")
+	if err := store.SaveICloudSessionForOwner(user.ID, ICloudSession{AppleID: "delete-user@example.com", DSID: "delete-user-dsid"}); err != nil {
+		t.Fatal(err)
+	}
+	session := store.ICloudSessionsForOwner(user.ID)[0]
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/icloud/session/"+session.AccountID, nil)
+	request.AddCookie(cookie)
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete own iCloud session = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if sessions := store.ICloudSessionsForOwner(user.ID); len(sessions) != 0 {
+		t.Fatalf("session was not deleted: %+v", sessions)
+	}
+}
+
 func TestSetMailboxLastCodePersistsOnlyMailboxMarker(t *testing.T) {
 	store := newTestStore(t)
 	mailbox, err := store.AddMailboxForOwner("owner-code-marker", "", "取码邮箱", "marker@icloud.com")
