@@ -892,7 +892,16 @@ func (s *Server) handlePublicRedemptionOrders(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "orders": publicOrders, "quantity": len(lines), "lines": lines})
 }
 
-func (s *Server) handleManagePage(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleManagePage(w http.ResponseWriter, r *http.Request) {
+	// The management UI is now part of the main workspace. Keep the template
+	// available only to its same-origin iframe and retire the old standalone
+	// entry point so users do not see two different navigation systems.
+	if r.URL.Query().Get("embedded") != "1" ||
+		!strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")), "iframe") ||
+		strings.TrimSpace(r.Header.Get("Referer")) == "" || !sameOriginRequest(r) {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
 	s.writeTemplate(w, "templates/manage.html")
 }
 
