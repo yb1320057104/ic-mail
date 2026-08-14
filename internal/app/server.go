@@ -4572,6 +4572,10 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 			metricMessage = "缓存取码成功"
 			return
 		}
+		if latestMailboxOTPAmbiguous(messages, codeAfter, keyword, now) {
+			writeError(w, http.StatusOK, errCode("ambiguous_code", "检测到多个相近的验证码候选，为避免返回错误验证码已拒绝取码", true))
+			return
+		}
 		writeError(w, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
 		return
 	}
@@ -4599,6 +4603,10 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 	if result.syncErr != nil && !allowStale {
 		metricMessage = result.syncErr.Error()
 		writeError(w, http.StatusBadGateway, errCode("mail_sync_failed", "同步验证码邮件失败，已拒绝返回本地旧验证码；请检查取码登录或稍后重试", true))
+		return
+	}
+	if latestMailboxOTPAmbiguous(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now()) {
+		writeError(w, http.StatusOK, errCode("ambiguous_code", "检测到多个相近的验证码候选，为避免返回错误验证码已拒绝取码", true))
 		return
 	}
 	writeError(w, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
@@ -4632,6 +4640,14 @@ func (s *Server) writeMailboxCodeSuccess(w http.ResponseWriter, mailbox Mailbox,
 		"subject":     msg.Subject,
 		"received_at": formatTime(msg.ReceivedAt),
 		"message_id":  msg.ID,
+	}
+	details := extractOTPFromMessage(msg)
+	if details.Code == code {
+		payload["confidence"] = details.Confidence
+		payload["matched_language"] = details.Language
+		payload["matched_rule"] = details.Rule
+		payload["source"] = details.Source
+		payload["recognizer_version"] = "otp-v3"
 	}
 	if staleMessage != "" {
 		payload["stale_cache"] = true
@@ -4691,11 +4707,13 @@ func latestMailboxCodeSkipping(messages []Message, after time.Time, keyword stri
 		if msgTime.IsZero() || msgTime.Before(after) {
 			continue
 		}
-		text := msg.Subject + "\n" + msg.Body
-		if !strings.Contains(strings.ToLower(text), strings.ToLower(keyword)) && keyword != "OpenAI" {
-			continue
+		if keyword != "OpenAI" {
+			text := mailboxOTPText(msg)
+			if !strings.Contains(strings.ToLower(text), strings.ToLower(keyword)) {
+				continue
+			}
 		}
-		code := extractOTP(text)
+		code := extractOTPFromMessage(msg).Code
 		if code == "" {
 			continue
 		}
@@ -4704,6 +4722,32 @@ func latestMailboxCodeSkipping(messages []Message, after time.Time, keyword stri
 		}
 	}
 	return latest, latestCode, latest.ID != ""
+}
+
+func mailboxOTPText(msg Message) string {
+	return strings.Join([]string{msg.Subject, msg.Body, visibleEmailHTMLText(msg.HTMLBody)}, "\n")
+}
+
+func latestMailboxOTPAmbiguous(messages []Message, after time.Time, keyword string, now time.Time) bool {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		keyword = "OpenAI"
+	}
+	after = mailboxCodeAfter(after, now)
+	for _, msg := range messages {
+		msgTime := mailboxMessageAvailableAt(msg)
+		if msgTime.IsZero() || msgTime.Before(after) {
+			continue
+		}
+		text := mailboxOTPText(msg)
+		if keyword != "OpenAI" && !strings.Contains(strings.ToLower(text), strings.ToLower(keyword)) {
+			continue
+		}
+		if extractOTPFromMessage(msg).Ambiguous {
+			return true
+		}
+	}
+	return false
 }
 
 func mailboxMessageIsNewer(candidate, current Message) bool {
@@ -5815,7 +5859,7 @@ func (s *Server) syncMailboxCodeBatchForOwnerWithLimit(ctx context.Context, owne
 				// Visual/content synchronization passes an empty keyword and stores
 				// ordinary mail as well. Code polling keeps storing only messages
 				// containing a valid OTP, so normal numbers cannot become codes.
-				if strings.TrimSpace(keyword) != "" && extractOTP(msg.Subject+"\n"+msg.Body) == "" {
+				if strings.TrimSpace(keyword) != "" && extractOTPFromParts(msg.Subject, msg.Body, msg.HTMLBody).Code == "" {
 					continue
 				}
 				remoteID := strings.TrimSpace(msg.RemoteID)
@@ -5929,7 +5973,7 @@ func (s *Server) syncMailboxBatchForOwnerWithLimit(ctx context.Context, ownerID 
 			lastSyncUID := mailbox.LastSyncUID
 			latestMessageAt := mailbox.LastSyncAt
 			for _, msg := range messagesByMailbox[mailbox.ID] {
-				if extractOTP(msg.Subject+"\n"+msg.Body) == "" {
+				if extractOTPFromParts(msg.Subject, msg.Body, msg.HTMLBody).Code == "" {
 					continue
 				}
 				_, _, err := s.store.UpsertMessageContent(mailbox.ID, msg.RemoteID, "icloud", msg.Subject, msg.From, msg.Body, msg.HTMLBody, msg.ReceivedAt)
@@ -5968,7 +6012,7 @@ func highestICloudMessageUID(messagesByMailbox map[string][]ICloudSyncedMessage)
 func icloudRemoteIDsFromMessages(messages []Message) []string {
 	ids := make([]string, 0, len(messages))
 	for _, msg := range messages {
-		if extractOTP(msg.Subject+"\n"+msg.Body) == "" {
+		if extractOTPFromParts(msg.Subject, msg.Body, msg.HTMLBody).Code == "" {
 			continue
 		}
 		if strings.HasPrefix(strings.TrimSpace(msg.RemoteID), "icloud:") {
@@ -7521,7 +7565,7 @@ var (
 	otpMetadataPrefix = regexp.MustCompile(`(?i)(?:order|invoice|phone|telephone|mobile|reference|ticket|date|time|year|订单|訂單|手机号|手機號|电话|電話|日期|时间|時間|注文番号|電話番号|日付|đơn\s*hàng|hóa\s*đơn|điện\s*thoại|ngày|ऑर्डर|फ़ोन|फोन|तारीख|pedido|factura|teléfono|commande|téléphone|bestellung|rechnung|телефон|заказ|رقم\s*الطلب|الهاتف|วันที่)\s*(?:number|no\.?|id|号|號|番号|số|संख्या|número|numéro|nummer|номер|رقم)?\s*[:：=#-]?\s*$`)
 )
 
-func extractOTP(text string) string {
+func extractOTPLegacy(text string) string {
 	text = normalizeOTPText(text)
 	keywords := otpKeywordRegex.FindAllStringIndex(text, -1)
 	// Numeric codes are much more common. Resolve them before mixed/letter

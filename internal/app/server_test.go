@@ -198,6 +198,7 @@ func TestExtractOTP(t *testing.T) {
 		{name: "openai subject", text: "Your OpenAI code is 123456", want: "123456"},
 		{name: "chinese", text: "验证码：654321，请勿泄露", want: "654321"},
 		{name: "fallback", text: "Use 246810 to continue.", want: "246810"},
+		{name: "spaced numeric", text: "Your verification code is 123 456", want: "123456"},
 		{name: "segmented letters", text: "Your verification code is MMM-MMM", want: "MMM-MMM"},
 		{name: "segmented mixed", text: "验证码：A7B-9K2，请勿泄露", want: "A7B-9K2"},
 		{name: "numeric before template letters", text: "Your verification code HEADER-TITLE please enter 691288 to continue", want: "691288"},
@@ -229,6 +230,46 @@ func TestExtractOTP(t *testing.T) {
 				t.Fatalf("extractOTP() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractOTPFromHTMLUsesVisibleContentOnly(t *testing.T) {
+	details := extractOTPFromParts(
+		"ログインのお知らせ",
+		"",
+		`<html><head><style>.code-111111{color:red}</style></head><body><script>verification code 222222</script><div hidden>验证码：333333</div><p>確認コード：<strong>６９１２８８</strong></p></body></html>`,
+	)
+	if details.Code != "691288" {
+		t.Fatalf("code=%q details=%+v", details.Code, details)
+	}
+	if details.Source != "html_visible_text" || details.Language != "ja" || details.Confidence < 80 {
+		t.Fatalf("unexpected details=%+v", details)
+	}
+}
+
+func TestExtractOTPRejectsCloseCompetingCandidates(t *testing.T) {
+	details := extractOTPFromParts("验证码", "验证码：123456 或 654321", "")
+	if details.Code != "" || !details.Ambiguous {
+		t.Fatalf("expected ambiguous result, got %+v", details)
+	}
+}
+
+func TestMailboxCodeSuccessIncludesRecognitionMetadata(t *testing.T) {
+	server := &Server{store: newTestStore(t), logger: discardLogger()}
+	recorder := httptest.NewRecorder()
+	message := Message{ID: "msg-1", Subject: "Your verification code", Body: "Code: 482193", ReceivedAt: time.Now()}
+	if !server.writeMailboxCodeSuccess(recorder, Mailbox{Email: "alias@icloud.com"}, message, "482193", "", false) {
+		t.Fatal("writeMailboxCodeSuccess returned false")
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["recognizer_version"] != "otp-v3" || response["source"] == "" || response["matched_rule"] == "" {
+		t.Fatalf("missing recognition metadata: %v", response)
+	}
+	if confidence, ok := response["confidence"].(float64); !ok || confidence < 80 {
+		t.Fatalf("invalid confidence: %v", response["confidence"])
 	}
 }
 
