@@ -1416,6 +1416,19 @@ func (s *FileStore) SaveICloudSession(session ICloudSession) error {
 	return s.SaveICloudSessionForOwner("", session)
 }
 
+func (s *FileStore) ValidateICloudAccountLogin(ownerID, accountID, loginIdentifier string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil
+	}
+	return s.validateICloudAccountIdentityLocked(ownerID, accountID, ICloudSession{
+		AppleID:         strings.TrimSpace(loginIdentifier),
+		LoginIdentifier: normalizeAppleLoginIdentifier(loginIdentifier),
+	}, true)
+}
+
 func (s *FileStore) SaveICloudSessionForOwner(ownerID string, session ICloudSession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1429,6 +1442,9 @@ func (s *FileStore) SaveICloudSessionForOwner(ownerID string, session ICloudSess
 		if strings.TrimSpace(session.AccountID) == "" {
 			session.AccountID = s.ensureICloudAccountLocked(ownerID, session)
 		} else {
+			if err := s.validateICloudAccountIdentityLocked(ownerID, session.AccountID, session, false); err != nil {
+				return err
+			}
 			s.touchICloudAccountLocked(ownerID, session.AccountID, session)
 		}
 		for i, existing := range s.state.ICloudSessions {
@@ -1451,6 +1467,28 @@ func (s *FileStore) SaveICloudSessionForOwner(ownerID string, session ICloudSess
 	}
 	s.state.ICloudSession = &session
 	return s.saveLocked()
+}
+
+func (s *FileStore) validateICloudAccountIdentityLocked(ownerID, accountID string, session ICloudSession, requireExisting bool) error {
+	ownerID, accountID = strings.TrimSpace(ownerID), strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil
+	}
+	incomingIdentity := normalizeAppleLoginIdentifier(firstNonEmpty(session.LoginIdentifier, session.AppleID))
+	for _, account := range s.state.Accounts {
+		if !constantTimeEqual(account.OwnerID, ownerID) || !constantTimeEqual(account.ID, accountID) {
+			continue
+		}
+		existingIdentity := normalizeAppleLoginIdentifier(firstNonEmpty(account.LoginIdentifier, account.AppleID))
+		if existingIdentity != "" && incomingIdentity != "" && existingIdentity != incomingIdentity {
+			return errCode("icloud_account_identity_mismatch", "当前登录标识与所编辑账号不一致；如需新增账号，请点击“添加账号”后重新登录", false)
+		}
+		return nil
+	}
+	if requireExisting {
+		return errCode("account_not_found", "所编辑的账号不存在或不属于当前用户", false)
+	}
+	return nil
 }
 
 func (s *FileStore) ICloudSession() (ICloudSession, bool) {

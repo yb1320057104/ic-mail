@@ -3911,8 +3911,9 @@
     }
 
     function activeICloudSessionForBinding() {
+	  if (!activeICloudSessionKey) return null;
       const displaySessions = visibleICloudSessions(lastICloudSessions);
-      return displaySessions.find(session => sessionKey(session) === activeICloudSessionKey) || displaySessions[0] || null;
+	  return displaySessions.find(session => sessionKey(session) === activeICloudSessionKey) || null;
     }
 
     function activeICloudSessionAccountID() {

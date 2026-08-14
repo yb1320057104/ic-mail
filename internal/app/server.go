@@ -2952,6 +2952,10 @@ func (s *Server) handleStartICloudProtocolLogin(w http.ResponseWriter, r *http.R
 		return
 	}
 	ownerID := requestOwnerID(r, s.store)
+	if err := s.store.ValidateICloudAccountLogin(ownerID, payload.AccountID, payload.AppleID); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
 	authClient, err := s.appleAuthClientForLogin(r.Context(), ownerID, payload.AccountID, payload.AppleID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -3051,6 +3055,10 @@ func (s *Server) handleStartAppleAccountLogin(w http.ResponseWriter, r *http.Req
 		return
 	}
 	ownerID := requestOwnerID(r, s.store)
+	if err := s.store.ValidateICloudAccountLogin(ownerID, payload.AccountID, payload.AppleID); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
 	authClient, err := s.appleAuthClientForLogin(r.Context(), ownerID, payload.AccountID, payload.AppleID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -7513,14 +7521,15 @@ var (
 )
 
 func extractOTP(text string) string {
-	// Contextual extraction supports provider-specific formats such as 4821,
-	// A7B9K2 and MMM-MMM. Search immediately after the keyword first, then a
-	// short window before it for text such as "ABC-123 is your code".
-	for _, keyword := range otpKeywordRegex.FindAllStringIndex(text, -1) {
-		if code := contextualOTPInRange(text, keyword[1], min(len(text), keyword[1]+160), false); code != "" {
+	keywords := otpKeywordRegex.FindAllStringIndex(text, -1)
+	// Numeric codes are much more common. Resolve them before mixed/letter
+	// formats so an uppercase CSS/template token such as HEADER-TITLE cannot
+	// shadow the real six-digit code later in the same message.
+	for _, keyword := range keywords {
+		if code := contextualOTPInRange(text, keyword[1], min(len(text), keyword[1]+160), false, true); code != "" {
 			return code
 		}
-		if code := contextualOTPInRange(text, max(0, keyword[0]-100), keyword[0], true); code != "" {
+		if code := contextualOTPInRange(text, max(0, keyword[0]-100), keyword[0], true, true); code != "" {
 			return code
 		}
 	}
@@ -7531,10 +7540,20 @@ func extractOTP(text string) string {
 			return matches[1]
 		}
 	}
+	// Only after no numeric code exists do we accept provider-specific mixed
+	// or explicitly segmented uppercase formats such as A7B-9K2/MMM-MMM.
+	for _, keyword := range keywords {
+		if code := contextualOTPInRange(text, keyword[1], min(len(text), keyword[1]+160), false, false); code != "" {
+			return code
+		}
+		if code := contextualOTPInRange(text, max(0, keyword[0]-100), keyword[0], true, false); code != "" {
+			return code
+		}
+	}
 	return ""
 }
 
-func contextualOTPInRange(text string, start, end int, preferLast bool) string {
+func contextualOTPInRange(text string, start, end int, preferLast, numericOnly bool) string {
 	if start < 0 || end > len(text) || start >= end {
 		return ""
 	}
@@ -7546,6 +7565,9 @@ func contextualOTPInRange(text string, start, end int, preferLast bool) string {
 				continue
 			}
 			if code := normalizedContextualOTP(text[matchStart:matchEnd]); code != "" {
+				if numericOnly && strings.IndexFunc(code, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+					continue
+				}
 				return code
 			}
 		}
@@ -7557,6 +7579,9 @@ func contextualOTPInRange(text string, start, end int, preferLast bool) string {
 			continue
 		}
 		if code := normalizedContextualOTP(text[matchStart:matchEnd]); code != "" {
+			if numericOnly && strings.IndexFunc(code, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+				continue
+			}
 			return code
 		}
 	}

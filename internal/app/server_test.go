@@ -200,6 +200,8 @@ func TestExtractOTP(t *testing.T) {
 		{name: "fallback", text: "Use 246810 to continue.", want: "246810"},
 		{name: "segmented letters", text: "Your verification code is MMM-MMM", want: "MMM-MMM"},
 		{name: "segmented mixed", text: "验证码：A7B-9K2，请勿泄露", want: "A7B-9K2"},
+		{name: "numeric before template letters", text: "Your verification code HEADER-TITLE please enter 691288 to continue", want: "691288"},
+		{name: "numeric after long template marker", text: "验证码：EMAIL-BUTTON；真正验证码为 864209，请勿泄露", want: "864209"},
 		{name: "mixed compact", text: "Security code = a9c2f7", want: "A9C2F7"},
 		{name: "four digit contextual", text: "登录验证码：4821", want: "4821"},
 		{name: "four digit year allowed when explicit", text: "登录验证码：2026", want: "2026"},
@@ -6064,6 +6066,40 @@ func TestDeleteICloudSessionKeepsMailboxData(t *testing.T) {
 	state := store.SnapshotForOwner(ownerID)
 	if len(state.Mailboxes) != 1 || len(state.Accounts) != 1 || state.Accounts[0].ICloudStatus != ICloudStatusNeedLogin {
 		t.Fatalf("business data not preserved correctly: %+v", state)
+	}
+}
+
+func TestSavingDifferentLoginIdentityCannotOverwriteExistingAccount(t *testing.T) {
+	store := newTestStore(t)
+	ownerID := "owner-account-identity-guard"
+	if err := store.SaveICloudSessionForOwner(ownerID, ICloudSession{AppleID: "first@example.com", LoginIdentifier: "first@example.com", DSID: "first-dsid"}); err != nil {
+		t.Fatal(err)
+	}
+	first := store.ICloudSessionsForOwner(ownerID)[0]
+	err := store.SaveICloudSessionForOwner(ownerID, ICloudSession{AccountID: first.AccountID, AppleID: "second@example.com", LoginIdentifier: "second@example.com", DSID: "second-dsid"})
+	if err == nil || !strings.Contains(err.Error(), "当前登录标识与所编辑账号不一致") {
+		t.Fatalf("identity mismatch err=%v", err)
+	}
+	sessions := store.ICloudSessionsForOwner(ownerID)
+	if len(sessions) != 1 || sessions[0].AppleID != "first@example.com" || sessions[0].DSID != "first-dsid" {
+		t.Fatalf("existing session was overwritten: %+v", sessions)
+	}
+}
+
+func TestSavingNewLoginWithoutAccountIDCreatesSeparateAccount(t *testing.T) {
+	store := newTestStore(t)
+	ownerID := "owner-new-account-separate"
+	for _, session := range []ICloudSession{
+		{AppleID: "first@example.com", LoginIdentifier: "first@example.com", DSID: "first-dsid"},
+		{AppleID: "second@example.com", LoginIdentifier: "second@example.com", DSID: "second-dsid"},
+	} {
+		if err := store.SaveICloudSessionForOwner(ownerID, session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessions := store.ICloudSessionsForOwner(ownerID)
+	if len(sessions) != 2 || sessions[0].AccountID == sessions[1].AccountID {
+		t.Fatalf("new account was not kept separate: %+v", sessions)
 	}
 }
 
