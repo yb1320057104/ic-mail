@@ -1896,10 +1896,16 @@ func (s *FileStore) SetMailboxLastCode(id string, messageID string, servedAt tim
 	if servedAt.IsZero() {
 		servedAt = time.Now()
 	}
+	original := s.state.Mailboxes[idx]
 	s.state.Mailboxes[idx].LastCodeMessageID = messageID
 	s.state.Mailboxes[idx].LastCodeAt = servedAt
 	s.state.Mailboxes[idx].UpdatedAt = time.Now()
-	return s.state.Mailboxes[idx], s.saveLocked()
+	updated := s.state.Mailboxes[idx]
+	if err := s.saveMailboxLocked(updated); err != nil {
+		s.state.Mailboxes[idx] = original
+		return Mailbox{}, err
+	}
+	return updated, nil
 }
 
 func (s *FileStore) DeleteMailbox(id string) error {

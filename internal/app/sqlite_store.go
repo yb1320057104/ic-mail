@@ -208,4 +208,27 @@ func (s *FileStore) saveSQLiteLocked() error {
 	return nil
 }
 
+// saveMailboxLocked persists one mailbox without rewriting every normalized
+// table. Public code retrieval only changes the last-served marker, so a full
+// state save here is both unnecessarily slow and more likely to contend with
+// background IMAP/keepalive writes.
+func (s *FileStore) saveMailboxLocked(mailbox Mailbox) error {
+	raw, err := json.Marshal(mailbox)
+	if err != nil {
+		return err
+	}
+	db, err := s.sqliteConnection()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = db.Exec(`INSERT INTO mailboxes(id,owner_id,payload,updated_at) VALUES(?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET owner_id=excluded.owner_id,payload=excluded.payload,updated_at=excluded.updated_at`,
+		mailbox.ID, mailbox.OwnerID, raw, normalizedNow())
+	if err != nil {
+		return fmt.Errorf("save mailbox: %w", err)
+	}
+	return nil
+}
+
 func (s *FileStore) DatabasePath() string { return s.dbPath }

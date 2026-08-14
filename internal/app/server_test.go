@@ -5942,6 +5942,45 @@ func TestDeleteICloudSessionKeepsMailboxData(t *testing.T) {
 	}
 }
 
+func TestSetMailboxLastCodePersistsOnlyMailboxMarker(t *testing.T) {
+	store := newTestStore(t)
+	mailbox, err := store.AddMailboxForOwner("owner-code-marker", "", "取码邮箱", "marker@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	servedAt := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := store.SetMailboxLastCode(mailbox.ID, "msg-code-marker", servedAt); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewFileStore(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reopened.FindMailboxByID(mailbox.ID)
+	if !ok || got.LastCodeMessageID != "msg-code-marker" || !got.LastCodeAt.Equal(servedAt) {
+		t.Fatalf("persisted mailbox marker = %+v, ok=%v", got, ok)
+	}
+}
+
+func TestSetMailboxLastCodeRollsBackOnPersistenceFailure(t *testing.T) {
+	store := newTestStore(t)
+	mailbox, err := store.AddMailboxForOwner("owner-code-rollback", "", "取码邮箱", "rollback@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalDBPath := store.dbPath
+	store.dbPath = filepath.Join(t.TempDir(), "missing", "state.db")
+	_, err = store.SetMailboxLastCode(mailbox.ID, "msg-should-rollback", time.Now())
+	store.dbPath = originalDBPath
+	if err == nil {
+		t.Fatal("SetMailboxLastCode should fail when the database path cannot be opened")
+	}
+	got, ok := store.FindMailboxByID(mailbox.ID)
+	if !ok || got.LastCodeMessageID != "" || !got.LastCodeAt.IsZero() {
+		t.Fatalf("mailbox marker was not rolled back: %+v, ok=%v", got, ok)
+	}
+}
+
 func TestAppleAuthPendingStoreKeepsEditedAccountIdentity(t *testing.T) {
 	store := newAppleAuthPendingStore()
 	pending, err := store.put(&appleAuthSession{AppleID: "+86 138 0013 8000"})
