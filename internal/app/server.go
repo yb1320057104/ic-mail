@@ -7303,24 +7303,102 @@ func parseAfter(value string) (time.Time, error) {
 }
 
 var (
-	contextOTPRegex = regexp.MustCompile(`(?i)(?:openai|chatgpt|otp|code|verification|验证码|验证|代码)[^\d]{0,80}(\d{6})`)
-	plainOTPRegex   = regexp.MustCompile(`\b(\d{6})\b`)
+	otpKeywordRegex   = regexp.MustCompile(`(?i)(?:openai|chatgpt|otp|verification\s*code|security\s*code|login\s*code|one[ -]?time\s*(?:code|password)|passcode|pin\s*code|code|验证码|驗證碼|校验码|校驗碼|动态码|動態碼|安全码|安全碼|登录码|登錄碼|代码|代碼)`)
+	otpCandidateRegex = regexp.MustCompile(`[A-Za-z0-9]{2,10}(?:-[A-Za-z0-9]{2,10}){1,2}|[A-Za-z0-9]{4,10}`)
+	plainOTPRegex     = regexp.MustCompile(`\b(\d{6})\b`)
 )
 
 func extractOTP(text string) string {
-	if matches := contextOTPRegex.FindStringSubmatch(text); len(matches) == 2 && validOTP(matches[1]) {
-		return matches[1]
+	// Contextual extraction supports provider-specific formats such as 4821,
+	// A7B9K2 and MMM-MMM. Search immediately after the keyword first, then a
+	// short window before it for text such as "ABC-123 is your code".
+	for _, keyword := range otpKeywordRegex.FindAllStringIndex(text, -1) {
+		if code := contextualOTPInRange(text, keyword[1], min(len(text), keyword[1]+160), false); code != "" {
+			return code
+		}
+		if code := contextualOTPInRange(text, max(0, keyword[0]-100), keyword[0], true); code != "" {
+			return code
+		}
 	}
+	// A standalone six-digit token remains a safe compatibility fallback for
+	// terse messages that omit labels entirely.
 	for _, matches := range plainOTPRegex.FindAllStringSubmatch(text, -1) {
-		if len(matches) == 2 && validOTP(matches[1]) {
+		if len(matches) == 2 && validContextualOTP(matches[1]) {
 			return matches[1]
 		}
 	}
 	return ""
 }
 
-func validOTP(code string) bool {
-	return len(code) == 6 && code != "000000"
+func contextualOTPInRange(text string, start, end int, preferLast bool) string {
+	if start < 0 || end > len(text) || start >= end {
+		return ""
+	}
+	matches := otpCandidateRegex.FindAllStringIndex(text[start:end], -1)
+	if preferLast {
+		for i := len(matches) - 1; i >= 0; i-- {
+			if code := normalizedContextualOTP(text[start+matches[i][0] : start+matches[i][1]]); code != "" {
+				return code
+			}
+		}
+		return ""
+	}
+	for _, match := range matches {
+		if code := normalizedContextualOTP(text[start+match[0] : start+match[1]]); code != "" {
+			return code
+		}
+	}
+	return ""
+}
+
+func normalizedContextualOTP(code string) string {
+	original := strings.TrimSpace(code)
+	if original == "" {
+		return ""
+	}
+	normalized := strings.ToUpper(strings.Join(strings.Fields(original), "-"))
+	compact := strings.ReplaceAll(normalized, "-", "")
+	if len(compact) < 4 || len(compact) > 20 {
+		return ""
+	}
+	hasLetter, hasDigit := false, false
+	allZero := true
+	for _, r := range compact {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+			allZero = false
+		case r >= '0' && r <= '9':
+			hasDigit = true
+			if r != '0' {
+				allZero = false
+			}
+		default:
+			return ""
+		}
+	}
+	if allZero {
+		return ""
+	}
+	if hasDigit && !hasLetter {
+		if len(compact) < 4 || len(compact) > 8 {
+			return ""
+		}
+		return compact
+	}
+	if hasLetter && hasDigit {
+		return normalized
+	}
+	// Letter-only codes are accepted only in an explicit segmented uppercase
+	// form such as MMM-MMM; ordinary words near "code" remain rejected.
+	if hasLetter && strings.Contains(normalized, "-") && original == strings.ToUpper(original) {
+		return normalized
+	}
+	return ""
+}
+
+func validContextualOTP(code string) bool {
+	return normalizedContextualOTP(code) != ""
 }
 
 func validMailboxStatus(status string) bool {

@@ -198,6 +198,15 @@ func TestExtractOTP(t *testing.T) {
 		{name: "openai subject", text: "Your OpenAI code is 123456", want: "123456"},
 		{name: "chinese", text: "验证码：654321，请勿泄露", want: "654321"},
 		{name: "fallback", text: "Use 246810 to continue.", want: "246810"},
+		{name: "segmented letters", text: "Your verification code is MMM-MMM", want: "MMM-MMM"},
+		{name: "segmented mixed", text: "验证码：A7B-9K2，请勿泄露", want: "A7B-9K2"},
+		{name: "mixed compact", text: "Security code = a9c2f7", want: "A9C2F7"},
+		{name: "four digit contextual", text: "登录验证码：4821", want: "4821"},
+		{name: "eight digit contextual", text: "One-time code: 48219375", want: "48219375"},
+		{name: "code before label", text: "ABC-123 is your verification code", want: "ABC-123"},
+		{name: "ordinary year rejected", text: "The report for 2026 is ready", want: ""},
+		{name: "ordinary word rejected", text: "Your verification code will arrive soon", want: ""},
+		{name: "unsegmented letters rejected", text: "Your verification code is ABCDEF", want: ""},
 		{name: "zero invalid", text: "code 000000", want: ""},
 	}
 	for _, tt := range tests {
