@@ -148,7 +148,9 @@ func (s *FileStore) saveNormalizedStateTx(tx *sql.Tx, now string) error {
 		{"auto_login_logs", mapRows(s.state.AutoLoginLogs, func(v AutoLoginAttempt) (string, string) { return v.ID, v.OwnerID })},
 		{"user_proxy_configs", mapRows(s.state.UserProxyConfigs, func(v UserProxyConfig) (string, string) { return v.OwnerID, v.OwnerID })},
 		{"redemption_pools", mapRows(s.state.RedemptionPools, func(v RedemptionPool) (string, string) { return v.ID, v.OwnerID })}, {"redemption_codes", mapRows(s.state.RedemptionCodes, func(v RedemptionCode) (string, string) { return v.ID, v.OwnerID })},
-		{"redemption_items", mapRows(s.state.RedemptionItems, func(v RedemptionItem) (string, string) { return v.PoolID + ":" + v.MailboxID, v.OwnerID })}, {"recycle_bin", mapRows(s.state.RecycleBin, func(v RecycleBinItem) (string, string) { return v.ID, v.UserID })},
+		{"redemption_items", mapRows(s.state.RedemptionItems, func(v RedemptionItem) (string, string) {
+			return fmt.Sprintf("%s:%s:%d", v.PoolID, v.MailboxID, v.AddedAt.UnixNano()), v.OwnerID
+		})}, {"recycle_bin", mapRows(s.state.RecycleBin, func(v RecycleBinItem) (string, string) { return v.ID, v.UserID })},
 		{"redemption_orders", mapRows(s.state.RedemptionOrders, func(v RedemptionOrder) (string, string) { return v.ID, v.OwnerID })},
 	}
 	for _, set := range sets {

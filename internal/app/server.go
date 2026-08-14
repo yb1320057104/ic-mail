@@ -622,21 +622,51 @@ func (s *Server) handleRedemptionPage(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) redemptionHealthyMap(state State) map[string]bool {
 	out := make(map[string]bool, len(state.Mailboxes))
+	resolvers := make(map[string]imapSessionResolver)
 	for _, m := range state.Mailboxes {
-		imapState, hasIMAP := s.imapStateForMailbox(strings.TrimSpace(m.OwnerID), m)
+		ownerID := strings.TrimSpace(m.OwnerID)
+		resolver, ok := resolvers[ownerID]
+		if !ok {
+			resolver = s.imapSessionResolverForOwner(ownerID)
+			resolvers[ownerID] = resolver
+		}
+		_, imapState, hasIMAP := resolver.sessionForMailbox(m)
 		out[m.ID] = hasIMAP && !imapState.LastCheckedAt.IsZero() && imapState.LastCheckOK && m.APIActive && m.ICloudActive && m.Status == StatusAvailable && m.ExportedAt.IsZero()
 	}
 	return out
 }
 
-func (s *Server) redemptionPoolResponse(r *http.Request, ownerID string) (map[string]any, error) {
-	pool, err := s.store.RedemptionPoolForOwner(ownerID)
+func (s *Server) secondhandHealthyMap(state State) map[string]bool {
+	out := make(map[string]bool, len(state.Mailboxes))
+	resolvers := make(map[string]imapSessionResolver)
+	for _, m := range state.Mailboxes {
+		ownerID := strings.TrimSpace(m.OwnerID)
+		resolver, ok := resolvers[ownerID]
+		if !ok {
+			resolver = s.imapSessionResolverForOwner(ownerID)
+			resolvers[ownerID] = resolver
+		}
+		_, imapState, hasIMAP := resolver.sessionForMailbox(m)
+		out[m.ID] = hasIMAP && !imapState.LastCheckedAt.IsZero() && imapState.LastCheckOK && m.APIActive && m.ICloudActive && m.Status == StatusAvailable
+	}
+	return out
+}
+
+func (s *Server) redemptionPoolResponse(r *http.Request, ownerID string, poolTypes ...string) (map[string]any, error) {
+	poolType := firstNonEmpty(strings.TrimSpace(r.URL.Query().Get("pool_type")), "primary")
+	if len(poolTypes) > 0 && strings.TrimSpace(poolTypes[0]) != "" {
+		poolType = strings.TrimSpace(poolTypes[0])
+	}
+	pool, err := s.store.RedemptionPoolForOwnerType(ownerID, poolType, map[string]int{"secondhand": 7}[poolType])
 	if err != nil {
 		return nil, err
 	}
-	pool, codes, items := s.store.RedemptionDataForOwner(ownerID)
+	pool, codes, items := s.store.RedemptionDataForOwnerType(ownerID, poolType)
 	state := s.store.SnapshotForOwner(ownerID)
 	healthy := s.redemptionHealthyMap(state)
+	if poolType == "secondhand" {
+		healthy = s.secondhandHealthyMap(state)
+	}
 	mailboxByID := map[string]Mailbox{}
 	for _, m := range state.Mailboxes {
 		mailboxByID[m.ID] = m
@@ -656,16 +686,20 @@ func (s *Server) redemptionPoolResponse(r *http.Request, ownerID string) (map[st
 		if !item.RedeemedAt.IsZero() {
 			redeemed++
 		}
-		itemRows = append(itemRows, map[string]any{"mailbox": s.publicMailbox(r, m), "available": available, "added_at": formatTime(item.AddedAt), "redeemed_at": formatTime(item.RedeemedAt), "code_id": item.CodeID})
+		itemRows = append(itemRows, map[string]any{"mailbox": map[string]any{"id": m.ID, "email": m.Email, "can_receive_code": healthy[m.ID], "receive_code_error": map[bool]string{true: "", false: "当前取码状态异常"}[healthy[m.ID]]}, "available": available, "added_at": formatTime(item.AddedAt), "redeemed_at": formatTime(item.RedeemedAt), "code_id": item.CodeID})
 	}
 	codeRows := []map[string]any{}
 	for _, c := range codes {
 		codeRows = append(codeRows, map[string]any{"id": c.ID, "code": c.Code, "quantity": c.Quantity, "batch_name": c.BatchName, "expires_at": formatTime(c.ExpiresAt), "used": c.Used, "invalidated": c.Invalidated, "created_at": formatTime(c.CreatedAt), "used_at": formatTime(c.UsedAt), "rotated_at": formatTime(c.RotatedAt), "invalidated_at": formatTime(c.InvalidatedAt), "rotation_count": c.RotationCount, "redeemed_count": len(c.RedeemedMailboxIDs)})
 	}
-	return map[string]any{"success": true, "pool": map[string]any{"id": pool.ID, "url": strings.TrimRight(firstNonEmpty(s.cfg.PublicBaseURL, requestBaseURL(r)), "/") + "/redeem/" + url.PathEscape(pool.PublicToken), "stock": stock, "redeemed": pool.RedeemedCount, "enabled": pool.Enabled}, "codes": codeRows, "items": itemRows, "eligible_count": func() int {
+	return map[string]any{"success": true, "pool": map[string]any{"id": pool.ID, "type": firstNonEmpty(pool.PoolType, "primary"), "eligibility_days": pool.EligibilityDays, "url": strings.TrimRight(firstNonEmpty(s.cfg.PublicBaseURL, requestBaseURL(r)), "/") + "/redeem/" + url.PathEscape(pool.PublicToken), "stock": stock, "redeemed": pool.RedeemedCount, "enabled": pool.Enabled}, "codes": codeRows, "items": itemRows, "eligible_count": func() int {
 		n := 0
 		for _, m := range state.Mailboxes {
-			if healthy[m.ID] {
+			eligible := healthy[m.ID]
+			if poolType == "secondhand" {
+				eligible = eligible && !m.ExportedAt.IsZero() && m.ExportedAt.Before(time.Now().Add(-7*24*time.Hour))
+			}
+			if eligible {
 				n++
 			}
 		}
@@ -686,6 +720,7 @@ func (s *Server) handleAddRedemptionItems(w http.ResponseWriter, r *http.Request
 	var p struct {
 		MailboxIDs     []string `json:"mailbox_ids"`
 		AddAllEligible bool     `json:"add_all_eligible"`
+		PoolType       string   `json:"pool_type"`
 	}
 	if err := decodeJSON(r, &p); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -694,6 +729,10 @@ func (s *Server) handleAddRedemptionItems(w http.ResponseWriter, r *http.Request
 	owner := requestOwnerID(r, s.store)
 	state := s.store.SnapshotForOwner(owner)
 	healthy := s.redemptionHealthyMap(state)
+	poolType := firstNonEmpty(strings.TrimSpace(p.PoolType), "primary")
+	if poolType == "secondhand" {
+		healthy = s.secondhandHealthyMap(state)
+	}
 	if p.AddAllEligible {
 		for _, m := range state.Mailboxes {
 			if healthy[m.ID] {
@@ -701,7 +740,13 @@ func (s *Server) handleAddRedemptionItems(w http.ResponseWriter, r *http.Request
 			}
 		}
 	}
-	n, err := s.store.AddRedemptionItems(owner, p.MailboxIDs, healthy)
+	var n int
+	var err error
+	if poolType == "secondhand" {
+		n, err = s.store.AddSecondhandRedemptionItems(owner, p.MailboxIDs, healthy)
+	} else {
+		n, err = s.store.AddRedemptionItems(owner, p.MailboxIDs, healthy)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -729,6 +774,7 @@ func (s *Server) handleCreateRedemptionCode(w http.ResponseWriter, r *http.Reque
 		Count     int    `json:"count"`
 		BatchName string `json:"batch_name"`
 		ValidDays int    `json:"valid_days"`
+		PoolType  string `json:"pool_type"`
 	}
 	if err := decodeJSON(r, &p); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -737,7 +783,7 @@ func (s *Server) handleCreateRedemptionCode(w http.ResponseWriter, r *http.Reque
 	if p.Count == 0 {
 		p.Count = 1
 	}
-	rows, err := s.store.CreateRedemptionCodes(requestOwnerID(r, s.store), p.Quantity, p.Count, p.BatchName, p.ValidDays)
+	rows, err := s.store.CreateRedemptionCodesForPool(requestOwnerID(r, s.store), firstNonEmpty(strings.TrimSpace(p.PoolType), "primary"), p.Quantity, p.Count, p.BatchName, p.ValidDays)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -750,7 +796,7 @@ func (s *Server) handleCreateRedemptionCode(w http.ResponseWriter, r *http.Reque
 }
 func (s *Server) handleExportRedemptionCodes(w http.ResponseWriter, r *http.Request) {
 	owner := requestOwnerID(r, s.store)
-	pool, codes, _ := s.store.RedemptionDataForOwner(owner)
+	pool, codes, _ := s.store.RedemptionDataForOwnerType(owner, firstNonEmpty(strings.TrimSpace(r.URL.Query().Get("pool_type")), "primary"))
 	if strings.TrimSpace(pool.PublicToken) == "" {
 		writeError(w, http.StatusBadRequest, errCode("redemption_pool_missing", "请先创建兑换池", false))
 		return
@@ -800,7 +846,10 @@ func (s *Server) publicPoolStats(token string) (RedemptionPool, int, bool) {
 	}
 	state := s.store.SnapshotForOwner(pool.OwnerID)
 	healthy := s.redemptionHealthyMap(state)
-	_, _, items := s.store.RedemptionDataForOwner(pool.OwnerID)
+	if firstNonEmpty(pool.PoolType, "primary") == "secondhand" {
+		healthy = s.secondhandHealthyMap(state)
+	}
+	_, _, items := s.store.RedemptionDataForOwnerType(pool.OwnerID, firstNonEmpty(pool.PoolType, "primary"))
 	stock := 0
 	for _, i := range items {
 		if i.PoolID == pool.ID && i.RedeemedAt.IsZero() && healthy[i.MailboxID] {
@@ -844,25 +893,29 @@ func (s *Server) handlePublicRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := s.store.SnapshotForOwner(pool.OwnerID)
+	healthy := s.redemptionHealthyMap(state)
+	if firstNonEmpty(pool.PoolType, "primary") == "secondhand" {
+		healthy = s.secondhandHealthyMap(state)
+	}
 	codes := append([]string(nil), p.Codes...)
 	codes = append(codes, strings.FieldsFunc(p.Code, func(r rune) bool {
 		return r == '\n' || r == '\r' || r == ',' || r == '\uFF0C' || r == ';' || r == '\uFF1B' || r == '\t' || r == ' '
 	})...)
-	rows, boxes, err := s.store.RedeemMultipleCodes(token, codes, s.redemptionHealthyMap(state))
+	rows, boxes, err := s.store.RedeemMultipleCodes(token, codes, healthy)
 	if err != nil {
 		s.loginGuard.failure(requestClientIP(r), key)
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	s.loginGuard.success(requestClientIP(r), key)
-	order, err := s.store.CreateRedemptionOrder(token, p.LookupPassword, rows, boxes)
+	lines := make([]string, 0, len(boxes))
+	for _, m := range boxes {
+		lines = append(lines, m.Email+"----"+s.mailboxExportAPIURL(r, m, p.APIType))
+	}
+	order, err := s.store.CreateRedemptionOrder(token, p.LookupPassword, rows, boxes, lines)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
-	}
-	lines := []string{}
-	for _, m := range boxes {
-		lines = append(lines, m.Email+"----"+s.mailboxExportAPIURL(r, m, p.APIType))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "quantity": len(boxes), "code_count": len(rows), "order_id": order.ID, "redeemed_at": formatTime(order.RedeemedAt), "lines": lines})
 }
@@ -881,13 +934,23 @@ func (s *Server) handlePublicRedemptionOrders(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	lines := make([]string, 0, len(boxes))
-	for _, mailbox := range boxes {
-		lines = append(lines, mailbox.Email+"----"+s.mailboxExportAPIURL(r, mailbox, p.APIType))
-	}
+	lines := make([]string, 0)
 	publicOrders := make([]map[string]any, 0, len(orders))
+	mailboxByID := make(map[string]Mailbox, len(boxes))
+	for _, mailbox := range boxes {
+		mailboxByID[mailbox.ID] = mailbox
+	}
 	for _, order := range orders {
-		publicOrders = append(publicOrders, map[string]any{"id": order.ID, "quantity": len(order.MailboxIDs), "redeemed_at": formatTime(order.RedeemedAt)})
+		orderLines := append([]string(nil), order.ExportLines...)
+		if len(orderLines) == 0 { // Backward compatibility for orders created before history was stored.
+			for _, id := range order.MailboxIDs {
+				if mailbox, ok := mailboxByID[id]; ok {
+					orderLines = append(orderLines, mailbox.Email+"----"+s.mailboxExportAPIURL(r, mailbox, p.APIType))
+				}
+			}
+		}
+		lines = append(lines, orderLines...)
+		publicOrders = append(publicOrders, map[string]any{"id": order.ID, "quantity": len(order.MailboxIDs), "redeemed_at": formatTime(order.RedeemedAt), "lines": orderLines})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "orders": publicOrders, "quantity": len(lines), "lines": lines})
 }
@@ -1747,10 +1810,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleManageData(w http.ResponseWriter, r *http.Request) {
-	compact := s.isAdminRequest(r) && truthy(r.URL.Query().Get("compact"))
+	compact := truthy(r.URL.Query().Get("compact"))
 	state := s.scopedState(r)
 	if compact {
-		state = s.store.SnapshotForManage()
+		if s.isAdminRequest(r) {
+			state = s.store.SnapshotForManage()
+		} else {
+			state = s.store.SnapshotForManageForOwner(requestOwnerID(r, s.store))
+		}
 	}
 	users := state.Users
 	if s.isAdminRequest(r) {
@@ -3041,23 +3108,84 @@ func (s *Server) handleCreateICloudMailbox(w http.ResponseWriter, r *http.Reques
 		Label         string   `json:"label"`
 		Note          string   `json:"note"`
 		CreateChannel string   `json:"create_channel"`
+		CreateMode    string   `json:"create_mode"`
+		AliasParent   string   `json:"alias_parent"`
+		AliasCount    int      `json:"alias_count"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	accountIDs := normalizeAccountIDSelection(payload.AccountID, payload.AccountIDs)
+	ownerID := requestOwnerID(r, s.store)
+	var aliasParent Mailbox
+	if strings.EqualFold(strings.TrimSpace(payload.CreateMode), "alias") {
+		state := s.store.SnapshotForMailboxList(ownerID)
+		needle := strings.TrimSpace(payload.AliasParent)
+		for _, mailbox := range state.Mailboxes {
+			if (mailbox.ID == needle || strings.EqualFold(mailbox.Email, needle)) && firstNonEmpty(mailbox.MailboxType, "privacy") != "alias" {
+				aliasParent = mailbox
+				break
+			}
+		}
+		if aliasParent.ID == "" {
+			writeError(w, http.StatusBadRequest, errCode("alias_parent_missing", "请选择或输入当前账号下已有的隐私邮箱作为别名归属", false))
+			return
+		}
+		accountIDs = []string{aliasParent.AccountID}
+		if payload.AliasCount < 1 {
+			payload.AliasCount = 1
+		}
+		if payload.AliasCount > 100 {
+			writeError(w, http.StatusBadRequest, errCode("alias_count_invalid", "单次别名邮箱数量必须在 1 到 100 之间", false))
+			return
+		}
+	}
 	if !s.canAccessAccountIDs(r, accountIDs) {
 		writeError(w, http.StatusNotFound, errCode("account_not_found", "账号不存在", false))
 		return
 	}
-	ownerID := requestOwnerID(r, s.store)
 	channel := normalizeMailboxCreateChannel(mailboxCreateChannel(strings.ToLower(strings.TrimSpace(payload.CreateChannel))))
 	requests := make([]mailboxCreateRequest, 0, len(accountIDs))
 	for _, accountID := range accountIDs {
 		requests = append(requests, mailboxCreateRequest{AccountID: accountID, Channel: channel})
 	}
-	mailboxes, remotes, failures, err := s.createMailboxesForOwnerWithChannels(r.Context(), ownerID, requests, payload.Label, payload.Note)
+	var mailboxes []Mailbox
+	var remotes []ICloudRemoteMailbox
+	var failures []createMailboxFailure
+	var err error
+	if aliasParent.ID != "" {
+		// Apple enforces a per-account creation interval. Large alias batches
+		// therefore run in the background so the HTTP request is not held open
+		// until a proxy or browser timeout. The operation is visible in the
+		// admin operation log and the mailbox list can be refreshed meanwhile.
+		if payload.AliasCount > 10 {
+			requested := payload.AliasCount
+			go func() {
+				started := time.Now()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+				defer cancel()
+				created, _, failed, createErr := s.createAliasMailboxes(ctx, ownerID, aliasParent, requested, payload.Label, payload.Note, channel)
+				message := fmt.Sprintf("别名邮箱批量创建完成：成功 %d，失败 %d", len(created), len(failed))
+				if createErr != nil {
+					message += "；" + createErr.Error()
+				}
+				status := "success"
+				if len(created) == 0 && createErr != nil {
+					status = "failed"
+				}
+				s.recordOperation("别名邮箱批量创建", status, message, started)
+			}()
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"success": true, "queued": true, "requested": requested,
+				"message": "批量别名邮箱已加入后台任务；创建间隔由 Apple 限制，完成后刷新邮箱列表即可查看。",
+			})
+			return
+		}
+		mailboxes, remotes, failures, err = s.createAliasMailboxes(r.Context(), ownerID, aliasParent, payload.AliasCount, payload.Label, payload.Note, channel)
+	} else {
+		mailboxes, remotes, failures, err = s.createMailboxesForOwnerWithChannels(r.Context(), ownerID, requests, payload.Label, payload.Note)
+	}
 	if err != nil {
 		s.logICloudCreateError(ownerID, err)
 		if len(mailboxes) == 0 && len(failures) == 0 {
@@ -3262,7 +3390,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
-	state := s.scopedState(r)
+	state := s.store.SnapshotForMailboxList(scopedOwnerID(r, s.store))
 	accountsByID := mailboxAccountMap(state.Accounts)
 	base := filterMailboxesByOwner(state.Mailboxes, strings.TrimSpace(r.URL.Query().Get("owner_id")), scopedOwnerID(r, s.store), s.isAdminRequest(r))
 	groupValues := cloneURLValues(r.URL.Query())
@@ -3407,6 +3535,8 @@ func mailboxListMatchesSearch(mailbox Mailbox, accountsByID map[string]Account, 
 		account.AppleID,
 		mailbox.Status,
 		mailbox.OwnerID,
+		mailbox.MailboxType,
+		mailbox.ParentMailboxID,
 	}, " "))
 	return strings.Contains(haystack, keyword)
 }
@@ -5769,6 +5899,47 @@ func (s *Server) createMailboxesForOwner(ctx context.Context, ownerID string, ac
 	return s.createMailboxesForOwnerWithChannels(ctx, ownerID, requests, label, note)
 }
 
+func (s *Server) createAliasMailboxes(ctx context.Context, ownerID string, parent Mailbox, count int, label, note string, channel mailboxCreateChannel) ([]Mailbox, []ICloudRemoteMailbox, []createMailboxFailure, error) {
+	mailboxes := make([]Mailbox, 0, count)
+	remotes := make([]ICloudRemoteMailbox, 0, count)
+	failures := make([]createMailboxFailure, 0)
+	var firstErr error
+	for i := 0; i < count; i++ {
+		aliasLabel := strings.TrimSpace(label)
+		if aliasLabel == "" {
+			aliasLabel = firstNonEmpty(parent.Label, parent.Email) + fmt.Sprintf("-别名-%02d", i+1)
+		}
+		aliasNote := strings.TrimSpace(note)
+		if aliasNote == "" {
+			aliasNote = "属于隐私邮箱 " + parent.Email
+		}
+		createCtx := contextWithMailboxCreateChannel(ctx, channel)
+		mailbox, remote, err := s.createMailboxForOwner(createCtx, ownerID, parent.AccountID, aliasLabel, aliasNote)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			failures = append(failures, createMailboxFailure{AccountID: parent.AccountID, Channel: string(channel), Error: err.Error()})
+			continue
+		}
+		if err = s.store.MarkMailboxesAsAliases(ownerID, parent.ID, []string{mailbox.ID}); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			failures = append(failures, createMailboxFailure{AccountID: parent.AccountID, Channel: string(channel), Error: err.Error()})
+			continue
+		}
+		mailbox.MailboxType = "alias"
+		mailbox.ParentMailboxID = parent.ID
+		mailboxes = append(mailboxes, mailbox)
+		remotes = append(remotes, remote)
+	}
+	if len(mailboxes) == 0 && firstErr != nil {
+		return nil, nil, failures, firstErr
+	}
+	return mailboxes, remotes, failures, nil
+}
+
 func (s *Server) createMailboxesForOwnerWithChannels(ctx context.Context, ownerID string, requests []mailboxCreateRequest, label, note string) ([]Mailbox, []ICloudRemoteMailbox, []createMailboxFailure, error) {
 	accountIDs, channels := normalizeMailboxCreateRequests(requests)
 	sessions := s.sessionsForOwnerAccounts(ownerID, accountIDs)
@@ -6700,10 +6871,16 @@ func (s *Server) publicAccount(account Account) publicAccount {
 func (s *Server) publicMailbox(r *http.Request, mailbox Mailbox) publicMailbox {
 	accountLabel := ""
 	accountAppleID := ""
+	parentMailboxEmail := ""
 	if strings.TrimSpace(mailbox.AccountID) != "" {
 		if account, ok := s.store.FindAccountByID(mailbox.AccountID); ok {
 			accountLabel = account.Label
 			accountAppleID = strings.TrimSpace(account.AppleID)
+		}
+	}
+	if strings.TrimSpace(mailbox.ParentMailboxID) != "" {
+		if parent, ok := s.store.FindMailboxByID(mailbox.ParentMailboxID); ok {
+			parentMailboxEmail = parent.Email
 		}
 	}
 	canReceiveCode, receiveCodeStatus, receiveCodeError := s.mailboxReceiveCodeState(mailbox)
@@ -6715,31 +6892,34 @@ func (s *Server) publicMailbox(r *http.Request, mailbox Mailbox) publicMailbox {
 		apiTokenMask = "兑换池锁定"
 	}
 	return publicMailbox{
-		ID:                mailbox.ID,
-		OwnerID:           mailbox.OwnerID,
-		Owner:             s.ownerName(mailbox.OwnerID),
-		AccountID:         mailbox.AccountID,
-		AccountLabel:      accountLabel,
-		AccountAppleID:    accountAppleID,
-		Label:             mailbox.Label,
-		Email:             mailbox.Email,
-		APITokenMask:      apiTokenMask,
-		APITokenExpiresAt: formatTime(mailbox.APITokenExpiresAt),
-		APIURL:            apiURL,
-		APIActive:         mailbox.APIActive,
-		ICloudActive:      mailbox.ICloudActive,
-		CanReceiveCode:    canReceiveCode,
-		ReceiveCodeStatus: receiveCodeStatus,
-		ReceiveCodeError:  receiveCodeError,
-		ReceiveCount:      mailbox.ReceiveCount,
-		Status:            mailbox.Status,
-		Note:              mailbox.Note,
-		LastSyncAt:        formatTime(mailbox.LastSyncAt),
-		LastSyncUID:       mailbox.LastSyncUID,
-		CreatedAt:         formatTime(mailbox.CreatedAt),
-		UpdatedAt:         formatTime(mailbox.UpdatedAt),
-		ExportedAt:        formatTime(mailbox.ExportedAt),
-		RedemptionLocked:  redemptionLocked,
+		ID:                 mailbox.ID,
+		OwnerID:            mailbox.OwnerID,
+		Owner:              s.ownerName(mailbox.OwnerID),
+		AccountID:          mailbox.AccountID,
+		AccountLabel:       accountLabel,
+		AccountAppleID:     accountAppleID,
+		Label:              mailbox.Label,
+		Email:              mailbox.Email,
+		APITokenMask:       apiTokenMask,
+		APITokenExpiresAt:  formatTime(mailbox.APITokenExpiresAt),
+		APIURL:             apiURL,
+		APIActive:          mailbox.APIActive,
+		ICloudActive:       mailbox.ICloudActive,
+		CanReceiveCode:     canReceiveCode,
+		ReceiveCodeStatus:  receiveCodeStatus,
+		ReceiveCodeError:   receiveCodeError,
+		ReceiveCount:       mailbox.ReceiveCount,
+		Status:             mailbox.Status,
+		Note:               mailbox.Note,
+		LastSyncAt:         formatTime(mailbox.LastSyncAt),
+		LastSyncUID:        mailbox.LastSyncUID,
+		CreatedAt:          formatTime(mailbox.CreatedAt),
+		UpdatedAt:          formatTime(mailbox.UpdatedAt),
+		ExportedAt:         formatTime(mailbox.ExportedAt),
+		RedemptionLocked:   redemptionLocked,
+		MailboxType:        firstNonEmpty(mailbox.MailboxType, "privacy"),
+		ParentMailboxID:    mailbox.ParentMailboxID,
+		ParentMailboxEmail: parentMailboxEmail,
 	}
 }
 

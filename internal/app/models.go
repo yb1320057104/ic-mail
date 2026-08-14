@@ -82,13 +82,15 @@ type ProxyPoolNode struct {
 }
 
 type RedemptionPool struct {
-	ID            string    `json:"id"`
-	OwnerID       string    `json:"owner_id"`
-	PublicToken   string    `json:"public_token"`
-	Enabled       bool      `json:"enabled"`
-	RedeemedCount int       `json:"redeemed_count"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	OwnerID         string    `json:"owner_id"`
+	PoolType        string    `json:"pool_type,omitempty"`
+	EligibilityDays int       `json:"eligibility_days,omitempty"`
+	PublicToken     string    `json:"public_token"`
+	Enabled         bool      `json:"enabled"`
+	RedeemedCount   int       `json:"redeemed_count"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type RedemptionCode struct {
@@ -271,6 +273,7 @@ type RedemptionOrder struct {
 	PasswordHash string    `json:"password_hash"`
 	CodeIDs      []string  `json:"code_ids,omitempty"`
 	MailboxIDs   []string  `json:"mailbox_ids,omitempty"`
+	ExportLines  []string  `json:"export_lines,omitempty"`
 	RedeemedAt   time.Time `json:"redeemed_at"`
 }
 
@@ -295,6 +298,8 @@ type Mailbox struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 	ExportedAt        time.Time `json:"exported_at,omitempty"`
 	RedemptionLocked  bool      `json:"redemption_locked,omitempty"`
+	MailboxType       string    `json:"mailbox_type,omitempty"`
+	ParentMailboxID   string    `json:"parent_mailbox_id,omitempty"`
 }
 
 type Message struct {
@@ -533,6 +538,9 @@ type publicMailbox struct {
 	UpdatedAt          string `json:"updated_at"`
 	ExportedAt         string `json:"exported_at,omitempty"`
 	RedemptionLocked   bool   `json:"redemption_locked,omitempty"`
+	MailboxType        string `json:"mailbox_type,omitempty"`
+	ParentMailboxID    string `json:"parent_mailbox_id,omitempty"`
+	ParentMailboxEmail string `json:"parent_mailbox_email,omitempty"`
 }
 
 type publicMailboxGroup struct {

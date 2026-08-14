@@ -277,3 +277,126 @@ func TestRotateAllMailboxAPITokens(t *testing.T) {
 		t.Fatal("mailbox API tokens were not independently rotated")
 	}
 }
+
+func TestRedemptionOrderKeepsOriginalExportLines(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "history-owner"
+	mailbox, _ := store.AddMailboxForOwner(owner, "account", "history", "history@icloud.com")
+	pool, err := store.RedemptionPoolForOwner(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.AddRedemptionItems(owner, []string{mailbox.ID}, map[string]bool{mailbox.ID: true}); err != nil {
+		t.Fatal(err)
+	}
+	code, err := store.CreateRedemptionCode(owner, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	used, boxes, err := store.RedeemMailboxes(pool.PublicToken, code.Code, map[string]bool{mailbox.ID: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "history@icloud.com----https://mail.example/api/v1/access/original"
+	if _, err = store.CreateRedemptionOrder(pool.PublicToken, "lookup-pass", []RedemptionCode{used}, boxes, []string{want}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.RotateMailboxAPIToken(mailbox.ID, 180); err != nil {
+		t.Fatal(err)
+	}
+	orders, _, err := store.RedemptionOrdersByPassword(pool.PublicToken, "lookup-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orders) != 1 || len(orders[0].ExportLines) != 1 || orders[0].ExportLines[0] != want {
+		t.Fatalf("historical lines changed: %#v", orders)
+	}
+}
+
+func TestSecondhandMailboxCanReenterAfterSevenDays(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "secondhand-owner"
+	mailbox, _ := store.AddMailboxForOwner(owner, "account", "used", "used@icloud.com")
+	store.mu.Lock()
+	for i := range store.state.Mailboxes {
+		if store.state.Mailboxes[i].ID == mailbox.ID {
+			store.state.Mailboxes[i].ExportedAt = time.Now().Add(-8 * 24 * time.Hour)
+		}
+	}
+	store.mu.Unlock()
+	pool, err := store.RedemptionPoolForOwnerType(owner, "secondhand", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy := map[string]bool{mailbox.ID: true}
+	if n, err := store.AddSecondhandRedemptionItems(owner, []string{mailbox.ID}, healthy); err != nil || n != 1 {
+		t.Fatalf("first add=%d err=%v", n, err)
+	}
+	codes, err := store.CreateRedemptionCodesForPool(owner, "secondhand", 1, 1, "cycle", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, boxes, err := store.RedeemMultipleCodes(pool.PublicToken, []string{codes[0].Code}, healthy); err != nil || len(boxes) != 1 {
+		t.Fatalf("redeem boxes=%d err=%v", len(boxes), err)
+	}
+	if _, err = store.AddSecondhandRedemptionItems(owner, []string{mailbox.ID}, healthy); err == nil {
+		t.Fatal("mailbox reentered before seven-day cooldown")
+	}
+	store.mu.Lock()
+	for i := range store.state.Mailboxes {
+		if store.state.Mailboxes[i].ID == mailbox.ID {
+			store.state.Mailboxes[i].ExportedAt = time.Now().Add(-8 * 24 * time.Hour)
+		}
+	}
+	store.mu.Unlock()
+	if n, err := store.AddSecondhandRedemptionItems(owner, []string{mailbox.ID}, healthy); err != nil || n != 1 {
+		t.Fatalf("second add=%d err=%v", n, err)
+	}
+}
+
+func TestRotatedSecondhandMailboxStartsNewCooldown(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "secondhand-rotate-owner"
+	mailbox, _ := store.AddMailboxForOwner(owner, "account", "used", "rotate-used@icloud.com")
+	store.mu.Lock()
+	for i := range store.state.Mailboxes {
+		if store.state.Mailboxes[i].ID == mailbox.ID {
+			store.state.Mailboxes[i].ExportedAt = time.Now().Add(-8 * 24 * time.Hour)
+		}
+	}
+	store.mu.Unlock()
+	pool, err := store.RedemptionPoolForOwnerType(owner, "secondhand", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy := map[string]bool{mailbox.ID: true}
+	if _, err = store.AddSecondhandRedemptionItems(owner, []string{mailbox.ID}, healthy); err != nil {
+		t.Fatal(err)
+	}
+	codes, err := store.CreateRedemptionCodesForPool(owner, "secondhand", 1, 1, "rotate", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = store.RedeemMultipleCodes(pool.PublicToken, []string{codes[0].Code}, healthy); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = store.RotateRedemptionCode(owner, codes[0].Code); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := store.FindMailboxByID(mailbox.ID)
+	if updated.ExportedAt.Before(time.Now().Add(-time.Minute)) {
+		t.Fatalf("rotation did not start a new cooldown: %v", updated.ExportedAt)
+	}
+	if _, err = store.AddSecondhandRedemptionItems(owner, []string{mailbox.ID}, healthy); err == nil {
+		t.Fatal("rotated secondhand mailbox reentered before cooldown")
+	}
+}

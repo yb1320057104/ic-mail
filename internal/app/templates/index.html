@@ -1287,6 +1287,9 @@
     body[data-theme="midnight"] input:-webkit-autofill,
     body[data-theme="midnight"] input:-webkit-autofill:hover,
     body[data-theme="midnight"] input:-webkit-autofill:focus { -webkit-text-fill-color:#eef6ff; -webkit-box-shadow:0 0 0 1000px #061a3b inset; caret-color:#60a5fa; }
+    .theme-select option[value="mint"], .theme-select option[value="graphite"],
+    .theme-select option[value="sunset"], .theme-select option[value="violet"],
+    .theme-select option[value="rose"], .theme-select option[value="forest"] { display:none; }
   </style>
 </head>
 <body>
@@ -1336,19 +1339,11 @@
             <label class="theme-select" aria-label="界面风格">
               <span>主题</span>
               <select id="themeSelect" onchange="setTheme(this.value)">
-                <optgroup label="浅色">
-                  <option value="mint">清透薄荷</option>
-                  <option value="sky">蓝调</option>
-                  <option value="graphite">灰阶</option>
-                  <option value="sunset">暮光暖橘</option>
-                  <option value="violet">紫晶</option>
-                  <option value="rose">绯樱</option>
-                  <option value="forest">森野</option>
-                </optgroup>
-                <optgroup label="深色">
+                <optgroup label="蓝调主题">
+                  <option value="sky">浅蓝</option>
                   <option value="midnight">黑色深蓝</option>
-                  <option value="obsidian">曜石</option>
-                  <option value="aurora">极光</option>
+                  <option value="obsidian">曜石蓝</option>
+                  <option value="aurora">极光蓝</option>
                 </optgroup>
               </select>
             </label>
@@ -1529,6 +1524,7 @@
           <div class="toolbar"><button id="startScheduleButton" class="primary" onclick="quickStartMailboxScheduler()">一键开始创建</button><button id="stopScheduleButton" class="danger" onclick="stopMailboxScheduler()">停止自动创建</button><span id="scheduleStatus" class="muted">尚未启动；点击后立即执行第一轮。</span><span id="protoBatchProgress" class="muted"></span><span id="createSettingsStatus" class="muted"></span></div>
           <details class="guide" style="margin:16px 18px"><summary>高级设置（可选）</summary><div>
             <div class="field-grid"><label>标签<input id="protoLabel" placeholder="UPI-70-13"></label><label>备注<input id="protoNote" placeholder="选填"></label><label>手动创建接口<select id="createChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>自动创建接口<select id="scheduleCreateChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>每轮间隔分钟<input id="scheduleIntervalMinutes" type="number" min="1" max="1440" value="60"></label><label>轮内创建间隔秒<input id="scheduleRoundIntervalSeconds" type="number" min="1" max="600" value="120"></label></div>
+            <div class="field-grid"><label>创建类型<select id="createMode" onchange="toggleAliasCreateFields()"><option value="privacy">普通隐私邮箱</option><option value="alias">别名邮箱</option></select></label><label id="aliasParentField" hidden>所属隐私邮箱<input id="aliasParentMailbox" placeholder="输入隐私邮箱地址或邮箱ID"></label><label id="aliasCountField" hidden>别名数量<input id="aliasCount" type="number" min="1" max="100" value="1"></label><div id="aliasCreateHint" class="full hint" hidden>别名邮箱会使用所属隐私邮箱的 Apple 账号创建，并在邮箱池中显示归属关系。</div></div>
             <div class="toolbar"><button id="createICloudButton" onclick="createICloudMailbox()">仅手动创建一轮</button><button id="saveCreateSettingsButton" type="button" onclick="saveCreateSettings()">保存高级设置</button></div>
           </div></details>
         </section>
@@ -1582,6 +1578,7 @@
             <button onclick="batchExportMailboxes('api')">按所选方式导出 API</button>
             <button onclick="batchExportMailboxes('email')">只导出邮箱</button>
             <button onclick="addSelectedToRedemptionPool()">加入兑换池</button>
+            <button onclick="addSelectedToSecondhandPool()">加入二手兑换池</button>
             <button onclick="batchRotateMailboxAPIs(false)">重置所选取码 API</button>
             <button class="danger" onclick="batchRotateMailboxAPIs(true)">一键重置全部取码 API</button>
             <button onclick="openRefreshAPIImport()">导入旧地址并更新导出</button>
@@ -1599,6 +1596,7 @@
 
         <section class="view-section panel" data-view="redemption">
           <div class="panel-head"><div><h2>兑换隐私邮箱</h2><p>把未导出、状态可用且可正常接码的邮箱加入专属兑换池，并生成一次性兑换码。</p></div><button class="primary" onclick="loadRedemptionPool()">刷新兑换池</button></div>
+          <div class="toolbar"><label>兑换池类型<select id="redemptionPoolType" onchange="loadRedemptionPool()"><option value="primary">全新邮箱兑换池</option><option value="secondhand">二手邮箱兑换池（导出满7天）</option></select></label><span class="muted">二手邮箱必须接码正常；兑换后满7天可以再次放入，循环使用。</span></div>
           <section class="grid"><div class="card"><strong id="redemptionStock">0</strong><span>当前可兑换</span></div><div class="card"><strong id="redemptionRedeemed">0</strong><span>累计已兑换</span></div><div class="card"><strong id="redemptionEligible">0</strong><span>可加入邮箱</span></div></section>
           <div class="field-grid"><label class="full">专属兑换链接<div class="toolbar"><input id="redemptionPoolURL" readonly style="flex:1"><button onclick="copyRedemptionPoolURL()">复制链接</button><button onclick="openRedemptionPool()">打开页面</button></div></label><label>批次名称<input id="redemptionBatchName" placeholder="例如：8月活动"></label><label>生成兑换码数量<input id="redemptionCodeCount" type="number" min="1" max="1000" value="1"></label><label>每个兑换码发放数量<input id="redemptionQuantity" type="number" min="1" max="500" value="1"></label><label>有效期类型<select id="redemptionValidityType" onchange="toggleRedemptionValidity()"><option value="days">按天数过期</option><option value="permanent">永久有效</option></select></label><label id="redemptionValidDaysField">有效天数<input id="redemptionValidDays" type="number" min="1" max="3650" value="30"></label><label>导出批次<select id="redemptionExportBatch"><option value="">全部未使用批次</option></select></label><div class="toolbar"><button class="primary" onclick="createRedemptionCode()">批量生成兑换码</button><button onclick="exportRedemptionCodes()">按所选批次导出 TXT</button><button onclick="addAllEligibleToRedemptionPool()">全部符合条件的邮箱加入池</button></div></div>
           <div class="notice">兑换成功会把邮箱标记为“已导出”并移出库存；撤销该批兑换并重置地址后，旧链接和原兑换码立即失效，邮箱恢复到兑换池。</div>
@@ -1883,7 +1881,11 @@
       if (accountDataView) {
         const frame = $('accountDataFrame');
         const nextURL = `/manage?embedded=1&view=${encodeURIComponent(accountDataView)}`;
-        if (frame && frame.getAttribute('src') !== nextURL) frame.setAttribute('src', nextURL);
+        if (frame) {
+          frame.onload = () => syncAccountDataTheme(document.body.dataset.theme || 'midnight');
+          if (frame.getAttribute('src') !== nextURL) frame.setAttribute('src', nextURL);
+          else syncAccountDataTheme(document.body.dataset.theme || 'midnight');
+        }
       }
       if (normalized === 'proxy') Promise.all([loadFixedProxy(), loadProxyPoolNodes()]).catch(err => log('加载代理配置失败：'+err.message));
       if (normalized === 'mailboxes') renderMailboxes();
@@ -1899,7 +1901,7 @@
       setActiveView(saved);
     }
 
-    const THEME_SLUGS = ['mint', 'sky', 'graphite', 'sunset', 'violet', 'rose', 'forest', 'midnight', 'obsidian', 'aurora'];
+    const THEME_SLUGS = ['sky', 'midnight', 'obsidian', 'aurora'];
     function setTheme(theme) {
       const normalized = THEME_SLUGS.includes(theme) ? theme : 'midnight';
       document.body.dataset.theme = normalized;
@@ -1910,6 +1912,13 @@
       try {
         localStorage.setItem(themeStorageKey, normalized);
       } catch (_) {}
+      syncAccountDataTheme(normalized);
+    }
+
+    function syncAccountDataTheme(theme) {
+      const frame = $('accountDataFrame');
+      if (!frame || !frame.contentWindow) return;
+      frame.contentWindow.postMessage({type:'ipm-theme', theme:theme || document.body.dataset.theme || 'midnight'}, location.origin);
     }
 
     function setDensity(density) {
@@ -2945,8 +2954,10 @@
     }
 
     let lastRedemptionPool = null;
+    function selectedRedemptionPoolType(){return (($('redemptionPoolType')||{}).value||'primary')}
     async function loadRedemptionPool() {
-      const data = await api('/api/redemption-pool'); lastRedemptionPool=data;
+      const poolType=selectedRedemptionPoolType();
+      const data = await api('/api/redemption-pool?pool_type='+encodeURIComponent(poolType)); lastRedemptionPool=data;
       $('redemptionStock').textContent=data.pool.stock||0;$('redemptionRedeemed').textContent=data.pool.redeemed||0;$('redemptionEligible').textContent=data.eligible_count||0;$('redemptionPoolURL').value=data.pool.url||'';
       if ($('navRedemptionCount')) $('navRedemptionCount').textContent=data.pool.stock||0;
       const batches=[...new Set((data.codes||[]).map(c=>c.batch_name).filter(Boolean))];const batchSelect=$('redemptionExportBatch'),selectedBatch=batchSelect.value;batchSelect.innerHTML='<option value="">全部未使用批次</option>'+batches.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');if(batches.includes(selectedBatch))batchSelect.value=selectedBatch;
@@ -2954,12 +2965,13 @@
       $('redemptionItemRows').innerHTML=(data.items||[]).map(i=>`<tr><td>${esc(i.mailbox.email)}</td><td>${i.mailbox.can_receive_code?'<span class="badge ok">正常</span>':`<span class="badge danger" title="${esc(i.mailbox.receive_code_error||'')}">异常</span>`}</td><td>${i.redeemed_at?'<span class="badge warn">已兑换</span>':i.available?'<span class="badge ok">库存中</span>':'<span class="badge danger">暂不可兑换</span>'}</td><td>${esc(i.added_at||'-')}<br>${esc(i.redeemed_at||'-')}</td><td>${i.redeemed_at?'-':`<button onclick="removeRedemptionItem('${esc(i.mailbox.id)}')">移出</button>`}</td></tr>`).join('')||'<tr><td colspan="5">兑换池暂无邮箱</td></tr>';
     }
     async function addSelectedToRedemptionPool(){const ids=[...selectedMailboxIDs];if(!ids.length){alert('请先在邮箱池勾选邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids})});selectedMailboxIDs.clear();log('所选符合条件的邮箱已加入兑换池');await loadMailboxPage();}
-    async function addAllEligibleToRedemptionPool(){const d=await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({add_all_eligible:true})});log(`已加入 ${d.added} 个邮箱`);await loadRedemptionPool()}
+    async function addSelectedToSecondhandPool(){const ids=[...selectedMailboxIDs];if(!ids.length){alert('请先勾选已导出超过7天且接码正常的邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids,pool_type:'secondhand'})});selectedMailboxIDs.clear();log('符合条件的邮箱已加入二手兑换池');await loadMailboxPage();}
+    async function addAllEligibleToRedemptionPool(){const pool_type=selectedRedemptionPoolType(),d=await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({add_all_eligible:true,pool_type})});log(`已加入 ${d.added} 个邮箱`);await loadRedemptionPool()}
     async function removeRedemptionItem(id){await api('/api/redemption-pool/items',{method:'DELETE',body:JSON.stringify({mailbox_ids:[id]})});await loadRedemptionPool()}
     function toggleRedemptionValidity(){const permanent=$('redemptionValidityType').value==='permanent';$('redemptionValidDaysField').hidden=permanent;$('redemptionValidDays').disabled=permanent}
-    async function createRedemptionCode(){const quantity=Number($('redemptionQuantity').value||0),count=Number($('redemptionCodeCount').value||1),batch_name=$('redemptionBatchName').value.trim(),valid_days=$('redemptionValidityType').value==='permanent'?0:Number($('redemptionValidDays').value||0);const d=await api('/api/redemption-pool/codes',{method:'POST',body:JSON.stringify({quantity,count,batch_name,valid_days})});await writeClipboard((d.codes||[d.code]).join('\n'));alert(`已生成 ${d.count||1} 个${valid_days===0?'永久有效':'有效期 '+valid_days+' 天'}兑换码并复制。`);await loadRedemptionPool()}
+    async function createRedemptionCode(){const quantity=Number($('redemptionQuantity').value||0),count=Number($('redemptionCodeCount').value||1),batch_name=$('redemptionBatchName').value.trim(),valid_days=$('redemptionValidityType').value==='permanent'?0:Number($('redemptionValidDays').value||0),pool_type=selectedRedemptionPoolType();const d=await api('/api/redemption-pool/codes',{method:'POST',body:JSON.stringify({quantity,count,batch_name,valid_days,pool_type})});await writeClipboard((d.codes||[d.code]).join('\n'));alert(`已生成 ${d.count||1} 个${valid_days===0?'永久有效':'有效期 '+valid_days+' 天'}兑换码并复制。`);await loadRedemptionPool()}
     async function rotateRedemptionCode(code,id){if(!confirm('确认撤销该批兑换？旧取码地址和原兑换码会失效，邮箱将恢复到兑换池。'))return;const d=await api('/api/redemption-pool/codes/rotate',{method:'POST',body:JSON.stringify({code,api_type:$(`rotateType-${id}`).value})});alert(`已重置 ${d.rotated} 个取码地址，邮箱已恢复到兑换池，原兑换码已失效。`);await loadRedemptionPool()}
-    function exportRedemptionCodes(){const batch=$('redemptionExportBatch').value;location.href='/api/redemption-pool/codes/export'+(batch?'?batch='+encodeURIComponent(batch):'')}
+    function exportRedemptionCodes(){const batch=$('redemptionExportBatch').value,params=new URLSearchParams({pool_type:selectedRedemptionPoolType()});if(batch)params.set('batch',batch);location.href='/api/redemption-pool/codes/export?'+params.toString()}
     async function copyRedemptionPoolURL(){await writeClipboard($('redemptionPoolURL').value);log('专属兑换链接已复制')}
     function openRedemptionPool(){window.open($('redemptionPoolURL').value,'_blank','noopener')}
     async function copyText(text){await writeClipboard(text)}
@@ -3311,7 +3323,7 @@
           <tr>
             <td><input type="checkbox" ${selectedMailboxIDs.has(row.id) ? 'checked' : ''} onchange="toggleMailboxSelection('${esc(row.id)}', this.checked)"></td>
             <td><div class="mail-title">${esc(row.label || '-')}</div><span class="muted">${esc(row.id)}</span></td>
-            <td><span class="email">${esc(row.email)}</span><br><span class="muted">${esc(mailboxAccountTitle(row))}</span></td>
+            <td><span class="email">${esc(row.email)}</span>${row.mailbox_type==='alias'?`<br><span class="pill">别名邮箱</span><br><span class="muted">归属：${esc(row.parent_mailbox_email||row.parent_mailbox_id||'-')}</span>`:''}<br><span class="muted">${esc(mailboxAccountTitle(row))}</span></td>
             <td>
               <span class="pill ${row.api_active ? '' : 'off'}">API ${row.api_active ? '已启用' : '已停用'}</span>
               <span class="pill ${row.icloud_active ? '' : 'off'}">iCloud ${row.icloud_active ? '已启用' : '已停用'}</span>
@@ -3700,6 +3712,11 @@
         }
       }
       renderICloudSessions(lastICloudSessions);
+    }
+
+    function toggleAliasCreateFields(){
+      const alias=(($('createMode')||{}).value||'privacy')==='alias';
+      for(const id of ['aliasParentField','aliasCountField','aliasCreateHint'])if($(id))$(id).hidden=!alias;
     }
     function clearSessionFilters() { sessionSearchQuery=''; sessionSearchIntentUntil=0; if ($('sessionSearch')) $('sessionSearch').value=''; if ($('sessionHealthFilter')) $('sessionHealthFilter').value=''; if ($('sessionKindFilter')) $('sessionKindFilter').value=''; renderICloudSessions(lastICloudSessions); }
 
@@ -4216,6 +4233,10 @@
       const baseLabel = $('protoLabel').value.trim();
       const note = $('protoNote').value.trim();
       const createChannel = createChannelPayloadValue('createChannelSelect');
+      const createMode = (($('createMode')||{}).value||'privacy');
+      const aliasParent = (($('aliasParentMailbox')||{}).value||'').trim();
+      const aliasCount = boundedInt('aliasCount', 1, 1, 100);
+      if(createMode==='alias'&&!aliasParent){progress.textContent='请先填写所属隐私邮箱地址或邮箱ID';return}
 
       button.disabled = true;
       progress.textContent = `创建中：${createChannelLabel(createChannel)}，参与账号=${accountNames}`;
@@ -4227,8 +4248,17 @@
           account_ids: accountIDs,
           label: baseLabel,
           note,
-          create_channel: createChannel
+          create_channel: createChannel,
+          create_mode: createMode,
+          alias_parent: aliasParent,
+          alias_count: aliasCount
         })});
+        if (data.queued) {
+          progress.textContent = data.message || '批量别名邮箱已加入后台任务；完成后请刷新邮箱列表。';
+          setCreateLog(progress.textContent);
+          log(progress.textContent);
+          return;
+        }
         const mailboxes = data.mailboxes && data.mailboxes.length ? data.mailboxes : (data.mailbox && data.mailbox.id ? [data.mailbox] : []);
         const remotes = data.remotes || [];
         const failures = data.failures || [];

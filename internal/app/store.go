@@ -92,6 +92,42 @@ func (s *FileStore) SnapshotForOwner(ownerID string) State {
 	return filterStateByOwnerLocked(s.state, strings.TrimSpace(ownerID))
 }
 
+// SnapshotForMailboxList keeps mailbox queries small by omitting messages and
+// unrelated collections. The list endpoint only needs account/session data.
+func (s *FileStore) SnapshotForMailboxList(ownerID string) State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID = strings.TrimSpace(ownerID)
+	in := s.state
+	out := State{
+		Accounts:       append([]Account(nil), in.Accounts...),
+		Mailboxes:      append([]Mailbox(nil), in.Mailboxes...),
+		ICloudSessions: make([]ICloudSession, len(in.ICloudSessions)),
+	}
+	if ownerID != "" {
+		filteredAccounts := out.Accounts[:0]
+		for _, account := range out.Accounts {
+			if constantTimeEqual(account.OwnerID, ownerID) {
+				filteredAccounts = append(filteredAccounts, account)
+			}
+		}
+		out.Accounts = filteredAccounts
+		filtered := out.Mailboxes[:0]
+		for _, mailbox := range out.Mailboxes {
+			if constantTimeEqual(mailbox.OwnerID, ownerID) {
+				filtered = append(filtered, mailbox)
+			}
+		}
+		out.Mailboxes = filtered
+	}
+	for i := range in.ICloudSessions {
+		if ownerID == "" || constantTimeEqual(in.ICloudSessions[i].OwnerID, ownerID) {
+			out.ICloudSessions[i] = cloneICloudSession(in.ICloudSessions[i])
+		}
+	}
+	return out
+}
+
 // SnapshotForManage avoids cloning full message bodies for the compact admin
 // dashboard. The dashboard needs counts and metadata, not the potentially
 // very large HTML/plaintext payloads.
@@ -121,6 +157,10 @@ func (s *FileStore) SnapshotForManage() State {
 	return out
 }
 
+func (s *FileStore) SnapshotForManageForOwner(ownerID string) State {
+	return filterStateByOwnerLocked(s.SnapshotForManage(), strings.TrimSpace(ownerID))
+}
+
 func (s *FileStore) MailboxCountForAccount(ownerID, accountID string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -131,6 +171,26 @@ func (s *FileStore) MailboxCountForAccount(ownerID, accountID string) int {
 		}
 	}
 	return count
+}
+
+func (s *FileStore) MarkMailboxesAsAliases(ownerID, parentID string, ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[strings.TrimSpace(id)] = true
+	}
+	parentID = strings.TrimSpace(parentID)
+	for i := range s.state.Mailboxes {
+		if !wanted[s.state.Mailboxes[i].ID] || !constantTimeEqual(s.state.Mailboxes[i].OwnerID, ownerID) {
+			continue
+		}
+		s.state.Mailboxes[i].MailboxType = "alias"
+		s.state.Mailboxes[i].ParentMailboxID = parentID
+		s.state.Mailboxes[i].UpdatedAt = now
+	}
+	return s.saveLocked()
 }
 
 // CountsForOwner returns lightweight dashboard counters without cloning the
@@ -1855,11 +1915,16 @@ func (s *FileStore) MarkMailboxesExported(ids []string, exportedAt time.Time) er
 }
 
 func (s *FileStore) RedemptionPoolForOwner(ownerID string) (RedemptionPool, error) {
+	return s.RedemptionPoolForOwnerType(ownerID, "primary", 0)
+}
+
+func (s *FileStore) RedemptionPoolForOwnerType(ownerID, poolType string, eligibilityDays int) (RedemptionPool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ownerID = strings.TrimSpace(ownerID)
+	poolType = firstNonEmpty(strings.TrimSpace(poolType), "primary")
 	for _, pool := range s.state.RedemptionPools {
-		if constantTimeEqual(pool.OwnerID, ownerID) {
+		if constantTimeEqual(pool.OwnerID, ownerID) && firstNonEmpty(pool.PoolType, "primary") == poolType {
 			return pool, nil
 		}
 	}
@@ -1868,7 +1933,7 @@ func (s *FileStore) RedemptionPoolForOwner(ownerID string) (RedemptionPool, erro
 		return RedemptionPool{}, err
 	}
 	now := time.Now()
-	pool := RedemptionPool{ID: s.nextIDLocked("pool"), OwnerID: ownerID, PublicToken: token, Enabled: true, CreatedAt: now, UpdatedAt: now}
+	pool := RedemptionPool{ID: s.nextIDLocked("pool"), OwnerID: ownerID, PoolType: poolType, EligibilityDays: eligibilityDays, PublicToken: token, Enabled: true, CreatedAt: now, UpdatedAt: now}
 	s.state.RedemptionPools = append(s.state.RedemptionPools, pool)
 	return pool, s.saveLocked()
 }
@@ -1902,11 +1967,19 @@ func (s *FileStore) MailboxRedemptionLocked(mailboxID string) bool {
 }
 
 func (s *FileStore) AddRedemptionItems(ownerID string, ids []string, healthy map[string]bool) (int, error) {
+	return s.addRedemptionItems(ownerID, "primary", ids, healthy)
+}
+
+func (s *FileStore) AddSecondhandRedemptionItems(ownerID string, ids []string, healthy map[string]bool) (int, error) {
+	return s.addRedemptionItems(ownerID, "secondhand", ids, healthy)
+}
+
+func (s *FileStore) addRedemptionItems(ownerID, poolType string, ids []string, healthy map[string]bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var pool *RedemptionPool
 	for i := range s.state.RedemptionPools {
-		if constantTimeEqual(s.state.RedemptionPools[i].OwnerID, ownerID) {
+		if constantTimeEqual(s.state.RedemptionPools[i].OwnerID, ownerID) && firstNonEmpty(s.state.RedemptionPools[i].PoolType, "primary") == poolType {
 			pool = &s.state.RedemptionPools[i]
 			break
 		}
@@ -1917,7 +1990,7 @@ func (s *FileStore) AddRedemptionItems(ownerID string, ids []string, healthy map
 			return 0, err
 		}
 		now := time.Now()
-		s.state.RedemptionPools = append(s.state.RedemptionPools, RedemptionPool{ID: s.nextIDLocked("pool"), OwnerID: ownerID, PublicToken: token, Enabled: true, CreatedAt: now, UpdatedAt: now})
+		s.state.RedemptionPools = append(s.state.RedemptionPools, RedemptionPool{ID: s.nextIDLocked("pool"), OwnerID: ownerID, PoolType: poolType, EligibilityDays: map[string]int{"secondhand": 7}[poolType], PublicToken: token, Enabled: true, CreatedAt: now, UpdatedAt: now})
 		pool = &s.state.RedemptionPools[len(s.state.RedemptionPools)-1]
 	}
 	existing := map[string]bool{}
@@ -1933,7 +2006,11 @@ func (s *FileStore) AddRedemptionItems(ownerID string, ids []string, healthy map
 	count := 0
 	now := time.Now()
 	for _, mailbox := range s.state.Mailboxes {
-		if !wanted[mailbox.ID] || existing[mailbox.ID] || !constantTimeEqual(mailbox.OwnerID, ownerID) || !mailbox.ExportedAt.IsZero() || !mailbox.APIActive || !mailbox.ICloudActive || mailbox.Status != StatusAvailable || !healthy[mailbox.ID] {
+		eligibleExport := mailbox.ExportedAt.IsZero()
+		if poolType == "secondhand" {
+			eligibleExport = !mailbox.ExportedAt.IsZero() && mailbox.ExportedAt.Before(now.Add(-7*24*time.Hour))
+		}
+		if !wanted[mailbox.ID] || existing[mailbox.ID] || !constantTimeEqual(mailbox.OwnerID, ownerID) || !eligibleExport || !mailbox.APIActive || !mailbox.ICloudActive || mailbox.Status != StatusAvailable || !healthy[mailbox.ID] {
 			continue
 		}
 		s.state.RedemptionItems = append(s.state.RedemptionItems, RedemptionItem{PoolID: pool.ID, OwnerID: ownerID, MailboxID: mailbox.ID, AddedAt: now})
@@ -1993,6 +2070,10 @@ func (s *FileStore) CreateRedemptionCode(ownerID string, quantity int) (Redempti
 }
 
 func (s *FileStore) CreateRedemptionCodes(ownerID string, quantity, count int, batchName string, validDays int) ([]RedemptionCode, error) {
+	return s.CreateRedemptionCodesForPool(ownerID, "primary", quantity, count, batchName, validDays)
+}
+
+func (s *FileStore) CreateRedemptionCodesForPool(ownerID, poolType string, quantity, count int, batchName string, validDays int) ([]RedemptionCode, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if quantity < 1 || quantity > 500 {
@@ -2005,8 +2086,9 @@ func (s *FileStore) CreateRedemptionCodes(ownerID string, quantity, count int, b
 		return nil, errCode("invalid_valid_days", "有效天数必须为 0 到 3650，0 表示永久有效", false)
 	}
 	poolID := ""
+	poolType = firstNonEmpty(strings.TrimSpace(poolType), "primary")
 	for _, p := range s.state.RedemptionPools {
-		if constantTimeEqual(p.OwnerID, ownerID) {
+		if constantTimeEqual(p.OwnerID, ownerID) && firstNonEmpty(p.PoolType, "primary") == poolType {
 			poolID = p.ID
 			break
 		}
@@ -2033,24 +2115,29 @@ func (s *FileStore) CreateRedemptionCodes(ownerID string, quantity, count int, b
 }
 
 func (s *FileStore) RedemptionDataForOwner(ownerID string) (RedemptionPool, []RedemptionCode, []RedemptionItem) {
+	return s.RedemptionDataForOwnerType(ownerID, "primary")
+}
+
+func (s *FileStore) RedemptionDataForOwnerType(ownerID, poolType string) (RedemptionPool, []RedemptionCode, []RedemptionItem) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	poolType = firstNonEmpty(strings.TrimSpace(poolType), "primary")
 	var pool RedemptionPool
 	var codes []RedemptionCode
 	var items []RedemptionItem
 	for _, p := range s.state.RedemptionPools {
-		if constantTimeEqual(p.OwnerID, ownerID) {
+		if constantTimeEqual(p.OwnerID, ownerID) && firstNonEmpty(p.PoolType, "primary") == poolType {
 			pool = p
 		}
 	}
 	for _, c := range s.state.RedemptionCodes {
-		if constantTimeEqual(c.OwnerID, ownerID) {
+		if constantTimeEqual(c.OwnerID, ownerID) && c.PoolID == pool.ID {
 			c.RedeemedMailboxIDs = append([]string(nil), c.RedeemedMailboxIDs...)
 			codes = append(codes, c)
 		}
 	}
 	for _, i := range s.state.RedemptionItems {
-		if constantTimeEqual(i.OwnerID, ownerID) {
+		if constantTimeEqual(i.OwnerID, ownerID) && i.PoolID == pool.ID {
 			items = append(items, i)
 		}
 	}
@@ -2104,7 +2191,7 @@ func (s *FileStore) RedeemMailboxes(poolToken, code string, healthy map[string]b
 			continue
 		}
 		m := s.state.Mailboxes[mi]
-		if !m.ExportedAt.IsZero() || !m.APIActive || !m.ICloudActive || m.Status != StatusAvailable {
+		if (firstNonEmpty(pool.PoolType, "primary") != "secondhand" && !m.ExportedAt.IsZero()) || !m.APIActive || !m.ICloudActive || m.Status != StatusAvailable {
 			continue
 		}
 		candidates = append(candidates, i)
@@ -2204,7 +2291,7 @@ func (s *FileStore) RedeemMultipleCodes(poolToken string, codes []string, health
 			continue
 		}
 		m := s.state.Mailboxes[mi]
-		if !m.ExportedAt.IsZero() || !m.APIActive || !m.ICloudActive || m.Status != StatusAvailable {
+		if (firstNonEmpty(pool.PoolType, "primary") != "secondhand" && !m.ExportedAt.IsZero()) || !m.APIActive || !m.ICloudActive || m.Status != StatusAvailable {
 			continue
 		}
 		candidates = append(candidates, i)
@@ -2246,7 +2333,7 @@ func (s *FileStore) RedeemMultipleCodes(poolToken string, codes []string, health
 	return resultCodes, resultBoxes, nil
 }
 
-func (s *FileStore) CreateRedemptionOrder(poolToken, password string, codes []RedemptionCode, boxes []Mailbox) (RedemptionOrder, error) {
+func (s *FileStore) CreateRedemptionOrder(poolToken, password string, codes []RedemptionCode, boxes []Mailbox, exportLines ...[]string) (RedemptionOrder, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	password = strings.TrimSpace(password)
@@ -2269,6 +2356,9 @@ func (s *FileStore) CreateRedemptionOrder(poolToken, password string, codes []Re
 	}
 	for _, mailbox := range boxes {
 		row.MailboxIDs = append(row.MailboxIDs, mailbox.ID)
+	}
+	if len(exportLines) > 0 {
+		row.ExportLines = append([]string(nil), exportLines[0]...)
 	}
 	s.state.RedemptionOrders = append(s.state.RedemptionOrders, row)
 	return row, s.saveLocked()
@@ -2334,6 +2424,13 @@ func (s *FileStore) RotateRedemptionCode(ownerID, code string) (RedemptionCode, 
 	}
 	now := time.Now()
 	result := []Mailbox{}
+	secondhand := false
+	for i := range s.state.RedemptionPools {
+		if s.state.RedemptionPools[i].ID == row.PoolID {
+			secondhand = firstNonEmpty(s.state.RedemptionPools[i].PoolType, "primary") == "secondhand"
+			break
+		}
+	}
 	for _, id := range row.RedeemedMailboxIDs {
 		for i := range s.state.Mailboxes {
 			if s.state.Mailboxes[i].ID == id {
@@ -2342,7 +2439,13 @@ func (s *FileStore) RotateRedemptionCode(ownerID, code string) (RedemptionCode, 
 					return RedemptionCode{}, nil, err
 				}
 				s.state.Mailboxes[i].APIToken = token
-				s.state.Mailboxes[i].ExportedAt = time.Time{}
+				if secondhand {
+					// A secondhand mailbox starts a fresh cooldown after its API is
+					// rotated. It must not immediately return to available stock.
+					s.state.Mailboxes[i].ExportedAt = now
+				} else {
+					s.state.Mailboxes[i].ExportedAt = time.Time{}
+				}
 				s.state.Mailboxes[i].UpdatedAt = now
 				result = append(result, s.state.Mailboxes[i])
 				break
@@ -2351,8 +2454,10 @@ func (s *FileStore) RotateRedemptionCode(ownerID, code string) (RedemptionCode, 
 	}
 	for i := range s.state.RedemptionItems {
 		if s.state.RedemptionItems[i].CodeID == row.ID {
-			s.state.RedemptionItems[i].RedeemedAt = time.Time{}
-			s.state.RedemptionItems[i].CodeID = ""
+			if !secondhand {
+				s.state.RedemptionItems[i].RedeemedAt = time.Time{}
+				s.state.RedemptionItems[i].CodeID = ""
+			}
 		}
 	}
 	row.RotatedAt = now
@@ -2361,7 +2466,9 @@ func (s *FileStore) RotateRedemptionCode(ownerID, code string) (RedemptionCode, 
 	row.InvalidatedAt = now
 	for i := range s.state.RedemptionPools {
 		if s.state.RedemptionPools[i].ID == row.PoolID {
-			s.state.RedemptionPools[i].RedeemedCount = max(0, s.state.RedemptionPools[i].RedeemedCount-len(result))
+			if !secondhand {
+				s.state.RedemptionPools[i].RedeemedCount = max(0, s.state.RedemptionPools[i].RedeemedCount-len(result))
+			}
 			s.state.RedemptionPools[i].UpdatedAt = now
 			break
 		}

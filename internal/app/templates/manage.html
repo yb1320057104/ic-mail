@@ -399,6 +399,49 @@
     body.embedded-mode header { position:static; border-radius:0; }
     body.embedded-mode main { padding:18px; }
     body.embedded-mode .embedded-hide { display:none; }
+    body.embedded-mode {
+      --bg:#020817; --panel:#061630; --panel-soft:#04132d; --line:rgba(59,130,246,.28);
+      --line-strong:rgba(96,165,250,.42); --text:#eaf2ff; --muted:#9fc2ef; --faint:#7194c3;
+      --green:#2563eb; --green-dark:#60a5fa; --shadow:0 24px 70px rgba(0,8,25,.42);
+      color-scheme:dark;
+      background:radial-gradient(circle at 8% 0,rgba(37,99,235,.25),transparent 30%),linear-gradient(145deg,#00030a,#020b1d);
+    }
+    body.embedded-mode header, body.embedded-mode .panel, body.embedded-mode .stat-card,
+    body.embedded-mode .card, body.embedded-mode dialog { background:linear-gradient(145deg,#061630,#031027)!important; }
+    body.embedded-mode input, body.embedded-mode textarea, body.embedded-mode select { color:#eef6ff!important; background:#061a3b!important; }
+    body.embedded-mode th { color:#bfdbfe; background:#041735!important; }
+    body.embedded-mode tbody tr:nth-child(even) { background:#04132d; }
+    body.embedded-mode tbody tr:hover { background:#082552; }
+    body.embedded-mode .btn.primary, body.embedded-mode .nav button.active { background:linear-gradient(135deg,#2563eb,#0f3d74)!important; }
+
+    /* The embedded page follows the workspace theme instead of keeping its
+       own stale palette. All variants stay within the blue family. */
+    body[data-theme="sky"] {
+      color-scheme: light;
+      --bg:#eef6ff; --panel:#ffffff; --panel-soft:#f4f9ff;
+      --line:rgba(37,99,235,.20); --line-strong:rgba(37,99,235,.34);
+      --text:#0b1f3a; --muted:#4c6690; --faint:#7890b6;
+      background:linear-gradient(145deg,#e8f2ff,#f7fbff 55%,#eaf4ff);
+    }
+    body[data-theme="sky"] .sidebar, body[data-theme="sky"] header { background:rgba(239,247,255,.97); }
+    body[data-theme="sky"] .panel, body[data-theme="sky"] .account-card, body[data-theme="sky"] .stat-card { background:linear-gradient(145deg,#ffffff,#f3f8ff); }
+    body[data-theme="sky"] input, body[data-theme="sky"] textarea, body[data-theme="sky"] select, body[data-theme="sky"] .btn { color:#0b1f3a!important; background:#f7fbff!important; }
+    body[data-theme="sky"] th, body[data-theme="sky"] .table-filter, body[data-theme="sky"] .panel-head { background:#eaf3ff!important; color:#1f4d8f!important; }
+    body[data-theme="midnight"], body[data-theme="obsidian"], body[data-theme="aurora"] {
+      color-scheme:dark;
+      --bg:#020817; --panel:#061630; --panel-soft:#04132d;
+      --line:rgba(59,130,246,.26); --line-strong:rgba(96,165,250,.42);
+      --text:#eaf2ff; --muted:#9fc2ef; --faint:#7194c3;
+      background:radial-gradient(circle at 8% 0,rgba(37,99,235,.25),transparent 30%),linear-gradient(145deg,#00030a,#020b1d);
+    }
+    body[data-theme="obsidian"] { --panel:#111b31; --panel-soft:#0b1630; }
+    body[data-theme="aurora"] { --panel:#06223d; --panel-soft:#041a32; }
+    body[data-theme="midnight"] .panel, body[data-theme="midnight"] .account-card, body[data-theme="midnight"] .stat-card,
+    body[data-theme="obsidian"] .panel, body[data-theme="obsidian"] .account-card, body[data-theme="obsidian"] .stat-card,
+    body[data-theme="aurora"] .panel, body[data-theme="aurora"] .account-card, body[data-theme="aurora"] .stat-card { background:linear-gradient(145deg,var(--panel),#031027); }
+    body[data-theme="midnight"] input, body[data-theme="midnight"] textarea, body[data-theme="midnight"] select,
+    body[data-theme="obsidian"] input, body[data-theme="obsidian"] textarea, body[data-theme="obsidian"] select,
+    body[data-theme="aurora"] input, body[data-theme="aurora"] textarea, body[data-theme="aurora"] select { color:#eef6ff!important; background:#061a3b!important; }
   </style>
 </head>
 <body>
@@ -616,6 +659,10 @@
     const $ = id => document.getElementById(id);
     let currentUser = null;
     let manageData = null;
+    window.addEventListener('message', event => {
+      if (event.origin !== location.origin || !event.data || event.data.type !== 'ipm-theme') return;
+      document.body.dataset.theme = String(event.data.theme || 'midnight');
+    });
     let selectedOwner = 'all';
     const viewStorageKey = 'ipm_manage_active_view';
     const mailboxPageSizeStorage = 'ipm_manage_mailbox_page_size';
@@ -820,7 +867,7 @@
       if (empty) empty.hidden = rows.length > 0;
     }
     async function refresh() {
-	  manageData = await api(currentUser && currentUser.is_admin ? '/api/manage/data?compact=1' : '/api/manage/data');
+	  manageData = await api('/api/manage/data?compact=1');
       renderData();
 	  if (currentUser && currentUser.is_admin) await loadManageMailboxPage(mailboxPage);
       log('数据已刷新');
