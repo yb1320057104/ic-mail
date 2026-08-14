@@ -388,6 +388,9 @@ func (s *Server) handleImportProxyPool(w http.ResponseWriter, r *http.Request) {
 		Enabled    bool   `json:"enabled"`
 		URL        string `json:"url"`
 		YAML       string `json:"yaml"`
+		// Kept for compatibility with the GitHub frontend; local node names
+		// remain the names from the imported Mihomo document.
+		TagPrefix string `json:"tag_prefix"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, 400, err)
