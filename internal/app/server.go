@@ -7352,6 +7352,10 @@ var (
 	otpKeywordRegex   = regexp.MustCompile(`(?i)(?:openai|chatgpt|otp|verification\s*code|security\s*code|login\s*code|one[ -]?time\s*(?:code|password)|passcode|pin\s*code|code|验证码|驗證碼|校验码|校驗碼|动态码|動態碼|安全码|安全碼|登录码|登錄碼|代码|代碼)`)
 	otpCandidateRegex = regexp.MustCompile(`[A-Za-z0-9]{2,10}(?:-[A-Za-z0-9]{2,10}){1,2}|[A-Za-z0-9]{4,10}`)
 	plainOTPRegex     = regexp.MustCompile(`\b(\d{6})\b`)
+	otpDateRegex      = regexp.MustCompile(`^\d{4}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?$`)
+	otpYearRegex      = regexp.MustCompile(`^(?:19|20)\d{2}$`)
+	directOTPPrefix   = regexp.MustCompile(`(?i)^\s*(?:is|为|是)?\s*[:：=：-]?\s*$`)
+	yearDateSuffix    = regexp.MustCompile(`^\s*(?:年|[-/.]\s*\d{1,2}(?:\s*[-/.月]\s*\d{1,2})?)`)
 )
 
 func extractOTP(text string) string {
@@ -7383,18 +7387,48 @@ func contextualOTPInRange(text string, start, end int, preferLast bool) string {
 	matches := otpCandidateRegex.FindAllStringIndex(text[start:end], -1)
 	if preferLast {
 		for i := len(matches) - 1; i >= 0; i-- {
-			if code := normalizedContextualOTP(text[start+matches[i][0] : start+matches[i][1]]); code != "" {
+			matchStart, matchEnd := start+matches[i][0], start+matches[i][1]
+			if looksLikeContextualDate(text, start, matchStart, matchEnd) {
+				continue
+			}
+			if code := normalizedContextualOTP(text[matchStart:matchEnd]); code != "" {
 				return code
 			}
 		}
 		return ""
 	}
 	for _, match := range matches {
-		if code := normalizedContextualOTP(text[start+match[0] : start+match[1]]); code != "" {
+		matchStart, matchEnd := start+match[0], start+match[1]
+		if looksLikeContextualDate(text, start, matchStart, matchEnd) {
+			continue
+		}
+		if code := normalizedContextualOTP(text[matchStart:matchEnd]); code != "" {
 			return code
 		}
 	}
 	return ""
+}
+
+func looksLikeContextualDate(text string, rangeStart, candidateStart, candidateEnd int) bool {
+	if candidateStart < 0 || candidateEnd > len(text) || candidateStart >= candidateEnd {
+		return false
+	}
+	candidate := strings.TrimSpace(text[candidateStart:candidateEnd])
+	if otpDateRegex.MatchString(candidate) {
+		return true
+	}
+	if !otpYearRegex.MatchString(candidate) {
+		return false
+	}
+	suffix := text[candidateEnd:min(len(text), candidateEnd+16)]
+	if yearDateSuffix.MatchString(suffix) {
+		return true
+	}
+	// A four-digit value in the year range remains valid when it immediately
+	// follows the code label (for example "验证码：2026"). Otherwise it is
+	// treated as forwarded-message metadata rather than an OTP.
+	prefix := text[max(rangeStart, candidateStart-24):candidateStart]
+	return !directOTPPrefix.MatchString(prefix)
 }
 
 func normalizedContextualOTP(code string) string {
