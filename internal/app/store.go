@@ -1258,18 +1258,19 @@ func (s *FileStore) AddAccountForOwner(ownerID, label, appleID, note string) (Ac
 
 	now := time.Now()
 	account := Account{
-		ID:           s.nextIDLocked("acc"),
-		OwnerID:      strings.TrimSpace(ownerID),
-		CreatedBy:    strings.TrimSpace(ownerID),
-		AssignedBy:   strings.TrimSpace(ownerID),
-		Category:     "未分类",
-		Label:        strings.TrimSpace(label),
-		AppleID:      strings.TrimSpace(appleID),
-		Status:       StatusActive,
-		ICloudStatus: ICloudStatusNeedLogin,
-		Note:         strings.TrimSpace(note),
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:              s.nextIDLocked("acc"),
+		OwnerID:         strings.TrimSpace(ownerID),
+		CreatedBy:       strings.TrimSpace(ownerID),
+		AssignedBy:      strings.TrimSpace(ownerID),
+		Category:        "未分类",
+		Label:           strings.TrimSpace(label),
+		AppleID:         strings.TrimSpace(appleID),
+		LoginIdentifier: normalizeAppleLoginIdentifier(appleID),
+		Status:          StatusActive,
+		ICloudStatus:    ICloudStatusNeedLogin,
+		Note:            strings.TrimSpace(note),
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if account.Label == "" {
 		account.Label = account.ID
@@ -1501,6 +1502,59 @@ func (s *FileStore) ICloudSessionForOwnerAccount(ownerID, accountID string) (ICl
 		}
 	}
 	return ICloudSession{}, false
+}
+
+func (s *FileStore) DeleteICloudSessionForOwner(ownerID, accountID string) (int, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID, accountID = strings.TrimSpace(ownerID), strings.TrimSpace(accountID)
+	if ownerID == "" || accountID == "" {
+		return 0, false, errCode("account_required", "请选择需要删除的登录态账号", false)
+	}
+	removed := 0
+	nextSessions := s.state.ICloudSessions[:0]
+	for _, session := range s.state.ICloudSessions {
+		if constantTimeEqual(session.OwnerID, ownerID) && constantTimeEqual(session.AccountID, accountID) {
+			removed++
+			continue
+		}
+		nextSessions = append(nextSessions, session)
+	}
+	if removed == 0 {
+		return 0, false, errCode("icloud_session_missing", "登录态账号不存在或无权删除", false)
+	}
+	s.state.ICloudSessions = nextSessions
+	accountIDs := map[string]struct{}{accountID: {}}
+	s.removeAccountIDsFromCreateSettingsLocked(ownerID, accountIDs)
+	nextBindings := s.state.AutoLoginBindings[:0]
+	for _, binding := range s.state.AutoLoginBindings {
+		if constantTimeEqual(binding.OwnerID, ownerID) && constantTimeEqual(binding.AccountID, accountID) {
+			continue
+		}
+		nextBindings = append(nextBindings, binding)
+	}
+	s.state.AutoLoginBindings = nextBindings
+	preservedMailboxes := false
+	for _, mailbox := range s.state.Mailboxes {
+		if constantTimeEqual(mailbox.OwnerID, ownerID) && constantTimeEqual(mailbox.AccountID, accountID) {
+			preservedMailboxes = true
+			break
+		}
+	}
+	nextAccounts := s.state.Accounts[:0]
+	for _, account := range s.state.Accounts {
+		if constantTimeEqual(account.OwnerID, ownerID) && constantTimeEqual(account.ID, accountID) {
+			if preservedMailboxes {
+				account.ICloudStatus = ICloudStatusNeedLogin
+				account.UpdatedAt = time.Now()
+				nextAccounts = append(nextAccounts, account)
+			}
+			continue
+		}
+		nextAccounts = append(nextAccounts, account)
+	}
+	s.state.Accounts = nextAccounts
+	return removed, preservedMailboxes, s.saveLocked()
 }
 
 func (s *FileStore) SetICloudSessionProxy(ownerID, accountID, nodeTag, nodeName string) (ICloudSession, bool, error) {
@@ -2569,6 +2623,15 @@ func (s *FileStore) ensureICloudAccountLocked(ownerID string, session ICloudSess
 	}
 
 	appleID := strings.TrimSpace(session.AppleID)
+	loginIdentifier := normalizeAppleLoginIdentifier(firstNonEmpty(session.LoginIdentifier, session.AppleID))
+	if loginIdentifier != "" {
+		for i, account := range s.state.Accounts {
+			if constantTimeEqual(ownerID, account.OwnerID) && normalizeAppleLoginIdentifier(firstNonEmpty(account.LoginIdentifier, account.AppleID)) == loginIdentifier {
+				s.updateICloudAccountFromSessionLocked(i, session)
+				return account.ID
+			}
+		}
+	}
 	if appleID != "" {
 		for i, account := range s.state.Accounts {
 			if constantTimeEqual(ownerID, account.OwnerID) && strings.EqualFold(strings.TrimSpace(account.AppleID), appleID) {
@@ -2587,14 +2650,15 @@ func (s *FileStore) ensureICloudAccountLocked(ownerID string, session ICloudSess
 		label = "iCloud " + now.Format("0102-150405")
 	}
 	account := Account{
-		ID:           s.nextIDLocked("acc"),
-		OwnerID:      ownerID,
-		Label:        label,
-		AppleID:      appleID,
-		Status:       StatusActive,
-		ICloudStatus: iCloudStatusFromSession(session),
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:              s.nextIDLocked("acc"),
+		OwnerID:         ownerID,
+		Label:           label,
+		AppleID:         appleID,
+		LoginIdentifier: loginIdentifier,
+		Status:          StatusActive,
+		ICloudStatus:    iCloudStatusFromSession(session),
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	s.state.Accounts = append(s.state.Accounts, account)
 	return account.ID
@@ -2625,6 +2689,9 @@ func (s *FileStore) updateICloudAccountFromSessionLocked(index int, session IClo
 			account.Label = appleID
 		}
 	}
+	if loginIdentifier := normalizeAppleLoginIdentifier(firstNonEmpty(session.LoginIdentifier, session.AppleID)); loginIdentifier != "" {
+		account.LoginIdentifier = loginIdentifier
+	}
 	account.Status = StatusActive
 	account.ICloudStatus = iCloudStatusFromSession(session)
 	account.UpdatedAt = time.Now()
@@ -2637,10 +2704,36 @@ func sameICloudSessionIdentity(a, b ICloudSession) bool {
 	if strings.TrimSpace(a.DSID) != "" && constantTimeEqual(a.DSID, b.DSID) {
 		return true
 	}
+	leftLogin := normalizeAppleLoginIdentifier(firstNonEmpty(a.LoginIdentifier, a.AppleID))
+	rightLogin := normalizeAppleLoginIdentifier(firstNonEmpty(b.LoginIdentifier, b.AppleID))
+	if leftLogin != "" && leftLogin == rightLogin {
+		return true
+	}
 	if strings.TrimSpace(a.AppleID) != "" && strings.EqualFold(strings.TrimSpace(a.AppleID), strings.TrimSpace(b.AppleID)) {
 		return true
 	}
 	return false
+}
+
+func normalizeAppleLoginIdentifier(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || strings.Contains(value, "@") {
+		return value
+	}
+	var b strings.Builder
+	for i, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '+' && i == 0:
+			b.WriteRune(r)
+		case r == ' ', r == '-', r == '(', r == ')':
+			continue
+		default:
+			return value
+		}
+	}
+	return b.String()
 }
 
 func (s *FileStore) pruneDuplicateIMAPOnlySessionsLocked(ownerID string, target ICloudSession, targetIndex int) {
@@ -2880,7 +2973,8 @@ func mergeICloudSession(existing, incoming ICloudSession) ICloudSession {
 	if out.SavedAt.IsZero() {
 		out.SavedAt = existing.SavedAt
 	}
-	out.AppleID = firstNonEmpty(incoming.AppleID, existing.AppleID)
+	out.AppleID = preferredAppleAccountName(existing.AppleID, incoming.AppleID)
+	out.LoginIdentifier = normalizeAppleLoginIdentifier(firstNonEmpty(incoming.LoginIdentifier, existing.LoginIdentifier, incoming.AppleID, existing.AppleID))
 	out.DSID = firstNonEmpty(incoming.DSID, existing.DSID)
 	out.ClientID = firstNonEmpty(incoming.ClientID, existing.ClientID)
 	out.ClientBuildNumber = firstNonEmpty(incoming.ClientBuildNumber, existing.ClientBuildNumber)
@@ -2906,6 +3000,17 @@ func mergeICloudSession(existing, incoming ICloudSession) ICloudSession {
 	out.ProxyNodeTag = firstNonEmpty(incoming.ProxyNodeTag, existing.ProxyNodeTag)
 	out.ProxyNodeName = firstNonEmpty(incoming.ProxyNodeName, existing.ProxyNodeName)
 	return out
+}
+
+func preferredAppleAccountName(existing, incoming string) string {
+	existing, incoming = strings.TrimSpace(existing), strings.TrimSpace(incoming)
+	if strings.Contains(incoming, "@") || existing == "" {
+		return incoming
+	}
+	if strings.Contains(existing, "@") {
+		return existing
+	}
+	return firstNonEmpty(incoming, existing)
 }
 
 func mergeLoginStates(existing, incoming []LoginState) []LoginState {

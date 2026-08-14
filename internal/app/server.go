@@ -540,6 +540,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/public/redemption-pools/{token}/redeem", s.handlePublicRedeem)
 	s.mux.HandleFunc("POST /api/public/redemption-pools/{token}/orders", s.handlePublicRedemptionOrders)
 	s.mux.HandleFunc("GET /api/icloud/session", s.handleICloudSession)
+	s.mux.HandleFunc("DELETE /api/icloud/session/{account_id}", s.handleDeleteICloudSession)
 	s.mux.HandleFunc("POST /api/icloud/protocol-login/start", s.handleStartICloudProtocolLogin)
 	s.mux.HandleFunc("POST /api/icloud/protocol-login/2fa", s.handleSubmitICloudProtocol2FA)
 	s.mux.HandleFunc("POST /api/apple-account/login/start", s.handleStartAppleAccountLogin)
@@ -2327,6 +2328,24 @@ func (s *Server) handleICloudSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "session": session, "sessions": sessions})
 }
 
+func (s *Server) handleDeleteICloudSession(w http.ResponseWriter, r *http.Request) {
+	ownerID := requestOwnerID(r, s.store)
+	accountID := strings.TrimSpace(r.PathValue("account_id"))
+	removed, preservedMailboxes, err := s.store.DeleteICloudSessionForOwner(ownerID, accountID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	message := "登录态账号已删除"
+	if preservedMailboxes {
+		message += "；该账号已生成的隐私邮箱和邮件数据已保留"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true, "removed": removed, "mailboxes_preserved": preservedMailboxes,
+		"message": message, "sessions": s.publicSessionsForOwner(ownerID),
+	})
+}
+
 func (s *Server) handleCheckICloudSession(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		AccountID string `json:"account_id"`
@@ -2945,6 +2964,7 @@ func (s *Server) handleStartICloudProtocolLogin(w http.ResponseWriter, r *http.R
 		return
 	}
 	if result.Needs2FA {
+		s.icloudProtocolLogins.bindLoginIdentity(result.PendingID, payload.AccountID, payload.AppleID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":    true,
 			"needs_2fa":  true,
@@ -2955,6 +2975,8 @@ func (s *Server) handleStartICloudProtocolLogin(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
+	result.Session.AccountID = strings.TrimSpace(payload.AccountID)
+	result.Session.LoginIdentifier = normalizeAppleLoginIdentifier(payload.AppleID)
 	if err := s.store.SaveICloudSessionForOwner(ownerID, result.Session); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2964,7 +2986,7 @@ func (s *Server) handleStartICloudProtocolLogin(w http.ResponseWriter, r *http.R
 		"success":   true,
 		"needs_2fa": false,
 		"message":   result.Message,
-		"session":   publicSessionForAppleID(sessions, result.Session.AppleID),
+		"session":   publicSessionForSavedLogin(sessions, result.Session),
 		"sessions":  sessions,
 	})
 }
@@ -2994,6 +3016,8 @@ func (s *Server) handleSubmitICloudProtocol2FA(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	session.AccountID = strings.TrimSpace(pending.Session.AccountID)
+	session.LoginIdentifier = normalizeAppleLoginIdentifier(firstNonEmpty(pending.Session.LoginIdentifier, pending.Session.AppleID))
 	s.icloudProtocolLogins.delete(payload.PendingID)
 	if err := s.store.SaveICloudSessionForOwner(ownerID, session); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -3003,7 +3027,7 @@ func (s *Server) handleSubmitICloudProtocol2FA(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":  true,
 		"message":  "旧接口验证码登录成功，登录态已保存",
-		"session":  publicSessionForAppleID(sessions, session.AppleID),
+		"session":  publicSessionForSavedLogin(sessions, session),
 		"sessions": sessions,
 	})
 }
@@ -3037,6 +3061,7 @@ func (s *Server) handleStartAppleAccountLogin(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if result.Needs2FA {
+		s.appleAccountLogins.bindLoginIdentity(result.PendingID, payload.AccountID, payload.AppleID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":    true,
 			"needs_2fa":  true,
@@ -3047,6 +3072,8 @@ func (s *Server) handleStartAppleAccountLogin(w http.ResponseWriter, r *http.Req
 		})
 		return
 	}
+	result.Session.AccountID = strings.TrimSpace(payload.AccountID)
+	result.Session.LoginIdentifier = normalizeAppleLoginIdentifier(payload.AppleID)
 	if err := s.store.SaveICloudSessionForOwner(ownerID, result.Session); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -3056,7 +3083,7 @@ func (s *Server) handleStartAppleAccountLogin(w http.ResponseWriter, r *http.Req
 		"success":   true,
 		"needs_2fa": false,
 		"message":   result.Message,
-		"session":   publicSessionForAppleID(sessions, result.Session.AppleID),
+		"session":   publicSessionForSavedLogin(sessions, result.Session),
 		"sessions":  sessions,
 	})
 }
@@ -3087,6 +3114,8 @@ func (s *Server) handleSubmitAppleAccount2FA(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	session.AccountID = strings.TrimSpace(pending.Session.AccountID)
+	session.LoginIdentifier = normalizeAppleLoginIdentifier(firstNonEmpty(pending.Session.LoginIdentifier, pending.Session.AppleID))
 	s.appleAccountLogins.delete(payload.PendingID)
 	if err := s.store.SaveICloudSessionForOwner(ownerID, session); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -3096,7 +3125,7 @@ func (s *Server) handleSubmitAppleAccount2FA(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":  true,
 		"message":  "新接口验证码登录成功，登录态已保存",
-		"session":  publicSessionForAppleID(sessions, session.AppleID),
+		"session":  publicSessionForSavedLogin(sessions, session),
 		"sessions": sessions,
 	})
 }
@@ -3120,16 +3149,26 @@ func (s *Server) handleCreateICloudMailbox(w http.ResponseWriter, r *http.Reques
 	ownerID := requestOwnerID(r, s.store)
 	var aliasParent Mailbox
 	if strings.EqualFold(strings.TrimSpace(payload.CreateMode), "alias") {
+		if len(accountIDs) != 1 {
+			writeError(w, http.StatusBadRequest, errCode("alias_account_invalid", "一键生成别名邮箱时请选择一个 Apple 账号", false))
+			return
+		}
 		state := s.store.SnapshotForMailboxList(ownerID)
 		needle := strings.TrimSpace(payload.AliasParent)
 		for _, mailbox := range state.Mailboxes {
-			if (mailbox.ID == needle || strings.EqualFold(mailbox.Email, needle)) && firstNonEmpty(mailbox.MailboxType, "privacy") != "alias" {
+			if firstNonEmpty(mailbox.MailboxType, "privacy") == "alias" {
+				continue
+			}
+			if needle != "" && (mailbox.ID == needle || strings.EqualFold(mailbox.Email, needle)) {
 				aliasParent = mailbox
 				break
 			}
+			if needle == "" && constantTimeEqual(mailbox.AccountID, accountIDs[0]) && (aliasParent.ID == "" || mailbox.CreatedAt.After(aliasParent.CreatedAt)) {
+				aliasParent = mailbox
+			}
 		}
 		if aliasParent.ID == "" {
-			writeError(w, http.StatusBadRequest, errCode("alias_parent_missing", "请选择或输入当前账号下已有的隐私邮箱作为别名归属", false))
+			writeError(w, http.StatusBadRequest, errCode("alias_parent_missing", "该 Apple 账号还没有普通隐私邮箱，请先创建一个普通隐私邮箱后再一键生成别名", false))
 			return
 		}
 		accountIDs = []string{aliasParent.AccountID}
@@ -7236,6 +7275,13 @@ func publicSessionForAccountID(sessions []publicICloudSession, accountID string)
 		return sessions[0]
 	}
 	return publicSession(nil)
+}
+
+func publicSessionForSavedLogin(sessions []publicICloudSession, saved ICloudSession) publicICloudSession {
+	if strings.TrimSpace(saved.AccountID) != "" {
+		return publicSessionForAccountID(sessions, saved.AccountID)
+	}
+	return publicSessionForAppleID(sessions, saved.AppleID)
 }
 
 func firstMap(rows []map[string]any) map[string]any {

@@ -5852,6 +5852,78 @@ func TestSaveICloudSessionForOwnerMergesLoginStates(t *testing.T) {
 	}
 }
 
+func TestSaveICloudSessionForOwnerMergesPhoneLoginAcrossInterfaces(t *testing.T) {
+	store := newTestStore(t)
+	ownerID := "owner-phone-merge"
+	oldSession := ICloudSession{
+		OwnerID: ownerID, AppleID: "primary@example.com", LoginIdentifier: "+86 138-0013-8000", DSID: "dsid-phone",
+		LoginStates: []LoginState{{Kind: LoginStateICloudWeb, Host: "www.icloud.com"}},
+	}
+	if err := store.SaveICloudSessionForOwner(ownerID, oldSession); err != nil {
+		t.Fatal(err)
+	}
+	first := store.ICloudSessionsForOwner(ownerID)
+	if len(first) != 1 || first[0].AccountID == "" {
+		t.Fatalf("first sessions = %+v", first)
+	}
+	newSession := ICloudSession{
+		OwnerID: ownerID, AccountID: first[0].AccountID, AppleID: "+8613800138000", LoginIdentifier: "+8613800138000",
+		LoginStates: []LoginState{{Kind: LoginStateAppleAccount, Host: "appleid.apple.com"}},
+	}
+	if err := store.SaveICloudSessionForOwner(ownerID, newSession); err != nil {
+		t.Fatal(err)
+	}
+	sessions := store.ICloudSessionsForOwner(ownerID)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1: %+v", len(sessions), sessions)
+	}
+	if sessions[0].AppleID != "primary@example.com" || sessions[0].LoginIdentifier != "+8613800138000" {
+		t.Fatalf("identity not preserved: %+v", sessions[0])
+	}
+	if !hasLoginStateKind(sessions[0].LoginStates, LoginStateICloudWeb) || !hasLoginStateKind(sessions[0].LoginStates, LoginStateAppleAccount) {
+		t.Fatalf("login states not merged: %+v", sessions[0].LoginStates)
+	}
+	if accounts := store.SnapshotForOwner(ownerID).Accounts; len(accounts) != 1 {
+		t.Fatalf("accounts = %d, want 1: %+v", len(accounts), accounts)
+	}
+}
+
+func TestDeleteICloudSessionKeepsMailboxData(t *testing.T) {
+	store := newTestStore(t)
+	ownerID := "owner-delete-session"
+	if err := store.SaveICloudSessionForOwner(ownerID, ICloudSession{AppleID: "delete@example.com", LoginIdentifier: "+8613800138000", DSID: "delete-dsid"}); err != nil {
+		t.Fatal(err)
+	}
+	session := store.ICloudSessionsForOwner(ownerID)[0]
+	if _, err := store.AddMailboxForOwner(ownerID, session.AccountID, "保留邮箱", "keep@icloud.com"); err != nil {
+		t.Fatal(err)
+	}
+	removed, preserved, err := store.DeleteICloudSessionForOwner(ownerID, session.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 || !preserved || len(store.ICloudSessionsForOwner(ownerID)) != 0 {
+		t.Fatalf("removed=%d preserved=%v sessions=%+v", removed, preserved, store.ICloudSessionsForOwner(ownerID))
+	}
+	state := store.SnapshotForOwner(ownerID)
+	if len(state.Mailboxes) != 1 || len(state.Accounts) != 1 || state.Accounts[0].ICloudStatus != ICloudStatusNeedLogin {
+		t.Fatalf("business data not preserved correctly: %+v", state)
+	}
+}
+
+func TestAppleAuthPendingStoreKeepsEditedAccountIdentity(t *testing.T) {
+	store := newAppleAuthPendingStore()
+	pending, err := store.put(&appleAuthSession{AppleID: "+86 138 0013 8000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.bindLoginIdentity(pending.ID, "acc_existing", "+86 138-0013-8000")
+	got, ok := store.get(pending.ID)
+	if !ok || got.Session.AccountID != "acc_existing" || got.Session.LoginIdentifier != "+8613800138000" {
+		t.Fatalf("pending identity = %+v, ok=%v", got.Session, ok)
+	}
+}
+
 func TestSyncICloudMailboxesIsolatesSlowAccounts(t *testing.T) {
 	oldTimeout := iCloudMailboxListAccountTimeout
 	iCloudMailboxListAccountTimeout = 120 * time.Millisecond

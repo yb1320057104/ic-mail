@@ -1313,11 +1313,11 @@
         <button class="nav-item" data-view="redemption" onclick="setActiveView('redemption')"><span class="nav-ico">⇄</span><span>兑换隐私邮箱</span><span class="count-dot" id="navRedemptionCount">0</span></button>
         <div class="nav-group-label">账号数据</div>
         <button class="nav-item" data-view="data-overview" onclick="setActiveView('data-overview')"><span class="nav-ico">⌂</span><span>数据仪表盘</span></button>
-        <button class="nav-item" data-view="data-accountManage" onclick="setActiveView('data-accountManage')"><span class="nav-ico">▣</span><span>账号归属</span></button>
-        <button class="nav-item" data-view="data-users" onclick="setActiveView('data-users')"><span class="nav-ico">◉</span><span>用户列表</span></button>
+        <button class="nav-item admin-data-nav" data-view="data-accountManage" onclick="setActiveView('data-accountManage')" hidden><span class="nav-ico">▣</span><span>账号归属</span></button>
+        <button class="nav-item admin-data-nav" data-view="data-users" onclick="setActiveView('data-users')" hidden><span class="nav-ico">◉</span><span>用户列表</span></button>
         <button class="nav-item" data-view="data-mailboxes" onclick="setActiveView('data-mailboxes')"><span class="nav-ico">✉</span><span>邮箱数据</span></button>
         <button class="nav-item" data-view="data-accounts" onclick="setActiveView('data-accounts')"><span class="nav-ico">◎</span><span>登录账号数据</span></button>
-        <button class="nav-item" data-view="data-sessions" onclick="setActiveView('data-sessions')"><span class="nav-ico">◫</span><span>用户登录态</span></button>
+        <button class="nav-item admin-data-nav" data-view="data-sessions" onclick="setActiveView('data-sessions')" hidden><span class="nav-ico">◫</span><span>用户登录态</span></button>
         <div class="nav-group-label admin-data-nav" hidden>平台管理</div>
         <button class="nav-item admin-data-nav" data-view="data-invites" onclick="setActiveView('data-invites')" hidden><span class="nav-ico">✦</span><span>注册邀请</span></button>
         <button class="nav-item admin-data-nav" data-view="data-announcements" onclick="setActiveView('data-announcements')" hidden><span class="nav-ico">▤</span><span>平台公告</span></button>
@@ -1524,7 +1524,7 @@
           <div class="toolbar"><button id="startScheduleButton" class="primary" onclick="quickStartMailboxScheduler()">一键开始创建</button><button id="stopScheduleButton" class="danger" onclick="stopMailboxScheduler()">停止自动创建</button><span id="scheduleStatus" class="muted">尚未启动；点击后立即执行第一轮。</span><span id="protoBatchProgress" class="muted"></span><span id="createSettingsStatus" class="muted"></span></div>
           <details class="guide" style="margin:16px 18px"><summary>高级设置（可选）</summary><div>
             <div class="field-grid"><label>标签<input id="protoLabel" placeholder="UPI-70-13"></label><label>备注<input id="protoNote" placeholder="选填"></label><label>手动创建接口<select id="createChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>自动创建接口<select id="scheduleCreateChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>每轮间隔分钟<input id="scheduleIntervalMinutes" type="number" min="1" max="1440" value="60"></label><label>轮内创建间隔秒<input id="scheduleRoundIntervalSeconds" type="number" min="1" max="600" value="120"></label></div>
-            <div class="field-grid"><label>创建类型<select id="createMode" onchange="toggleAliasCreateFields()"><option value="privacy">普通隐私邮箱</option><option value="alias">别名邮箱</option></select></label><label id="aliasParentField" hidden>所属隐私邮箱<input id="aliasParentMailbox" placeholder="输入隐私邮箱地址或邮箱ID"></label><label id="aliasCountField" hidden>别名数量<input id="aliasCount" type="number" min="1" max="100" value="1"></label><div id="aliasCreateHint" class="full hint" hidden>别名邮箱会使用所属隐私邮箱的 Apple 账号创建，并在邮箱池中显示归属关系。</div></div>
+            <div class="field-grid"><label>创建类型<select id="createMode" onchange="toggleAliasCreateFields()"><option value="privacy">普通隐私邮箱</option><option value="alias">一键生成别名邮箱</option></select></label><label id="aliasCountField" hidden>别名数量<input id="aliasCount" type="number" min="1" max="100" value="1"></label><div id="aliasCreateHint" class="full hint" hidden>只需选择一个 Apple 账号并填写数量；系统会自动使用该账号最近创建的普通隐私邮箱记录归属，无需手动填写父邮箱。</div></div>
             <div class="toolbar"><button id="createICloudButton" onclick="createICloudMailbox()">仅手动创建一轮</button><button id="saveCreateSettingsButton" type="button" onclick="saveCreateSettings()">保存高级设置</button></div>
           </div></details>
         </section>
@@ -1860,8 +1860,10 @@
       $('featureGuideModal').classList.remove('show');
     }
 
+    const ADMIN_DATA_VIEWS = new Set(['data-accountManage','data-users','data-sessions','data-invites','data-announcements','data-audit','data-operations']);
     function setActiveView(view) {
-      const normalized = viewMeta[view] ? view : 'overview';
+      let normalized = viewMeta[view] ? view : 'overview';
+      if (currentUser && !currentUser.is_admin && ADMIN_DATA_VIEWS.has(normalized)) normalized = 'data-overview';
       if ($('pageGuide')) $('pageGuide').innerHTML = `<strong>${esc(viewMeta[normalized][0])}</strong><span>${esc(viewDescriptions[normalized] || '')}</span><button type="button" onclick="openFeatureGuide('${normalized}')">查看本页教学</button>`;
       const meta = viewMeta[normalized];
       for (const button of document.querySelectorAll('.nav-item[data-view]')) {
@@ -1918,7 +1920,13 @@
     function syncAccountDataTheme(theme) {
       const frame = $('accountDataFrame');
       if (!frame || !frame.contentWindow) return;
-      frame.contentWindow.postMessage({type:'ipm-theme', theme:theme || document.body.dataset.theme || 'midnight'}, location.origin);
+      const css = getComputedStyle(document.body);
+      const read = name => css.getPropertyValue(name).trim();
+      frame.contentWindow.postMessage({
+        type:'ipm-theme',
+        theme:theme || document.body.dataset.theme || 'midnight',
+        palette:{bg:read('--bg'),bgSoft:read('--bg-soft'),panel:read('--panel'),card:read('--card'),text:read('--text'),muted:read('--muted'),faint:read('--faint'),line:read('--line'),lineStrong:read('--line-strong'),accent:read('--green'),accent2:read('--green-2'),onAccent:read('--on-accent'),thBg:read('--th-bg'),inputBg:read('--panel-2') || read('--bg-soft')}
+      }, location.origin);
     }
 
     function setDensity(density) {
@@ -2040,7 +2048,7 @@
 	  }
 	  if ($('renewInviteTopButton')) $('renewInviteTopButton').hidden = !!currentUser.is_admin;
 	  for (const item of document.querySelectorAll('.admin-data-nav')) item.hidden = !currentUser.is_admin;
-	  if (!currentUser.is_admin && ['data-invites','data-announcements','data-audit','data-operations'].includes(activeView)) setActiveView('data-overview');
+	  if (!currentUser.is_admin && ADMIN_DATA_VIEWS.has(activeView)) setActiveView('data-overview');
 	  if (currentUser.expired) openRenewInviteModal(false);
       return currentUser;
     }
@@ -3684,7 +3692,7 @@
           <td>${loginChip('旧接口', session.icloud_web_login_status || (iCloudWebLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudWebLoginSaved(session),session.icloud_web_login_checked,session.icloud_web_login_ok))}${sessionLoginError(session.icloud_web_login_error)}${sessionOldKeepAliveBadge(session)}</td>
           <td>${loginChip('IMAP', session.icloud_imap_login_status || (iCloudIMAPLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudIMAPLoginSaved(session),session.icloud_imap_login_checked,session.icloud_imap_login_ok))}${sessionLoginError(session.icloud_imap_login_error)}<br><span class="muted">${esc(session.icloud_imap_email || '-')}</span></td>
           <td><strong>${childCount}</strong> 个${childCount >= 750 ? '<br><span class="login-chip warn">隐私邮件已达上限</span>' : ''}</td><td>${esc(session.last_checked_at ? exactTimeText(session.last_checked_at) : '未检测')}</td>
-          <td>${sessionNeedsRelogin(session)?'<span class="login-chip warn">登录已过期，需要重新登录</span>':''}<div class="row-actions"><button type="button" class="primary" onclick="editICloudSession(${esc(JSON.stringify(key))})">${sessionNeedsRelogin(session)?'立即重新登录':'编辑/重新登录'}</button><button type="button" onclick="openAutoLoginLogs(${esc(JSON.stringify(session.account_id || ''))})">自动登录日志</button><button type="button" onclick="toggleSessionChildren(${esc(JSON.stringify(key))})">${expanded?'收起':'查看子邮箱'}</button></div></td></tr>
+          <td>${sessionNeedsRelogin(session)?'<span class="login-chip warn">登录已过期，需要重新登录</span>':''}<div class="row-actions"><button type="button" class="primary" onclick="editICloudSession(${esc(JSON.stringify(key))})">${sessionNeedsRelogin(session)?'立即重新登录':'编辑/重新登录'}</button><button type="button" onclick="openAutoLoginLogs(${esc(JSON.stringify(session.account_id || ''))})">自动登录日志</button><button type="button" onclick="toggleSessionChildren(${esc(JSON.stringify(key))})">${expanded?'收起':'查看子邮箱'}</button><button type="button" class="danger" onclick="deleteICloudSession(${esc(JSON.stringify(session.account_id || ''))},${esc(JSON.stringify(session.apple_id || ''))})">删除登录态</button></div></td></tr>
           <tr class="session-submailboxes" ${expanded?'':'hidden'}><td colspan="7"><div class="submailbox-grid">${childHTML}</div></td></tr>`;
       }).join('') : '<tr><td colspan="7" class="muted">没有符合筛选条件的登录态</td></tr>';
       renderCreateAccountSelector();
@@ -3716,7 +3724,7 @@
 
     function toggleAliasCreateFields(){
       const alias=(($('createMode')||{}).value||'privacy')==='alias';
-      for(const id of ['aliasParentField','aliasCountField','aliasCreateHint'])if($(id))$(id).hidden=!alias;
+      for(const id of ['aliasCountField','aliasCreateHint'])if($(id))$(id).hidden=!alias;
     }
     function clearSessionFilters() { sessionSearchQuery=''; sessionSearchIntentUntil=0; if ($('sessionSearch')) $('sessionSearch').value=''; if ($('sessionHealthFilter')) $('sessionHealthFilter').value=''; if ($('sessionKindFilter')) $('sessionKindFilter').value=''; renderICloudSessions(lastICloudSessions); }
 
@@ -3800,6 +3808,35 @@
 
     function sessionKey(session) {
       return session.account_id || session.apple_id || session.dsid_mask || '';
+    }
+
+    function adoptSavedICloudSession(session) {
+      if (!session || !sessionKey(session)) return;
+      activeICloudSessionKey = sessionKey(session);
+      sessionSearchQuery = '';
+      if ($('sessionSearch')) $('sessionSearch').value = '';
+      renderICloudSessions(lastICloudSessions);
+      updateSessionEditSummary(session);
+    }
+
+    async function deleteICloudSession(accountID, appleID) {
+      accountID = String(accountID || '').trim();
+      if (!accountID) { alert('该登录态缺少账号ID，无法删除'); return; }
+      const label = appleID || accountID;
+      if (!confirm(`确定删除登录态账号“${label}”吗？\n\n已生成的隐私邮箱和邮件数据会保留；自动登录绑定会被清理。`)) return;
+      try {
+        const data = await api('/api/icloud/session/' + encodeURIComponent(accountID), {method:'DELETE', loadingText:'正在删除登录态，请稍候...'});
+        expandedSessionAccounts.delete(accountID);
+        sessionMailboxRowsByAccount.delete(accountID);
+        if (activeICloudSessionAccountID() === accountID) {
+          activeICloudSessionKey = '';
+          closeSessionAccountModal();
+        }
+        log(data.message || '登录态账号已删除');
+        await refresh();
+      } catch (err) {
+        alert('删除登录态失败：' + err.message);
+      }
     }
 
     function setICloudSessionTab(key) {
@@ -4106,7 +4143,7 @@
           const message = `${data.message || '旧接口需要验证码'}；账号：${data.apple_id || appleId}；有效期：${data.expires_at || '-'}`;
           setLoginActionState(button, false, '', '旧接口登录', message, true); log(message); return;
         }
-        renderICloudSession(data.session); if (data.sessions) renderICloudSessions(data.sessions);
+        renderICloudSession(data.session); if (data.sessions) renderICloudSessions(data.sessions); adoptSavedICloudSession(data.session);
         const message = '旧接口登录成功并已保存：' + ((data.session || {}).apple_id || appleId);
         setLoginActionState(button, false, '', '旧接口登录', message, true); log(message); await refresh();
       } catch (err) {
@@ -4142,6 +4179,7 @@
         $('protocol2FA').value = '';
         renderICloudSession(data.session);
         if (data.sessions) renderICloudSessions(data.sessions);
+        adoptSavedICloudSession(data.session);
         const message = (data.message || '旧接口验证码验证成功，登录态已保存') + '：' + (data.session.apple_id || '-');
         setLoginActionState(button, false, '', '提交旧接口验证码', message, true); log(message);
         await refresh();
@@ -4168,7 +4206,7 @@
           const message = `${data.message || '新接口需要验证码'}；账号：${data.apple_id || appleId}；有效期：${data.expires_at || '-'}`;
           setLoginActionState(button, false, '', '新接口登录', message, true); log(message); return;
         }
-        renderICloudSession(data.session); if (data.sessions) renderICloudSessions(data.sessions);
+        renderICloudSession(data.session); if (data.sessions) renderICloudSessions(data.sessions); adoptSavedICloudSession(data.session);
         const message = '新接口登录成功并已保存：' + ((data.session || {}).apple_id || appleId);
         setLoginActionState(button, false, '', '新接口登录', message, true); log(message); await refresh();
       } catch (err) {
@@ -4204,6 +4242,7 @@
         $('protocol2FA').value = '';
         renderICloudSession(data.session);
         if (data.sessions) renderICloudSessions(data.sessions);
+        adoptSavedICloudSession(data.session);
         const message = (data.message || '新接口验证码验证成功，登录态已保存') + '：' + (data.session.apple_id || '-');
         setLoginActionState(button, false, '', '提交新接口验证码', message, true); log(message);
         await refresh();
@@ -4234,9 +4273,8 @@
       const note = $('protoNote').value.trim();
       const createChannel = createChannelPayloadValue('createChannelSelect');
       const createMode = (($('createMode')||{}).value||'privacy');
-      const aliasParent = (($('aliasParentMailbox')||{}).value||'').trim();
       const aliasCount = boundedInt('aliasCount', 1, 1, 100);
-      if(createMode==='alias'&&!aliasParent){progress.textContent='请先填写所属隐私邮箱地址或邮箱ID';return}
+      if(createMode==='alias'&&accountIDs.length!==1){progress.textContent='一键生成别名邮箱时请选择一个 Apple 账号';return}
 
       button.disabled = true;
       progress.textContent = `创建中：${createChannelLabel(createChannel)}，参与账号=${accountNames}`;
@@ -4250,7 +4288,7 @@
           note,
           create_channel: createChannel,
           create_mode: createMode,
-          alias_parent: aliasParent,
+          alias_parent: '',
           alias_count: aliasCount
         })});
         if (data.queued) {

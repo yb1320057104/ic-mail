@@ -162,20 +162,21 @@ type WebSession struct {
 }
 
 type Account struct {
-	ID            string    `json:"id"`
-	OwnerID       string    `json:"owner_id,omitempty"`
-	Label         string    `json:"label"`
-	AppleID       string    `json:"apple_id"`
-	Status        string    `json:"status"`
-	ICloudStatus  string    `json:"icloud_status"`
-	Note          string    `json:"note"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	Category      string    `json:"category,omitempty"`
-	Tags          []string  `json:"tags,omitempty"`
-	CreatedBy     string    `json:"created_by,omitempty"`
-	AssignedBy    string    `json:"assigned_by,omitempty"`
-	ProxyPoolNode string    `json:"proxy_pool_node,omitempty"`
+	ID              string    `json:"id"`
+	OwnerID         string    `json:"owner_id,omitempty"`
+	Label           string    `json:"label"`
+	AppleID         string    `json:"apple_id"`
+	LoginIdentifier string    `json:"login_identifier,omitempty"`
+	Status          string    `json:"status"`
+	ICloudStatus    string    `json:"icloud_status"`
+	Note            string    `json:"note"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	Category        string    `json:"category,omitempty"`
+	Tags            []string  `json:"tags,omitempty"`
+	CreatedBy       string    `json:"created_by,omitempty"`
+	AssignedBy      string    `json:"assigned_by,omitempty"`
+	ProxyPoolNode   string    `json:"proxy_pool_node,omitempty"`
 }
 
 type InviteCode struct {
@@ -321,6 +322,7 @@ type ICloudSession struct {
 	AccountID          string          `json:"account_id,omitempty"`
 	SavedAt            time.Time       `json:"saved_at"`
 	AppleID            string          `json:"apple_id,omitempty"`
+	LoginIdentifier    string          `json:"login_identifier,omitempty"`
 	DSID               string          `json:"dsid"`
 	ClientID           string          `json:"client_id"`
 	ClientBuildNumber  string          `json:"client_build_number"`

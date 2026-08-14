@@ -442,6 +442,15 @@
     body[data-theme="midnight"] input, body[data-theme="midnight"] textarea, body[data-theme="midnight"] select,
     body[data-theme="obsidian"] input, body[data-theme="obsidian"] textarea, body[data-theme="obsidian"] select,
     body[data-theme="aurora"] input, body[data-theme="aurora"] textarea, body[data-theme="aurora"] select { color:#eef6ff!important; background:#061a3b!important; }
+    /* 嵌入“创建隐私邮箱”工作台时，直接使用父页面的实际调色板，避免同名主题出现两套颜色。 */
+    body.embedded-mode { color:var(--ipm-text,#eaf2ff)!important; background:var(--ipm-bg,#020817)!important; }
+    body.embedded-mode header, body.embedded-mode .sidebar { color:var(--ipm-text,#eaf2ff)!important; background:var(--ipm-panel,#061630)!important; border-color:var(--ipm-line,rgba(59,130,246,.26))!important; }
+    body.embedded-mode .panel, body.embedded-mode .account-card, body.embedded-mode .stat-card, body.embedded-mode dialog { color:var(--ipm-text,#eaf2ff)!important; background:var(--ipm-card,var(--ipm-panel,#061630))!important; border-color:var(--ipm-line,rgba(59,130,246,.26))!important; }
+    body.embedded-mode .panel-head, body.embedded-mode .table-filter, body.embedded-mode th { color:var(--ipm-text,#eaf2ff)!important; background:var(--ipm-th-bg,var(--ipm-bg-soft,#04132d))!important; border-color:var(--ipm-line,rgba(59,130,246,.26))!important; }
+    body.embedded-mode input, body.embedded-mode textarea, body.embedded-mode select, body.embedded-mode .btn { color:var(--ipm-text,#eaf2ff)!important; background:var(--ipm-input-bg,var(--ipm-bg-soft,#04132d))!important; border-color:var(--ipm-line-strong,rgba(96,165,250,.42))!important; }
+    body.embedded-mode .muted, body.embedded-mode .subtitle, body.embedded-mode .panel-head p, body.embedded-mode .page-guide span { color:var(--ipm-muted,#9fc2ef)!important; }
+    body.embedded-mode .btn.primary, body.embedded-mode .nav button.active { color:var(--ipm-on-accent,#fff)!important; background:linear-gradient(135deg,var(--ipm-accent,#2563eb),var(--ipm-accent-2,#0f3d74))!important; }
+    body.embedded-mode .page-guide { color:var(--ipm-text,#eaf2ff)!important; background:var(--ipm-bg-soft,#04132d)!important; border-color:var(--ipm-line-strong,rgba(96,165,250,.42))!important; }
   </style>
 </head>
 <body>
@@ -454,15 +463,15 @@
       </div>
       <nav class="nav">
         <button class="active" data-view="overview" onclick="setActiveView('overview')"><span class="nav-icon">⌂</span>仪表盘</button>
-        <button data-view="accountManage" onclick="setActiveView('accountManage')"><span class="nav-icon">▣</span>账号管理</button>
-        <button data-view="users" onclick="setActiveView('users')"><span class="nav-icon">◉</span>用户列表</button>
+        <button class="admin-only" data-view="accountManage" onclick="setActiveView('accountManage')" hidden><span class="nav-icon">▣</span>账号管理</button>
+        <button class="admin-only" data-view="users" onclick="setActiveView('users')" hidden><span class="nav-icon">◉</span>用户列表</button>
         <button data-view="mailboxes" onclick="setActiveView('mailboxes')"><span class="nav-icon">✉</span>隐私邮箱</button>
         <button data-view="accounts" onclick="setActiveView('accounts')"><span class="nav-icon">◎</span>登录账号</button>
-        <button data-view="sessions" onclick="setActiveView('sessions')"><span class="nav-icon">◫</span>用户登录态</button>
-        <button class="admin-only" data-view="invites" onclick="setActiveView('invites')"><span class="nav-icon">✦</span>注册邀请</button>
-        <button class="admin-only" data-view="announcements" onclick="setActiveView('announcements')"><span class="nav-icon">▤</span>平台公告</button>
-        <button class="admin-only" data-view="audit" onclick="setActiveView('audit')"><span class="nav-icon">◉</span>安全审计</button>
-		<button class="admin-only" data-view="operations" onclick="setActiveView('operations');loadOperations()"><span class="nav-icon">⚙</span>运维中心</button>
+        <button class="admin-only" data-view="sessions" onclick="setActiveView('sessions')" hidden><span class="nav-icon">◫</span>用户登录态</button>
+        <button class="admin-only" data-view="invites" onclick="setActiveView('invites')" hidden><span class="nav-icon">✦</span>注册邀请</button>
+        <button class="admin-only" data-view="announcements" onclick="setActiveView('announcements')" hidden><span class="nav-icon">▤</span>平台公告</button>
+        <button class="admin-only" data-view="audit" onclick="setActiveView('audit')" hidden><span class="nav-icon">◉</span>安全审计</button>
+		<button class="admin-only" data-view="operations" onclick="setActiveView('operations');loadOperations()" hidden><span class="nav-icon">⚙</span>运维中心</button>
         <button data-view="logs" onclick="setActiveView('logs')"><span class="nav-icon">☰</span>运行日志</button>
         <button onclick="refresh()"><span class="nav-icon">↻</span>刷新数据</button>
       </nav>
@@ -511,7 +520,7 @@
           <div class="stat-card"><strong id="autoLoginSuccessRate">-</strong><span>自动接码登录成功率</span></div>
         </section>
 
-        <section class="panel view-section" id="accountManagePanel" data-view="accountManage">
+        <section class="panel view-section admin-only" id="accountManagePanel" data-view="accountManage" hidden>
           <div class="panel-head">
             <div>
               <h2>网站账号管理</h2>
@@ -523,10 +532,10 @@
           <div class="empty" id="accountCardsEmpty" hidden>暂无账号数据</div>
         </section>
 
-        <section class="panel view-section" id="usersPanel" data-view="users">
+        <section class="panel view-section admin-only" id="usersPanel" data-view="users" hidden>
           <div class="panel-head">
             <div><h2>用户列表</h2><p>管理员显示全部用户；普通用户只显示自己。</p></div>
-			<button class="btn primary admin-only" onclick="openCreateUserDialog()">添加用户</button>
+			<button class="btn primary admin-only" onclick="openCreateUserDialog()" hidden>添加用户</button>
           </div>
           <div class="table-filter"><label>搜索用户<input id="userSearch" placeholder="用户名、用户ID、邀请ID" oninput="renderData()"></label><label>角色<select id="userRoleFilter" onchange="renderData()"><option value="">全部角色</option><option value="admin">管理员</option><option value="user">普通用户</option></select></label><label>状态<select id="userStatusFilter" onchange="renderData()"><option value="">全部状态</option><option value="active">正常</option><option value="disabled">停用</option></select></label><button onclick="clearManageFilters('user')">清空</button></div>
           <div class="table-wrap">
@@ -585,7 +594,7 @@
 		  </form>
 		</dialog>
 
-        <section class="panel view-section" id="sessionsPanel" data-view="sessions">
+        <section class="panel view-section admin-only" id="sessionsPanel" data-view="sessions" hidden>
           <div class="panel-head">
             <div><h2>所有用户登录态</h2><p>管理员查看全部平台用户的新接口、旧接口、IMAP、子邮箱数量、检测时间和异常原因。</p></div>
           </div>
@@ -594,7 +603,7 @@
           <div class="empty" id="manageSessionsEmpty" hidden>没有符合条件的用户登录态</div>
         </section>
 
-        <section class="panel view-section admin-only" data-view="invites">
+        <section class="panel view-section admin-only" data-view="invites" hidden>
           <div class="panel-head"><div><h2>注册邀请码</h2><p>可按批次批量生成和导出；TXT 文件每行一个邀请码。</p></div><div class="panel-tools"><select id="inviteExportBatch" title="选择导出批次"><option value="">全部批次</option></select><button class="btn" onclick="exportInvites()">导出 TXT</button></div></div>
           <div class="form-grid" id="inviteForm">
             <label class="field">批次名称<input id="inviteName" placeholder="例如：团队A八月邀请"></label>
@@ -608,14 +617,14 @@
           <div class="empty" id="invitesEmpty" hidden>暂无邀请码</div>
         </section>
 
-        <section class="panel view-section admin-only" data-view="audit">
+        <section class="panel view-section admin-only" data-view="audit" hidden>
           <div class="panel-head"><div><h2>安全审计</h2><p>最近的登录、注册、管理员和数据修改操作。</p></div></div>
           <div class="table-filter"><label>搜索审计<input id="auditSearch" placeholder="操作者、事件、路径、IP" oninput="renderData()"></label><label>结果<select id="auditResultFilter" onchange="renderData()"><option value="">全部结果</option><option value="success">成功</option><option value="failed">失败</option></select></label><button onclick="clearManageFilters('audit')">清空</button></div>
           <div class="table-wrap"><table><thead><tr><th>时间</th><th>操作者</th><th>角色</th><th>事件</th><th>目标</th><th>来源 IP</th><th>结果</th></tr></thead><tbody id="auditEvents"></tbody></table></div>
           <div class="empty" id="auditEventsEmpty" hidden>暂无审计记录</div>
         </section>
 
-        <section class="panel view-section admin-only" data-view="announcements">
+        <section class="panel view-section admin-only" data-view="announcements" hidden>
           <div class="panel-head"><div><h2>平台公告</h2><p>只有管理员可以发布；普通用户登录后会自动弹出未读公告，确认已读后不再重复显示。</p></div></div>
           <div class="form-grid">
             <label class="field">公告标题<input id="announcementPublishTitle" maxlength="100" placeholder="请输入公告标题"></label>
@@ -626,7 +635,7 @@
           <div class="empty" id="announcementsEmpty" hidden>暂无公告</div>
         </section>
 
-		<section class="panel view-section admin-only" data-view="operations">
+		<section class="panel view-section admin-only" data-view="operations" hidden>
 		  <div class="panel-head"><div><h2>运维中心</h2><p>查看 SQLite、后台任务、运行告警、数据库备份和用户回收站。</p></div><button class="btn primary" onclick="createDatabaseBackup()">立即备份</button></div>
 		  <div class="stats"><div class="stat-card"><strong id="opsDbSize">-</strong><span>数据库大小</span></div><div class="stat-card"><strong id="opsDiskFree">-</strong><span>磁盘剩余</span></div><div class="stat-card"><strong id="opsUptime">-</strong><span>运行时间</span></div><div class="stat-card"><strong id="opsUnhealthy">0</strong><span>异常登录态</span></div><div class="stat-card"><strong id="opsBackupCount">0</strong><span>可用备份</span></div></div>
 		  <div id="opsAlerts" class="notice" hidden></div>
@@ -662,6 +671,9 @@
     window.addEventListener('message', event => {
       if (event.origin !== location.origin || !event.data || event.data.type !== 'ipm-theme') return;
       document.body.dataset.theme = String(event.data.theme || 'midnight');
+      const palette = event.data.palette || {};
+      const variables = {bg:'--ipm-bg',bgSoft:'--ipm-bg-soft',panel:'--ipm-panel',card:'--ipm-card',text:'--ipm-text',muted:'--ipm-muted',faint:'--ipm-faint',line:'--ipm-line',lineStrong:'--ipm-line-strong',accent:'--ipm-accent',accent2:'--ipm-accent-2',onAccent:'--ipm-on-accent',thBg:'--ipm-th-bg',inputBg:'--ipm-input-bg'};
+      for (const [key, variable] of Object.entries(variables)) if (typeof palette[key] === 'string' && palette[key].trim()) document.body.style.setProperty(variable, palette[key]);
     });
     let selectedOwner = 'all';
     const viewStorageKey = 'ipm_manage_active_view';
@@ -774,8 +786,10 @@
       const el = $(id);
       if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
     }
+    const ADMIN_MANAGE_VIEWS = new Set(['accountManage','users','sessions','invites','announcements','audit','operations']);
     function setActiveView(view) {
-      const normalized = viewMeta[view] ? view : 'overview';
+      let normalized = viewMeta[view] ? view : 'overview';
+      if (currentUser && !currentUser.is_admin && ADMIN_MANAGE_VIEWS.has(normalized)) normalized = 'overview';
       if ($('pageGuide')) $('pageGuide').innerHTML = `<strong>${esc(viewMeta[normalized])}</strong><span>${esc(viewDescriptions[normalized] || '')}</span><button class="btn" type="button" onclick="openManageGuide('${normalized}')">查看本页教学</button>`;
       for (const button of document.querySelectorAll('.nav button[data-view]')) {
         button.classList.toggle('active', button.dataset.view === normalized);
@@ -859,7 +873,7 @@
       if (!data.authenticated) { location.href = '/login'; throw new Error('未登录'); }
       currentUser = data.user;
 	  document.querySelectorAll('.admin-only').forEach(el => { el.hidden = !currentUser.is_admin; });
-	  if (!currentUser.is_admin && ['invites','announcements','audit','operations'].includes(localStorage.getItem(viewStorageKey))) setActiveView('overview');
+	  if (!currentUser.is_admin && ADMIN_MANAGE_VIEWS.has(localStorage.getItem(viewStorageKey))) setActiveView('overview');
       $('whoami').textContent = `当前账号：${currentUser.username}${currentUser.is_admin ? ' / 管理员，可查看全部数据' : ' / 普通用户，仅查看自己数据'}`;
     }
     function renderEmpty(id, rows) {

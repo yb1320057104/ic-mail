@@ -55,6 +55,8 @@ type appleAuthEndpoints struct {
 type appleAuthSession struct {
 	Endpoints           appleAuthEndpoints
 	AppleID             string
+	AccountID           string
+	LoginIdentifier     string
 	ClientID            string
 	FrameID             string
 	UserAgent           string
@@ -130,6 +132,18 @@ type appleAuthPending struct {
 type appleAuthPendingStore struct {
 	mu    sync.Mutex
 	items map[string]appleAuthPending
+}
+
+func (s *appleAuthPendingStore) bindLoginIdentity(id, accountID, loginIdentifier string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending, ok := s.items[strings.TrimSpace(id)]
+	if !ok || pending.Session == nil {
+		return
+	}
+	pending.Session.AccountID = strings.TrimSpace(accountID)
+	pending.Session.LoginIdentifier = normalizeAppleLoginIdentifier(loginIdentifier)
+	s.items[strings.TrimSpace(id)] = pending
 }
 
 func NewAppleAuthClient() *AppleAuthClient {
