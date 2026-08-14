@@ -234,10 +234,11 @@ func explainFixedProxyError(proxyURL *url.URL, err error) error {
 }
 
 func (s *Server) appleHTTPClientForOwner(ownerID string) (*http.Client, error) {
-	return s.appleHTTPClientForAccount(ownerID, "", "")
+	return s.appleHTTPClientForAccount(context.Background(), ownerID, "", "")
 }
 
-func (s *Server) appleHTTPClientForAccount(ownerID, accountID, appleID string) (*http.Client, error) {
+func (s *Server) appleHTTPClientForAccount(ctx context.Context, ownerID, accountID, appleID string) (*http.Client, error) {
+	_ = ctx
 	if s.proxyPool != nil {
 		if client, selected, err := s.proxyPool.client(ownerID, accountID, appleID); selected {
 			if err != nil {
@@ -261,20 +262,65 @@ func (s *Server) appleHTTPClientForAccount(ownerID, accountID, appleID string) (
 	return client, nil
 }
 
-func (s *Server) iCloudClientForAccount(ownerID, accountID, appleID string) (*ICloudClient, error) {
-	client, err := s.appleHTTPClientForAccount(ownerID, accountID, appleID)
+func (s *Server) accountAppleID(ownerID, accountID string) string {
+	if accountID == "" {
+		return ""
+	}
+	if session, ok := s.sessionForOwnerAccount(ownerID, accountID); ok {
+		return session.AppleID
+	}
+	return ""
+}
+
+func (s *Server) iCloudClientForAccount(ctx context.Context, ownerID, accountID string) (*ICloudClient, error) {
+	client, err := s.appleHTTPClientForAccount(ctx, ownerID, accountID, s.accountAppleID(ownerID, accountID))
 	if err != nil {
 		return nil, err
 	}
 	return NewICloudClientWithHTTPClient(client), nil
 }
 
-func (s *Server) appleAuthClientForAccount(ownerID, accountID, appleID string) (*AppleAuthClient, error) {
-	client, err := s.appleHTTPClientForAccount(ownerID, accountID, appleID)
+func (s *Server) appleAuthClientForAccount(ctx context.Context, ownerID, accountID string) (*AppleAuthClient, error) {
+	client, err := s.appleHTTPClientForAccount(ctx, ownerID, accountID, s.accountAppleID(ownerID, accountID))
 	if err != nil {
 		return nil, err
 	}
 	return NewAppleAuthClientWithHTTPClient(client), nil
+}
+
+func (s *Server) appleAuthClientForLogin(ctx context.Context, ownerID, accountID, appleID string) (*AppleAuthClient, error) {
+	client, err := s.appleHTTPClientForAccount(ctx, ownerID, accountID, appleID)
+	if err != nil {
+		return nil, err
+	}
+	return NewAppleAuthClientWithHTTPClient(client), nil
+}
+
+// proxyURLForAccount returns the isolated per-user proxy that IMAP and other
+// protocol clients should use. Pool nodes take precedence over the user's
+// fixed proxy, matching the Apple HTTP client selection above.
+func (s *Server) proxyURLForAccount(ctx context.Context, ownerID, accountID string) (string, ProxyPoolNode, error) {
+	_ = ctx
+	nodeName := s.store.ProxyPoolNodeForAccount(ownerID, accountID, "")
+	if nodeName != "" && s.proxyPool != nil {
+		port, err := s.proxyPool.ensure(ownerID, nodeName)
+		if err != nil {
+			return "", ProxyPoolNode{Name: nodeName}, errCode("proxy_pool_unavailable", "账号代理异常，已停止请求："+err.Error(), true)
+		}
+		return fmt.Sprintf("http://127.0.0.1:%d", port), ProxyPoolNode{Name: nodeName}, nil
+	}
+	config, ok := s.store.UserProxyConfig(ownerID)
+	if !ok || !config.Enabled || config.URLCipher == "" {
+		return "", ProxyPoolNode{}, nil
+	}
+	raw, err := decryptAutoSecret(s.cfg.AutoLoginSecret, config.URLCipher)
+	if err != nil {
+		return "", ProxyPoolNode{}, errCode("proxy_decrypt_failed", "代理配置无法解密，已停止请求", false)
+	}
+	if _, err = validateFixedProxyURL(raw); err != nil {
+		return "", ProxyPoolNode{}, err
+	}
+	return raw, ProxyPoolNode{}, nil
 }
 
 func (s *Server) iCloudClientForOwner(ownerID string) (*ICloudClient, error) {

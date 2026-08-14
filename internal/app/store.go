@@ -192,12 +192,63 @@ func (s *FileStore) SaveAutoLoginBinding(binding AutoLoginBinding) error {
 	defer s.mu.Unlock()
 	for i := range s.state.AutoLoginBindings {
 		if s.state.AutoLoginBindings[i].OwnerID == binding.OwnerID && s.state.AutoLoginBindings[i].AccountID == binding.AccountID {
-			s.state.AutoLoginBindings[i] = cloneAutoLoginBinding(binding)
+			s.state.AutoLoginBindings[i] = binding
 			return s.saveLocked()
 		}
 	}
-	s.state.AutoLoginBindings = append(s.state.AutoLoginBindings, cloneAutoLoginBinding(binding))
+	s.state.AutoLoginBindings = append(s.state.AutoLoginBindings, binding)
 	return s.saveLocked()
+}
+
+func (s *FileStore) SetAutoLoginBindingEnabled(ownerID, accountID string, enabled bool) (AutoLoginBinding, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginBindings {
+		binding := &s.state.AutoLoginBindings[i]
+		if binding.OwnerID != ownerID || binding.AccountID != accountID {
+			continue
+		}
+		binding.Enabled = enabled
+		binding.UpdatedAt = time.Now()
+		binding.LastError = ""
+		binding.NextAttemptAt = time.Time{}
+		if enabled {
+			binding.Status = "等待登录态异常时自动登录"
+		} else {
+			binding.Status = "已暂停自动接码登录"
+		}
+		if err := s.saveLocked(); err != nil {
+			return AutoLoginBinding{}, true, err
+		}
+		return *binding, true, nil
+	}
+	return AutoLoginBinding{}, false, nil
+}
+
+// SaveAutoLoginProgress updates only runtime fields and never re-enables a
+// binding that was paused while an automatic login attempt was running.
+func (s *FileStore) SaveAutoLoginProgress(progress AutoLoginBinding) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginBindings {
+		binding := &s.state.AutoLoginBindings[i]
+		if binding.OwnerID != progress.OwnerID || binding.AccountID != progress.AccountID {
+			continue
+		}
+		if !binding.Enabled {
+			return false, nil
+		}
+		binding.Status = progress.Status
+		binding.LastError = progress.LastError
+		binding.LastAttemptAt = progress.LastAttemptAt
+		binding.LastSuccessAt = progress.LastSuccessAt
+		binding.NextAttemptAt = progress.NextAttemptAt
+		if err := s.saveLocked(); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (s *FileStore) AutoLoginBinding(ownerID, accountID string) (AutoLoginBinding, bool) {
@@ -205,7 +256,7 @@ func (s *FileStore) AutoLoginBinding(ownerID, accountID string) (AutoLoginBindin
 	defer s.mu.Unlock()
 	for _, item := range s.state.AutoLoginBindings {
 		if item.OwnerID == ownerID && item.AccountID == accountID {
-			return cloneAutoLoginBinding(item), true
+			return item, true
 		}
 	}
 	return AutoLoginBinding{}, false
@@ -214,18 +265,74 @@ func (s *FileStore) AutoLoginBinding(ownerID, accountID string) (AutoLoginBindin
 func (s *FileStore) AutoLoginBindings() []AutoLoginBinding {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]AutoLoginBinding, 0, len(s.state.AutoLoginBindings))
-	for _, item := range s.state.AutoLoginBindings {
-		out = append(out, cloneAutoLoginBinding(item))
-	}
-	return out
+	return append([]AutoLoginBinding(nil), s.state.AutoLoginBindings...)
 }
 
-func cloneAutoLoginBinding(in AutoLoginBinding) AutoLoginBinding {
-	out := in
-	out.Logs = append([]AutoLoginAttemptLog(nil), in.Logs...)
-	for i := range out.Logs {
-		out.Logs[i].Steps = append([]AutoLoginLogStep(nil), in.Logs[i].Steps...)
+func (s *FileStore) StartAutoLoginAttempt(ownerID, accountID, appleID string) (AutoLoginAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row := AutoLoginAttempt{ID: s.nextIDLocked("autolog"), OwnerID: strings.TrimSpace(ownerID), AccountID: strings.TrimSpace(accountID), AppleID: strings.TrimSpace(appleID), Status: "running", StartedAt: time.Now()}
+	row.Steps = append(row.Steps, AutoLoginStep{Stage: "start", Message: "自动接码登录任务开始", OK: true, At: row.StartedAt})
+	s.state.AutoLoginLogs = append(s.state.AutoLoginLogs, row)
+	// Each account keeps only its latest ten attempts; other accounts are untouched.
+	seen := 0
+	kept := make([]AutoLoginAttempt, 0, len(s.state.AutoLoginLogs))
+	for i := len(s.state.AutoLoginLogs) - 1; i >= 0; i-- {
+		item := s.state.AutoLoginLogs[i]
+		if item.OwnerID == row.OwnerID && item.AccountID == row.AccountID {
+			seen++
+			if seen > 10 {
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	s.state.AutoLoginLogs = kept
+	return row, s.saveLocked()
+}
+
+func (s *FileStore) AppendAutoLoginStep(id, stage, message, code string, ok bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginLogs {
+		if s.state.AutoLoginLogs[i].ID == id {
+			s.state.AutoLoginLogs[i].Steps = append(s.state.AutoLoginLogs[i].Steps, AutoLoginStep{Stage: stage, Message: message, Code: code, OK: ok, At: time.Now()})
+			return s.saveLocked()
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) FinishAutoLoginAttempt(id, status, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.AutoLoginLogs {
+		if s.state.AutoLoginLogs[i].ID == id {
+			s.state.AutoLoginLogs[i].Status = status
+			s.state.AutoLoginLogs[i].Error = strings.TrimSpace(message)
+			s.state.AutoLoginLogs[i].FinishedAt = time.Now()
+			return s.saveLocked()
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) AutoLoginAttempts(ownerID, accountID string, limit int) []AutoLoginAttempt {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > 10 {
+		limit = 10
+	}
+	out := make([]AutoLoginAttempt, 0, limit)
+	for i := len(s.state.AutoLoginLogs) - 1; i >= 0 && len(out) < limit; i-- {
+		row := s.state.AutoLoginLogs[i]
+		if row.OwnerID == ownerID && row.AccountID == accountID {
+			row.Steps = append([]AutoLoginStep(nil), row.Steps...)
+			out = append(out, row)
+		}
 	}
 	return out
 }
@@ -248,20 +355,11 @@ func (s *FileStore) UserProxyConfig(ownerID string) (UserProxyConfig, bool) {
 	defer s.mu.Unlock()
 	for _, config := range s.state.UserProxyConfigs {
 		if constantTimeEqual(config.OwnerID, ownerID) {
+			config.PoolNodes = append([]ProxyPoolNode(nil), config.PoolNodes...)
 			return config, true
 		}
 	}
 	return UserProxyConfig{}, false
-}
-
-func (s *FileStore) UserProxyConfigs() []UserProxyConfig {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := append([]UserProxyConfig(nil), s.state.UserProxyConfigs...)
-	for i := range out {
-		out[i].PoolNodes = append([]ProxyPoolNode(nil), out[i].PoolNodes...)
-	}
-	return out
 }
 
 func (s *FileStore) SaveAccountProxyPoolNode(ownerID, accountID, node string) error {
@@ -273,8 +371,9 @@ func (s *FileStore) SaveAccountProxyPoolNode(ownerID, accountID, node string) er
 			s.state.Accounts[i].ProxyPoolNode = node
 			s.state.Accounts[i].UpdatedAt = time.Now()
 			for j := range s.state.ICloudSessions {
-				if constantTimeEqual(s.state.ICloudSessions[j].OwnerID, ownerID) && constantTimeEqual(s.state.ICloudSessions[j].AccountID, accountID) {
-					s.state.ICloudSessions[j].ProxyPoolNode = node
+				if s.state.ICloudSessions[j].OwnerID == ownerID && s.state.ICloudSessions[j].AccountID == accountID {
+					s.state.ICloudSessions[j].ProxyNodeTag = node
+					s.state.ICloudSessions[j].ProxyNodeName = node
 				}
 			}
 			return s.saveLocked()
@@ -1254,6 +1353,21 @@ func (s *FileStore) ICloudSessionForOwnerAccount(ownerID, accountID string) (ICl
 	return ICloudSession{}, false
 }
 
+func (s *FileStore) SetICloudSessionProxy(ownerID, accountID, nodeTag, nodeName string) (ICloudSession, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID, accountID = strings.TrimSpace(ownerID), strings.TrimSpace(accountID)
+	for i := range s.state.ICloudSessions {
+		if constantTimeEqual(s.state.ICloudSessions[i].OwnerID, ownerID) && constantTimeEqual(s.state.ICloudSessions[i].AccountID, accountID) {
+			s.state.ICloudSessions[i].ProxyNodeTag = strings.TrimSpace(nodeTag)
+			s.state.ICloudSessions[i].ProxyNodeName = strings.TrimSpace(nodeName)
+			out := cloneICloudSession(s.state.ICloudSessions[i])
+			return out, true, s.saveLocked()
+		}
+	}
+	return ICloudSession{}, false, nil
+}
+
 func (s *FileStore) FindAccountByID(id string) (Account, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2042,6 +2156,72 @@ func (s *FileStore) RedeemMultipleCodes(poolToken string, codes []string, health
 	return resultCodes, resultBoxes, nil
 }
 
+func (s *FileStore) CreateRedemptionOrder(poolToken, password string, codes []RedemptionCode, boxes []Mailbox) (RedemptionOrder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	password = strings.TrimSpace(password)
+	if len([]rune(password)) < 4 || len([]rune(password)) > 64 {
+		return RedemptionOrder{}, errCode("invalid_lookup_password", "查单密码需为 4 到 64 个字符", false)
+	}
+	var pool *RedemptionPool
+	for i := range s.state.RedemptionPools {
+		if s.state.RedemptionPools[i].Enabled && constantTimeEqual(s.state.RedemptionPools[i].PublicToken, poolToken) {
+			pool = &s.state.RedemptionPools[i]
+			break
+		}
+	}
+	if pool == nil {
+		return RedemptionOrder{}, errCode("pool_not_found", "兑换池不存在或已停用", false)
+	}
+	row := RedemptionOrder{ID: s.nextIDLocked("order"), PoolID: pool.ID, OwnerID: pool.OwnerID, PasswordHash: sessionTokenHash(password), RedeemedAt: time.Now()}
+	for _, code := range codes {
+		row.CodeIDs = append(row.CodeIDs, code.ID)
+	}
+	for _, mailbox := range boxes {
+		row.MailboxIDs = append(row.MailboxIDs, mailbox.ID)
+	}
+	s.state.RedemptionOrders = append(s.state.RedemptionOrders, row)
+	return row, s.saveLocked()
+}
+
+func (s *FileStore) RedemptionOrdersByPassword(poolToken, password string) ([]RedemptionOrder, []Mailbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pool *RedemptionPool
+	for i := range s.state.RedemptionPools {
+		if s.state.RedemptionPools[i].Enabled && constantTimeEqual(s.state.RedemptionPools[i].PublicToken, poolToken) {
+			pool = &s.state.RedemptionPools[i]
+			break
+		}
+	}
+	if pool == nil {
+		return nil, nil, errCode("pool_not_found", "兑换池不存在或已停用", false)
+	}
+	hash := sessionTokenHash(strings.TrimSpace(password))
+	orders := make([]RedemptionOrder, 0)
+	boxes := make([]Mailbox, 0)
+	mailboxByID := make(map[string]Mailbox, len(s.state.Mailboxes))
+	for _, mailbox := range s.state.Mailboxes {
+		mailboxByID[mailbox.ID] = mailbox
+	}
+	for i := len(s.state.RedemptionOrders) - 1; i >= 0; i-- {
+		row := s.state.RedemptionOrders[i]
+		if row.PoolID != pool.ID || !constantTimeEqual(row.PasswordHash, hash) {
+			continue
+		}
+		orders = append(orders, row)
+		for _, id := range row.MailboxIDs {
+			if mailbox, ok := mailboxByID[id]; ok {
+				boxes = append(boxes, mailbox)
+			}
+		}
+	}
+	if len(orders) == 0 {
+		return nil, nil, errCode("order_not_found", "未找到与该查单密码匹配的兑换记录", false)
+	}
+	return orders, boxes, nil
+}
+
 func (s *FileStore) RotateRedemptionCode(ownerID, code string) (RedemptionCode, []Mailbox, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2447,9 +2627,10 @@ func cloneState(in State) State {
 	out.WebSessions = append([]WebSession(nil), in.WebSessions...)
 	out.Announcements = append([]Announcement(nil), in.Announcements...)
 	out.AnnouncementReads = append([]AnnouncementRead(nil), in.AnnouncementReads...)
-	out.AutoLoginBindings = make([]AutoLoginBinding, 0, len(in.AutoLoginBindings))
-	for _, binding := range in.AutoLoginBindings {
-		out.AutoLoginBindings = append(out.AutoLoginBindings, cloneAutoLoginBinding(binding))
+	out.AutoLoginBindings = append([]AutoLoginBinding(nil), in.AutoLoginBindings...)
+	out.AutoLoginLogs = append([]AutoLoginAttempt(nil), in.AutoLoginLogs...)
+	for i := range out.AutoLoginLogs {
+		out.AutoLoginLogs[i].Steps = append([]AutoLoginStep(nil), in.AutoLoginLogs[i].Steps...)
 	}
 	out.UserProxyConfigs = append([]UserProxyConfig(nil), in.UserProxyConfigs...)
 	for i := range out.UserProxyConfigs {
@@ -2461,6 +2642,11 @@ func cloneState(in State) State {
 		out.RedemptionCodes[i].RedeemedMailboxIDs = append([]string(nil), in.RedemptionCodes[i].RedeemedMailboxIDs...)
 	}
 	out.RedemptionItems = append([]RedemptionItem(nil), in.RedemptionItems...)
+	out.RedemptionOrders = append([]RedemptionOrder(nil), in.RedemptionOrders...)
+	for i := range out.RedemptionOrders {
+		out.RedemptionOrders[i].CodeIDs = append([]string(nil), in.RedemptionOrders[i].CodeIDs...)
+		out.RedemptionOrders[i].MailboxIDs = append([]string(nil), in.RedemptionOrders[i].MailboxIDs...)
+	}
 	out.Accounts = append([]Account(nil), in.Accounts...)
 	for i := range out.Accounts {
 		out.Accounts[i].Tags = append([]string(nil), in.Accounts[i].Tags...)
@@ -2520,7 +2706,8 @@ func mergeICloudSession(existing, incoming ICloudSession) ICloudSession {
 		out.LastCheckOK = existing.LastCheckOK
 	}
 	out.LastStatusMessage = firstNonEmpty(incoming.LastStatusMessage, existing.LastStatusMessage)
-	out.ProxyPoolNode = firstNonEmpty(incoming.ProxyPoolNode, existing.ProxyPoolNode)
+	out.ProxyNodeTag = firstNonEmpty(incoming.ProxyNodeTag, existing.ProxyNodeTag)
+	out.ProxyNodeName = firstNonEmpty(incoming.ProxyNodeName, existing.ProxyNodeName)
 	return out
 }
 
@@ -2635,6 +2822,24 @@ func filterStateByOwnerLocked(in State, ownerID string) State {
 			out.RedemptionItems = append(out.RedemptionItems, item)
 		}
 	}
+	for _, row := range in.RedemptionOrders {
+		if constantTimeEqual(ownerID, row.OwnerID) {
+			row.CodeIDs = append([]string(nil), row.CodeIDs...)
+			row.MailboxIDs = append([]string(nil), row.MailboxIDs...)
+			out.RedemptionOrders = append(out.RedemptionOrders, row)
+		}
+	}
+	for _, row := range in.AutoLoginBindings {
+		if constantTimeEqual(ownerID, row.OwnerID) {
+			out.AutoLoginBindings = append(out.AutoLoginBindings, row)
+		}
+	}
+	for _, row := range in.AutoLoginLogs {
+		if constantTimeEqual(ownerID, row.OwnerID) {
+			row.Steps = append([]AutoLoginStep(nil), row.Steps...)
+			out.AutoLoginLogs = append(out.AutoLoginLogs, row)
+		}
+	}
 	return out
 }
 
@@ -2656,7 +2861,8 @@ func defaultCreateSettings(ownerID string) CreateSettings {
 		AppleAccountTwoFactorMethod:   appleTwoFactorMethodTrustedDevice,
 		ICloudWebTwoFactorMethod:      appleTwoFactorMethodTrustedDevice,
 		SchedulerIntervalMinutes:      int(defaultMailboxSchedulerInterval.Round(time.Minute).Minutes()),
-		SchedulerRoundIntervalSeconds: int(defaultMailboxSchedulerRoundInterval.Round(time.Second).Seconds()),
+		SchedulerRoundIntervalSeconds: 120,
+		TargetMailboxCount:            750,
 		MailboxPageSize:               10,
 	}
 }
@@ -2681,8 +2887,18 @@ func normalizeCreateSettings(ownerID string, settings CreateSettings) CreateSett
 	if out.SchedulerRoundIntervalSeconds < 1 {
 		out.SchedulerRoundIntervalSeconds = defaults.SchedulerRoundIntervalSeconds
 	}
+	// Migrate the former five-second default; explicitly customized values are preserved.
+	if out.SchedulerRoundIntervalSeconds == 5 {
+		out.SchedulerRoundIntervalSeconds = 120
+	}
 	if out.SchedulerRoundIntervalSeconds > 600 {
 		out.SchedulerRoundIntervalSeconds = 600
+	}
+	if out.TargetMailboxCount < 1 {
+		out.TargetMailboxCount = defaults.TargetMailboxCount
+	}
+	if out.TargetMailboxCount > 750 {
+		out.TargetMailboxCount = 750
 	}
 	if out.MailboxPageSize < 1 {
 		out.MailboxPageSize = defaults.MailboxPageSize

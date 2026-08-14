@@ -141,6 +141,9 @@ func (s *FileStore) PruneBackups(keep int) int {
 		keep = 1
 	}
 	rows, _ := s.Backups()
+	if len(rows) <= keep {
+		return 0
+	}
 	removed := 0
 	for _, row := range rows[keep:] {
 		if os.Remove(filepath.Join(s.backupDir(), row.Name)) == nil {

@@ -802,6 +802,21 @@
     }
     .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px 18px; }
     .field-grid .full, .form .full { grid-column: 1 / -1; }
+    .session-global-tools { display:grid; grid-template-columns:minmax(260px,1.4fr) minmax(280px,1fr); gap:12px; padding:14px 18px; border-bottom:1px solid var(--line); background:var(--bg-soft); }
+    .session-tool-card,.account-editor-section { min-width:0; border:1px solid var(--line); border-radius:14px; background:var(--panel); }
+    .session-tool-card { padding:14px; }
+    .session-tool-card .field-grid,
+    .session-tool-card .field-grid > *,
+    .session-tool-card .table-wrap { min-width:0; max-width:100%; }
+    .session-tool-card h3,.account-editor-section h3 { margin:0 0 5px; font-size:15px; }
+    .session-tool-card p,.account-editor-section .section-copy { margin:0; color:var(--muted); font-size:12px; line-height:1.6; }
+    .session-tool-card .toolbar { padding:12px 0 0; }
+    .account-editor-layout { display:grid; gap:12px; padding-top:12px; }
+    .account-editor-layout[hidden] { display:none; }
+    .account-editor-section { overflow:hidden; }
+    .account-editor-section-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:14px 18px; border-bottom:1px solid var(--line); background:var(--bg-soft); }
+    .account-editor-section .toolbar { padding:0 18px 16px; }
+    .account-scope-badge { display:inline-flex; padding:5px 9px; border-radius:999px; color:var(--brand); background:var(--brand-soft); font-size:12px; font-weight:800; white-space:nowrap; }
     .panel-body { padding-bottom: 2px; }
     label, .field-label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 700; }
     input, textarea, select {
@@ -997,7 +1012,8 @@
       .content-actions, .content-actions > button, .account-dock, .appearance-controls, .version-dock { width: 100%; }
       .account-dock { grid-template-columns: 1fr 1fr; }
       .account-dock .user-badge { grid-column: 1 / -1; }
-      .grid, .quick-grid, .field-grid { grid-template-columns: 1fr; }
+      .grid, .quick-grid, .field-grid, .session-global-tools { grid-template-columns: 1fr; }
+      .session-global-tools .session-tool-card:last-child { grid-column:auto; }
       .card strong { font-size: 28px; }
     }
     /* ===== motion & polish layer ===== */
@@ -1265,6 +1281,7 @@
       <nav class="side-nav" aria-label="功能分类">
         <button class="nav-item active" data-view="overview" onclick="setActiveView('overview')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.7"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.7"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.7"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.7"/></svg></span><span>概览</span><span class="count-dot" id="navOverviewCount">0</span></button>
         <button class="nav-item" data-view="session" onclick="setActiveView('session')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="4.6"/><path d="m12.4 12.4 7.6 7.6"/><path d="m16.6 16.6 2-2"/></svg></span><span>登录态</span><span class="count-dot" id="navSessionCount">0</span></button>
+        <button class="nav-item" data-view="proxy" onclick="setActiveView('proxy')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 7.5h9v9h-9z"/><path d="M4 10.5V8a4 4 0 0 1 4-4h2.5M20 13.5V16a4 4 0 0 1-4 4h-2.5"/><circle cx="4" cy="13.5" r="1.5"/><circle cx="20" cy="10.5" r="1.5"/></svg></span><span>代理管理</span><span class="count-dot" id="navProxyCount">0</span></button>
         <button class="nav-item" data-view="create" onclick="setActiveView('create')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg></span><span>创建邮箱</span></button>
         <button class="nav-item" data-view="mailboxes" onclick="setActiveView('mailboxes')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.4 6.3 6.7A2 2 0 0 1 8.2 5.4h7.6a2 2 0 0 1 1.9 1.3L20 13.4"/><path d="M4 13.4h4.2l1.3 2.2h5l1.3-2.2H20v3.7A1.9 1.9 0 0 1 18.1 19.2H5.9A1.9 1.9 0 0 1 4 17.1z"/></svg></span><span>邮箱池</span><span class="count-dot" id="navMailboxCount">0</span></button>
         <button class="nav-item" data-view="redemption" onclick="setActiveView('redemption')"><span class="nav-ico">⇄</span><span>兑换隐私邮箱</span><span class="count-dot" id="navRedemptionCount">0</span></button>
@@ -1343,7 +1360,7 @@
             <button class="quick-card" onclick="setActiveView('mailboxes')">
               <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.4 6.3 6.7A2 2 0 0 1 8.2 5.4h7.6a2 2 0 0 1 1.9 1.3L20 13.4"/><path d="M4 13.4h4.2l1.3 2.2h5l1.3-2.2H20v3.7A1.9 1.9 0 0 1 18.1 19.2H5.9A1.9 1.9 0 0 1 4 17.1z"/></svg></i>
               <strong>邮箱池</strong>
-              <span>搜索邮箱、复制 API、取码和同步邮件。</span>
+              <span>搜索邮箱、复制 API、取码和查看自动同步邮件。</span>
             </button>
             <button class="quick-card" onclick="openRunConfig()">
               <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.8v10.4"/><path d="m15.6 10.6-3.6 3.6-3.6-3.6"/><path d="M4.6 16.2v1.4A2.4 2.4 0 0 0 7 20h10a2.4 2.4 0 0 0 2.4-2.4v-1.4"/></svg></i>
@@ -1359,6 +1376,18 @@
             <button type="button" class="primary" onclick="addICloudSession()">添加账号</button>
           </div>
           <div class="notice" id="icloudSessionInfo">未完成创建登录。建议先点“新接口登录”或“旧接口登录”；收到 2FA 后提交对应验证码。取码登录会单独保存。</div>
+          <div class="session-global-tools">
+            <section class="session-tool-card">
+              <h3>全部账号检测</h3>
+              <p>这是全局操作，将依次检测列表中的所有 Apple 新接口、旧接口和取码登录。</p>
+              <div class="toolbar"><button id="sessionCheckAllButton" type="button" onclick="checkICloudSession()">检测全部账号</button><span id="sessionCheckStatus" class="muted">尚未执行全局检测。</span></div>
+            </section>
+            <section class="session-tool-card">
+              <h3>全局自动检测</h3>
+              <p>开启后按固定间隔检测全部账号，不属于某一个账号。</p>
+              <div class="toolbar"><input id="sessionCheckMinutes" aria-label="自动检测间隔（分钟）" type="number" min="1" max="120" value="3" onchange="saveSessionCheckSettings()" style="width:90px"><button id="autoSessionCheck" type="button" onclick="toggleSessionCheck()" aria-pressed="false">开启自动检测</button></div>
+            </section>
+          </div>
           <div class="table-filter-bar">
             <label>搜索账号或子邮箱<input id="sessionSearch" name="session_list_filter_query" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" readonly placeholder="Apple ID、账号ID、子邮箱" onfocus="this.removeAttribute('readonly')" onpointerdown="this.removeAttribute('readonly')" onkeydown="allowSessionSearchInput(event)" onbeforeinput="allowSessionSearchInput(event)" onpaste="allowSessionSearchInput(event)" oncut="allowSessionSearchInput(event)" oninput="handleSessionSearchInput(event)"></label>
             <label>登录态状态<select id="sessionHealthFilter" onchange="renderICloudSessions(lastICloudSessions)"><option value="">全部状态</option><option value="normal">全部正常</option><option value="partial">部分正常</option><option value="failed">异常</option><option value="unchecked">未检测</option></select></label>
@@ -1366,8 +1395,10 @@
             <button type="button" onclick="clearSessionFilters()">清空条件</button>
           </div>
           <div class="table-wrap session-table-wrap"><table class="session-table"><thead><tr><th>Apple账号 / ID</th><th>新接口</th><th>旧接口</th><th>取码登录</th><th>子邮箱</th><th>最后检测</th><th>操作</th></tr></thead><tbody id="sessionRows"></tbody></table></div>
-          <div id="sessionAccountFormContent" hidden>
-          <div class="notice" id="sessionEditInfo">当前为新增登录模式；点击上方账号的“编辑/重新登录”可自动带入历史账号资料。</div>
+          <div id="sessionAccountFormContent" class="account-editor-layout" hidden>
+          <div class="notice" id="sessionEditInfo">当前为新增登录模式；每个功能区独立保存，未操作的功能不会被开启或修改。</div>
+          <section class="account-editor-section">
+          <div class="account-editor-section-head"><div><h3>1. Apple 创建登录</h3><p class="section-copy">新接口、旧接口可分别登录；点击下方检测只检查当前正在编辑的账号。</p></div><span class="account-scope-badge" id="sessionEditScope">新增账号</span></div>
           <div class="field-grid" id="sessionLoginEditor">
             <label>Apple ID<input id="protocolAppleId" autocomplete="username" placeholder="name@icloud.com"></label>
             <label>密码<input id="protocolPassword" type="password" autocomplete="current-password" placeholder="Apple ID 密码"></label>
@@ -1390,11 +1421,17 @@
             <button id="appleAccount2FAButton" onclick="submitAppleAccount2FA()">提交新接口验证码</button>
             <button id="protocolLoginButton" onclick="startProtocolLogin()">旧接口登录</button>
             <button id="protocol2FAButton" onclick="submitProtocol2FA()">提交旧接口验证码</button>
-            <button type="button" onclick="saveCreateSettings()">保存配置</button>
-            <button id="sessionCheckButton" onclick="checkICloudSession()">检测登录态</button>
+            <button id="sessionCheckButton" onclick="checkCurrentICloudSession()">只检测当前账号</button>
             <span id="loginSettingsStatus" class="muted"></span>
           </div>
           <div class="hint">新接口每小时约可创建 20 个，旧接口每小时约可创建 5 个；两种登录态都保存后可一起创建，合计约 25 个/小时。</div>
+          </section>
+          <section class="account-editor-section">
+          <div class="account-editor-section-head"><div><h3>2. 账号专属代理</h3><p class="section-copy">新接口、旧接口、IMAP 与自动接码登录都会固定使用当前账号选择的节点。</p></div><span class="account-scope-badge">当前账号</span></div>
+          <div class="field-grid"><label class="full">代理节点<select id="accountProxyNode"><option value="">直连 / 用户固定代理回退</option></select></label><div class="full toolbar"><button id="accountProxySaveButton" type="button" onclick="bindAccountProxy()">保存账号代理</button><button type="button" onclick="loadProxyPoolNodes()">刷新节点</button><span id="accountProxyStatus" class="muted">尚未绑定</span></div></div>
+          </section>
+          <section class="account-editor-section">
+          <div class="account-editor-section-head"><div><h3>3. 邮件取码登录（IMAP）</h3><p class="section-copy">仅负责读取当前账号关联邮箱的验证码，不会开启 Apple 创建接口。</p></div><span class="account-scope-badge">当前账号</span></div>
           <div class="field-grid">
             <label>邮件服务<select id="imapProvider" onchange="applyIMAPPreset()"><option value="icloud">iCloud IMAP</option><option value="outlook">Outlook / Exchange IMAP</option><option value="gmail">Gmail IMAP</option><option value="custom">其他第三方 IMAP</option></select></label>
             <label>邮箱账号<input id="imapEmail" autocomplete="username" placeholder="name@example.com"></label>
@@ -1404,95 +1441,64 @@
             <label>邮箱密码 / 应用密码<input id="imapAppPassword" type="password" autocomplete="new-password"></label>
             <div class="full toolbar">
               <button id="imapSaveButton" type="button" onclick="saveICloudIMAPLogin()">保存取码登录</button>
-              <button id="imapCheckButton" type="button" onclick="checkICloudIMAPLogin()">检测取码登录</button>
+              <button id="imapCheckButton" type="button" onclick="checkICloudIMAPLogin()">只检测当前账号取码</button>
               <span id="imapLoginStatus" class="muted">取码登录用于 IMAP 收件和快速获取验证码，不参与创建邮箱。</span>
             </div>
           </div>
-          <div class="notice"><strong>自动接码登录功能</strong><br>仅在新接口或旧接口登录态异常时，通过短信/手机号验证码自动重新登录。Apple 密码和接码地址会在服务器加密保存。</div>
-          <div class="notice"><strong>用户固定可信代理</strong><br>每个用户最多一个固定出口，仅用于自己的 Apple 请求，不轮换。支持 http://、https://、socks5://；未填写协议时自动补全 http://，认证信息加密保存。</div>
-          <div class="field-grid">
-            <label class="full">固定代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="可直接填写 IP:端口，系统自动补全 http://；留空保留原配置"></label>
-            <label>启用状态<select id="fixedProxyEnabled"><option value="true">启用固定代理</option><option value="false">暂停固定代理</option></select></label>
-            <div class="full toolbar"><button type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测连通性</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div>
-          </div>
-          <div class="notice"><strong>账号固定代理池</strong><br>支持导入 Clash/Mihomo YAML 或 HTTPS 订阅。每个 Apple 账号固定选择一个节点；支持 <code>dialer-proxy</code> 链式代理。原有固定 HTTP/HTTPS/SOCKS5 代理保持不变。</div>
-          <div class="field-grid">
-            <label>导入方式<select id="proxyPoolSourceType" onchange="updateProxyPoolSourceHint()"><option value="yaml">粘贴 YAML</option><option value="subscription">订阅链接</option></select></label>
-            <label>启用状态<select id="proxyPoolEnabled"><option value="true">启用代理池</option><option value="false">暂停代理池</option></select></label>
-            <label class="full">代理池配置<textarea id="proxyPoolSource" rows="7" autocomplete="off" spellcheck="false" placeholder="粘贴 Clash/Mihomo YAML，系统只读取 proxies 节点"></textarea></label>
-            <div class="full toolbar"><button type="button" onclick="importProxyPool()">导入/覆盖代理池</button><button type="button" onclick="saveProxyPoolEnabled()">保存启用状态</button><button type="button" onclick="refreshProxyPool()">刷新订阅</button><span id="proxyPoolStatus" class="muted">尚未导入代理池</span></div>
-            <label class="full">当前账号使用的代理节点<select id="accountProxyPoolNode"><option value="">使用原有固定代理或服务器直连</option></select></label>
-            <div class="full toolbar"><button type="button" onclick="bindAccountProxyPoolNode()">保存账号代理</button><button type="button" onclick="testAccountProxyPoolNode()">检测所选节点</button><span id="accountProxyPoolStatus" class="muted">新增账号可先导入代理池，登录成功后再绑定节点</span></div>
-          </div>
+          </section>
+          <section class="account-editor-section">
+          <div class="account-editor-section-head"><div><h3>4. 自动接码登录</h3><p class="section-copy">仅在当前账号的新接口或旧接口明确失效时自动重新登录。选择“暂停”会立即停止当前账号任务。</p></div><span class="account-scope-badge">当前账号</span></div>
           <div class="field-grid">
             <label class="full">手机号----接码地址<input id="autoLoginBinding" autocomplete="off" placeholder="13800138000----https://example.com/code?token=xxx"></label>
             <label>Apple ID 密码<input id="autoLoginPassword" type="password" autocomplete="new-password" placeholder="首次绑定必填；留空保留已保存密码"></label>
-            <label>启用状态<select id="autoLoginEnabled"><option value="true">启用自动接码登录</option><option value="false">暂停自动接码登录</option></select></label>
-            <div class="full toolbar"><button id="autoLoginSaveButton" type="button" onclick="saveAutoLoginBinding()">保存自动接码登录</button><button type="button" onclick="loadAutoLoginLogs(true)">查看自动登录日志（含验证码）</button><span id="autoLoginStatus" class="muted">尚未绑定</span></div>
-            <div id="autoLoginLogs" class="full notice" hidden></div>
+            <label>当前账号运行状态<select id="autoLoginEnabled"><option value="false">暂停（不自动登录）</option><option value="true">开启（异常时自动登录）</option></select></label>
+            <div class="full toolbar"><button id="autoLoginSaveButton" type="button" onclick="saveAutoLoginBinding()">保存自动接码登录</button><span id="autoLoginStatus" class="muted">尚未绑定</span></div>
           </div>
+          </section>
           </div>
-          <div class="field-grid">
-            <label>自动检测间隔（分钟）<input id="sessionCheckMinutes" type="number" min="1" max="120" value="3" onchange="saveSessionCheckSettings()" placeholder="3"></label>
-            <label>自动检测<button id="autoSessionCheck" type="button" onclick="toggleSessionCheck()" aria-pressed="false">开启自动检测</button></label>
-            <div class="full muted" id="sessionCheckStatus">自动检测未开启。</div>
+        </section>
+
+        <section class="view-section panel" data-view="proxy">
+          <div class="panel-head">
+            <div><h2>代理管理</h2><p>集中管理当前用户的可信固定代理、节点订阅和账号代理绑定状态。</p></div>
+            <button type="button" class="primary" onclick="loadFixedProxy(); loadProxyPoolNodes()">刷新代理状态</button>
+          </div>
+          <div class="notice">账号绑定节点后，新接口、旧接口、IMAP 和自动接码登录都会使用该节点；未绑定账号则回退到用户可信固定代理或直连。</div>
+          <div class="session-global-tools">
+            <section class="session-tool-card">
+              <h3>用户可信固定代理</h3>
+              <p>当前用户全部未绑定专属节点的 Apple 请求共用此代理，不会影响其他用户。</p>
+              <div class="field-grid" style="padding:12px 0 0"><label class="full">代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="http://user:pass@host:port 或 socks5://host:port；留空保留"></label><label>运行状态<select id="fixedProxyEnabled"><option value="true">开启可信固定代理</option><option value="false">暂停可信固定代理</option></select></label><div class="full toolbar" style="padding:0"><button class="primary" type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测代理</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div></div>
+            </section>
+            <section class="session-tool-card">
+              <h3>代理优先级</h3>
+              <p>请求按账号专属节点、用户可信固定代理、直连的顺序选择出口。专属节点异常时会停止请求并提示，不会静默切换 IP。</p>
+              <div class="hint">账号专属节点请在“登录态 → 编辑账号 → 账号专属代理”中选择。</div>
+              <div class="toolbar"><button type="button" onclick="setActiveView('session')">前往登录态绑定账号</button></div>
+            </section>
+            <section class="session-tool-card" style="grid-column:1/-1">
+              <h3>账号代理池</h3>
+              <p>由每个用户独立的本地 Mihomo 实例运行节点。可粘贴订阅链接或导入 Clash/Mihomo YAML，并异步检测出口 IP、TLS 与延迟。</p>
+              <div class="field-grid" style="padding:12px 0 0"><label class="full">订阅链接<input id="proxySubscriptionURL" placeholder="https://example.com/subscription"></label><label class="full">Clash / Mihomo YAML<textarea id="proxyYAML" rows="5" placeholder="proxies:&#10;  - name: 节点名称&#10;    type: hysteria2&#10;    server: ..."></textarea></label><div class="full toolbar" style="padding:0"><button class="primary" type="button" onclick="importProxyPool()">导入并测速</button><button id="proxyPoolTestButton" type="button" onclick="testProxyPool()">全部节点测速</button><button type="button" onclick="loadProxyPoolNodes()">刷新代理池</button><span id="proxyPoolStatus" class="muted">正在读取代理池…</span></div></div>
+              <div class="table-wrap"><table><thead><tr><th>节点</th><th>端口</th><th>状态</th><th>延迟</th><th>已绑定账号</th></tr></thead><tbody id="proxyPoolRows"><tr><td colspan="5" class="muted">暂无节点</td></tr></tbody></table></div>
+            </section>
           </div>
         </section>
 
         <section class="view-section panel" data-view="create">
-          <div class="panel-head">
-            <h2>创建隐私邮箱</h2>
-            <p>优先用 Apple Account 新接口创建，达到上限后回落 iCloud 旧接口。</p>
-          </div>
-          <div class="field-grid">
-            <label>标签<input id="protoLabel" placeholder="UPI-70-13"></label>
-            <label>备注<input id="protoNote" placeholder="选填"></label>
-            <label>普通创建接口
-              <select id="createChannelSelect">
-                <option value="auto">自动接口：新接口优先，失败用旧接口</option>
-                <option value="apple_account">只用新接口</option>
-                <option value="icloud_web">只用旧接口</option>
-              </select>
-            </label>
-            <div class="full field-label">
-              <div class="selector-label-row">
-                <span>参与创建账号</span>
-                <span>
-                  <button id="createCheckSessionButton" type="button" onclick="checkICloudSession()">检测登录态</button>
-                  <span id="createSessionCheckStatus" class="muted">检测后会刷新新旧接口状态。</span>
-                </span>
-              </div>
-              <div id="protoAccountSelector" class="create-account-selector muted">保存登录态后可在这里勾选参与创建的 Apple 账号。</div>
-            </div>
-          </div>
-          <div class="toolbar">
-            <button id="createICloudButton" class="primary" onclick="createICloudMailbox()">开始创建</button>
-            <button id="saveCreateSettingsButton" type="button" onclick="saveCreateSettings()">保存配置</button>
-            <span id="protoBatchProgress" class="muted">每次点击会让当前勾选账号同时创建 1 轮，并记录本次成功/失败数量。</span>
-            <span id="createSettingsStatus" class="muted"></span>
-          </div>
-          <div class="field-grid">
-            <label>定时间隔分钟<input id="scheduleIntervalMinutes" type="number" min="1" max="1440" value="60" placeholder="默认 60"></label>
-            <label>每轮创建间隔秒<input id="scheduleRoundIntervalSeconds" type="number" min="1" max="600" value="5" placeholder="默认 5"></label>
-            <label>定时创建接口
-              <select id="scheduleCreateChannelSelect">
-                <option value="auto">自动接口：新接口优先，失败用旧接口</option>
-                <option value="apple_account">只用新接口</option>
-                <option value="icloud_web">只用旧接口</option>
-              </select>
-            </label>
-          </div>
-          <div class="toolbar">
-            <button id="startScheduleButton" class="primary" onclick="startMailboxScheduler()">开始定时创建</button>
-            <button id="stopScheduleButton" class="danger" onclick="stopMailboxScheduler()">停止定时创建</button>
-            <span id="scheduleStatus" class="muted">定时创建未启动；刷新页面不会停止后台任务。</span>
-          </div>
+          <div class="panel-head"><h2>创建隐私邮箱</h2><p>默认新接口优先，失败自动使用旧接口；每小时一轮，轮内每 120 秒创建一次。</p></div>
+          <div class="field-grid"><div class="full field-label"><div class="selector-label-row"><span>参与创建账号</span><span><button id="createCheckSessionButton" type="button" onclick="checkICloudSession()">检测全部登录态</button><span id="createSessionCheckStatus" class="muted">检测后会刷新新旧接口状态。</span></span></div><div id="protoAccountSelector" class="create-account-selector muted">保存登录态后可在这里勾选参与创建的 Apple 账号。</div></div><label>每账号目标邮箱数量<input id="targetMailboxCount" type="number" min="1" max="750" value="750"><span class="muted">达到该总数后，本账号自动停止创建；全部达到后任务自动停止。</span></label></div>
+          <div class="toolbar"><button id="startScheduleButton" class="primary" onclick="quickStartMailboxScheduler()">一键开始创建</button><button id="stopScheduleButton" class="danger" onclick="stopMailboxScheduler()">停止自动创建</button><span id="scheduleStatus" class="muted">尚未启动；点击后立即执行第一轮。</span><span id="protoBatchProgress" class="muted"></span><span id="createSettingsStatus" class="muted"></span></div>
+          <details class="guide" style="margin:16px 18px"><summary>高级设置（可选）</summary><div>
+            <div class="field-grid"><label>标签<input id="protoLabel" placeholder="UPI-70-13"></label><label>备注<input id="protoNote" placeholder="选填"></label><label>手动创建接口<select id="createChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>自动创建接口<select id="scheduleCreateChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>每轮间隔分钟<input id="scheduleIntervalMinutes" type="number" min="1" max="1440" value="60"></label><label>轮内创建间隔秒<input id="scheduleRoundIntervalSeconds" type="number" min="1" max="600" value="120"></label></div>
+            <div class="toolbar"><button id="createICloudButton" onclick="createICloudMailbox()">仅手动创建一轮</button><button id="saveCreateSettingsButton" type="button" onclick="saveCreateSettings()">保存高级设置</button></div>
+          </div></details>
         </section>
 
         <section class="view-section panel" data-view="mailboxes">
           <div class="panel-head">
             <h2>隐私邮箱池</h2>
-            <p>复制 API、取验证码、同步邮件和修改状态。</p>
+            <p>复制 API、取验证码、查看自动同步邮件和修改状态。</p>
           </div>
           <div class="toolbar list-toolbar">
             <label class="search-field">全局搜索邮箱
@@ -1665,6 +1671,12 @@
   <div id="operationLoading" class="operation-loading" role="status" aria-live="polite" aria-busy="true">
     <div class="operation-loading-card"><span class="spinner"></span><strong id="operationLoadingText">正在处理，请稍候...</strong></div>
   </div>
+  <div id="autoLoginLogsModal" class="modal-backdrop" onclick="closeAutoLoginLogs(event)" role="dialog" aria-modal="true">
+    <section class="modal" onclick="event.stopPropagation()" style="width:min(900px,94vw);max-height:88vh;overflow:auto">
+      <div class="panel-head"><div><h2>最近 10 次自动接码登录</h2><p id="autoLoginLogsHint">正在读取当前账号日志…</p></div><button class="ghost" onclick="closeAutoLoginLogs()">关闭</button></div>
+      <div id="autoLoginLogsBody" class="stack" style="padding:18px"><div class="muted">正在加载…</div></div>
+    </section>
+  </div>
   <div id="mailboxHistorySyncModal" class="modal-backdrop" onclick="closeMailboxHistorySync(event)" role="dialog" aria-modal="true">
     <section class="modal" onclick="event.stopPropagation()" style="width:min(620px,94vw)">
       <div class="panel-head"><h2 id="mailboxHistorySyncTitle">同步历史隐私邮箱</h2><p id="mailboxHistorySyncStatus">正在准备同步...</p></div>
@@ -1723,6 +1735,7 @@
     const viewMeta = {
       overview: ['概览', '查看账号、邮箱和验证码数量。'],
       session: ['登录态', '保存和检测 Apple 登录态。'],
+      proxy: ['代理管理', '管理用户可信固定代理和账号代理池。'],
       create: ['创建邮箱', '按已保存账号创建 Hide My Email 地址。'],
       mailboxes: ['邮箱池', '搜索、复制 API、取码和维护邮箱状态。'],
       redemption: ['兑换隐私邮箱', '管理专属兑换池、一次性兑换码和已兑换批次。']
@@ -1730,6 +1743,7 @@
     const viewDescriptions = {
 	  overview:'查看账号、邮箱和验证码总量，并通过快捷入口进入常用任务。',
 	  session:'管理多个 Apple 登录态；按状态和接口筛选账号，展开查看每个登录态所属的子邮箱。',
+	  proxy:'配置当前用户的可信固定代理，导入和测速代理池节点，并查看节点绑定的账号。',
 	  create:'选择一个或多个可用 Apple 账号，配置新旧接口策略，手动或定时创建隐私邮箱。',
 	  mailboxes:'组合搜索全部隐私邮箱；按账号、邮箱状态、API、iCloud 和收件数量筛选并执行取码、同步、导出与状态维护。',
 	  redemption:'将未导出且可正常接码的邮箱加入专属兑换池，生成定量一次性兑换码，并管理已兑换批次的取码地址。'
@@ -1741,9 +1755,14 @@
         tips:['概览只展示汇总，不会修改任何账号或邮箱数据。','右上角可以切换主题、修改密码、邀请码续期和退出登录。']
       },
       session: {
-        title:'Apple 登录态配置教学', summary:'登录态页面负责添加 Apple 账号，并分别维护新接口、旧接口、IMAP 取码、固定可信代理和自动接码登录。',
-        steps:['点击右上角“添加账号”，填写 Apple ID；编辑已有账号时点击表格中的“编辑/重新登录”。','按需点击“新接口登录”或“旧接口登录”，选择短信/手机号或受信设备验证，收到验证码后提交对应验证码。','需要读取转发邮件时配置 IMAP 服务、端口、账号和应用专用密码，然后保存并检测取码登录。','如需自动恢复登录态，先配置短信接码地址；固定可信代理仅用于该用户自己的 Apple 请求。','保存后关闭弹窗，在列表查看新接口、旧接口、IMAP、保活标签和具体中文异常原因。'],
+        title:'Apple 登录态配置教学', summary:'登录态页面负责添加 Apple 账号，并分别维护新接口、旧接口、IMAP 取码、账号专属代理和自动接码登录。',
+        steps:['点击右上角“添加账号”，填写 Apple ID；编辑已有账号时点击表格中的“编辑/重新登录”。','按需点击“新接口登录”或“旧接口登录”，选择短信/手机号或受信设备验证，收到验证码后提交对应验证码。','需要读取转发邮件时配置 IMAP 服务、端口、账号和应用专用密码，然后保存并检测取码登录。','如需独立出口，在账号专属代理中选择代理池节点；用户可信固定代理请前往左侧“代理管理”。','保存后关闭弹窗，在列表查看新接口、旧接口、IMAP、保活标签和具体中文异常原因。'],
         tips:['Apple 密码、IMAP 授权码和代理认证信息不会在编辑时明文回填。','HTTP 429/503 表示 Apple 临时限流或不可用，应等待系统退避，不要连续重复提交。','子邮箱达到 750 个时该 Apple 账号不再参与创建。']
+      },
+      proxy: {
+        title:'代理管理教学', summary:'代理管理页面集中维护当前用户的固定出口、代理订阅、YAML 节点和账号绑定情况。',
+        steps:['如全部未绑定账号共用一个出口，在“用户可信固定代理”中填写 HTTP 或 SOCKS5 地址并检测。','粘贴订阅链接或 Clash/Mihomo YAML，点击“导入并测速”。','等待节点进入列表，确认状态为可用并查看延迟。','前往登录态编辑指定账号，在“账号专属代理”中选择节点。','返回本页查看每个节点的已绑定账号数量和账号名称。'],
+        tips:['账号专属节点优先于用户可信固定代理。','账号绑定节点异常时系统会停止该账号请求，避免静默直连导致出口 IP 变化。','代理地址及订阅内容可能包含密码，请勿公开。']
       },
       create: {
         title:'创建隐私邮箱教学', summary:'使用已保存且状态正常的新接口或旧接口，为一个或多个 Apple 账号创建隐私邮箱。',
@@ -1792,6 +1811,7 @@
         localStorage.setItem(viewStorageKey, normalized);
       } catch (_) {}
       activeView = normalized;
+      if (normalized === 'proxy') Promise.all([loadFixedProxy(), loadProxyPoolNodes()]).catch(err => log('加载代理配置失败：'+err.message));
       if (normalized === 'mailboxes') renderMailboxes();
       if (normalized === 'redemption') loadRedemptionPool().catch(err => log('加载兑换池失败：'+err.message));
       renderGlobalLogs();
@@ -2231,7 +2251,8 @@
         apple_account_two_factor_method: twoFactorMethodPayloadValue('appleAccount2FAMethod'),
         icloud_web_two_factor_method: twoFactorMethodPayloadValue('iCloudWeb2FAMethod'),
         scheduler_interval_minutes: boundedInt('scheduleIntervalMinutes', 60, 1, 1440),
-        scheduler_round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 5, 1, 600),
+        scheduler_round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 120, 1, 600),
+        target_mailbox_count: boundedInt('targetMailboxCount', 750, 1, 750),
         mailbox_page_size: boundedInt('mailboxPageSize', 10, 1, 500)
       };
     }
@@ -2244,7 +2265,8 @@
       setTwoFactorMethodSelect('appleAccount2FAMethod', settings.apple_account_two_factor_method);
       setTwoFactorMethodSelect('iCloudWeb2FAMethod', settings.icloud_web_two_factor_method);
       if ($('scheduleIntervalMinutes')) $('scheduleIntervalMinutes').value = String(settings.scheduler_interval_minutes || 60);
-      if ($('scheduleRoundIntervalSeconds')) $('scheduleRoundIntervalSeconds').value = String(settings.scheduler_round_interval_seconds || 5);
+      if ($('scheduleRoundIntervalSeconds')) $('scheduleRoundIntervalSeconds').value = String(settings.scheduler_round_interval_seconds || 120);
+      if ($('targetMailboxCount')) $('targetMailboxCount').value = String(settings.target_mailbox_count || 750);
       mailboxPageSize = Math.max(1, Math.min(500, Number(settings.mailbox_page_size || 10)));
       if ($('mailboxPageSize')) $('mailboxPageSize').value = String(mailboxPageSize);
       if (Array.isArray(settings.account_ids)) {
@@ -2702,7 +2724,23 @@
     function sessionLoginError(message) {
       const value = String(message || '').trim();
       if (!value) return '';
-      return `<span class="session-login-error" title="${esc(value)}">原因：${esc(value)}</span>`;
+      const guidance = loginStatusGuidance(value);
+      return `<span class="session-login-error" title="${esc(value)}">原因：${esc(value)}${guidance ? `<br><strong>${esc(guidance)}</strong>` : ''}</span>`;
+    }
+
+    function loginStatusGuidance(message) {
+      const value = String(message || '');
+      if (/HTTP\s*401\b/i.test(value)) return '凭据已过期，请点击“立即重新登录”更新登录态。';
+      if (/HTTP\s*403\b/i.test(value)) return '账号或接口拒绝访问，请完成账号安全验证后重新登录。';
+      if (/HTTP\s*409\b/i.test(value)) return '登录流程状态冲突，请重新发起登录。';
+      if (/HTTP\s*429\b/i.test(value)) return '请求过于频繁，请暂停自动登录并等待一段时间。';
+      if (/HTTP\s*5\d\d\b/i.test(value)) return 'Apple 服务或代理链路暂时异常，请稍后再检测。';
+      return '';
+    }
+
+    function sessionNeedsRelogin(session) {
+      return [session && session.apple_account_login_error, session && session.icloud_web_login_error, session && session.last_status_message]
+        .some(value => /HTTP\s*401\b/i.test(String(value || '')));
     }
 
     function sessionCheckEnabled() {
@@ -2755,30 +2793,52 @@
     async function checkICloudSession(options = {}) {
       if (sessionCheckInFlight) return false;
       sessionCheckInFlight = true;
-      const buttons = ['sessionCheckButton', 'createCheckSessionButton'].map(id => $(id)).filter(Boolean);
+      const accountID = String(options.accountID || '').trim();
+      const isSingle = !!accountID;
+      const buttons = ['sessionCheckAllButton', 'sessionCheckButton', 'createCheckSessionButton'].map(id => $(id)).filter(Boolean);
       buttons.forEach(button => { button.disabled = true; });
-      if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '正在检测新接口和旧接口登录态...';
-      if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '正在检测...';
+      if (isSingle) {
+        if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '正在检测当前账号的新接口、旧接口和取码登录...';
+      } else {
+        if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '正在检测全部账号的新接口、旧接口和取码登录...';
+        if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '正在检测全部账号...';
+      }
       try {
-        const data = await api('/api/icloud/session/check', {method:'POST', showLoading: !options.auto, loadingText:'正在检测登录态，请稍候...', body:'{}'});
+        const data = await api('/api/icloud/session/check', {method:'POST', showLoading: !options.auto, loadingText:isSingle ? '正在检测当前账号，请稍候...' : '正在检测全部账号，请稍候...', body:JSON.stringify({account_id:accountID})});
         lastICloudSessions = data.sessions || (data.session && data.session.saved ? [data.session] : []);
         renderICloudSessions(lastICloudSessions);
-        if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = data.message || '登录态检测完成';
-        if ($('createSessionCheckStatus')) {
-          $('createSessionCheckStatus').textContent = data.message || '检测完成，账号状态已刷新。';
+        if (isSingle) {
+          if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = `当前账号：${data.message || '检测完成'}`;
+          updateSessionEditSummary();
+        } else {
+          if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = `全部账号：${data.message || '检测完成'}`;
+          if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = data.message || '全部账号检测完成。';
         }
-        log(data.message || '登录态检测正常：新旧接口状态已刷新');
+        log(`${isSingle ? '当前账号' : '全部账号'}检测：${data.message || '状态已刷新'}`);
         return true;
       } catch (err) {
-        if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '登录态检测失败；请按失败提示重新保存对应登录态。';
-        if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '检测失败，请查看运行日志。';
-        log('登录态检测失败：' + err.message + '；请按失败提示重新保存对应登录态');
+        if (isSingle) {
+          if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '当前账号检测失败：' + err.message;
+        } else {
+          if ($('sessionCheckStatus')) $('sessionCheckStatus').textContent = '全部账号检测失败：' + err.message;
+          if ($('createSessionCheckStatus')) $('createSessionCheckStatus').textContent = '全部账号检测失败，请查看运行日志。';
+        }
+        log(`${isSingle ? '当前账号' : '全部账号'}检测失败：${err.message}`);
         await refresh().catch(() => {});
         throw err;
       } finally {
         buttons.forEach(button => { button.disabled = false; });
         sessionCheckInFlight = false;
       }
+    }
+
+    function checkCurrentICloudSession() {
+      const session = activeICloudSessionForBinding();
+      if (!activeICloudSessionKey || !session || !session.account_id) {
+        if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '新增账号尚未保存，不能执行单账号检测。';
+        return Promise.resolve(false);
+      }
+      return checkICloudSession({accountID:session.account_id});
     }
 
     async function refresh() {
@@ -2859,12 +2919,27 @@
         note: $('protoNote').value.trim(),
         create_channel: createChannelPayloadValue('scheduleCreateChannelSelect'),
         interval_minutes: boundedInt('scheduleIntervalMinutes', 60, 1, 1440),
-        round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 5, 1, 600)
+        round_interval_seconds: boundedInt('scheduleRoundIntervalSeconds', 120, 1, 600),
+        target_mailbox_count: boundedInt('targetMailboxCount', 750, 1, 750)
       };
       const data = await api('/api/icloud/scheduler/start', {method:'POST', body: JSON.stringify(payload)});
       renderMailboxScheduler(data.scheduler || {});
       ensureSchedulerPolling();
-      log(`定时创建已启动：${createChannelLabel(payload.create_channel)}，每 ${payload.interval_minutes} 分钟开始一次；每轮创建间隔 ${payload.round_interval_seconds} 秒；失败账号本轮临时跳过，其他账号继续创建；参与账号=${accountNames}`);
+      log(`定时创建已启动：${createChannelLabel(payload.create_channel)}，每账号目标 ${payload.target_mailbox_count} 个；每 ${payload.interval_minutes} 分钟开始一次；每轮创建间隔 ${payload.round_interval_seconds} 秒；参与账号=${accountNames}`);
+    }
+
+    async function quickStartMailboxScheduler() {
+      const button = $('startScheduleButton');
+      if (button) { button.disabled = true; button.textContent = '正在启动…'; }
+      try {
+        await api('/api/create-settings', {method:'POST', body:JSON.stringify(collectCreateSettingsPayload())});
+        await startMailboxScheduler();
+      } catch (err) {
+        if ($('scheduleStatus')) $('scheduleStatus').textContent = '启动失败：' + err.message;
+        log('一键创建启动失败：' + err.message);
+      } finally {
+        if (button) { button.disabled = false; button.textContent = '一键开始创建'; }
+      }
     }
 
     async function stopMailboxScheduler() {
@@ -2907,12 +2982,12 @@
       if ($('stopScheduleButton')) $('stopScheduleButton').disabled = !running;
       if ($('scheduleStatus')) {
         const interval = scheduler.interval_minutes || Math.round((scheduler.interval_seconds || 0) / 60) || 60;
-        const roundInterval = scheduler.round_interval_seconds || 5;
+        const roundInterval = scheduler.round_interval_seconds || 120;
         const next = scheduler.next_run_at ? `；下次：${scheduler.next_run_at}` : '';
         const channel = createChannelLabel(scheduler.create_channel);
         const statusText = running
           ? `运行中：${channel}；每 ${interval} 分钟开始一次；每轮间隔 ${roundInterval} 秒；已创建 ${scheduler.success || 0}，失败 ${scheduler.failed || 0}${next}`
-          : `未运行：默认自动接口，每 60 分钟开始一次，每轮间隔 5 秒；历史创建 ${scheduler.success || 0}，失败 ${scheduler.failed || 0}`;
+          : `未运行：默认自动接口，每 60 分钟开始一次，轮内间隔 120 秒；历史创建 ${scheduler.success || 0}，失败 ${scheduler.failed || 0}`;
         $('scheduleStatus').textContent = scheduler.last_error ? `${statusText}；最近错误：${scheduler.last_error}` : statusText;
       }
       setScheduleLog(events.length === 0 ? '暂无定时创建记录。' : events.slice(0, 30).map(event => {
@@ -3177,7 +3252,6 @@
               <button id="verifyButton-${esc(row.id)}" onclick="verifyMailbox('${row.id}')">${verifyButtonText(row.id)}</button>
               <button onclick="viewMailbox('${row.id}')">查看邮箱</button>
               ${row.redemption_locked&&!currentUser.is_admin?'':`<button onclick="rotateMailboxAPI('${row.id}')" title="生成新 API key，旧地址立即失效">重置API</button>`}
-              <button class="${syncButtonClass(row.id)}" onclick="syncMailbox('${row.id}')" ${syncButtonDisabled(row.id)}>${syncButtonText(row.id)}</button>
               <button onclick="cleanRemoteMailbox('${row.id}')" title="把本地已同步过的远端邮件移到废纸篓，并清空当前 iCloud 废纸篓">删除邮件</button>
               <select onchange="setMailboxStatus('${row.id}', this.value)">
                 <option value="">改状态</option>
@@ -3310,24 +3384,9 @@
 
     async function viewMailbox(id) {
       const row = (lastMailboxes || []).find(item => item.id === id);
-      $('mailboxViewerTitle').textContent = `查看邮箱：${row ? row.email : id}`;
-      $('mailboxViewerMessages').innerHTML = '<div class="muted">正在读取邮件...</div>';
-      $('mailboxViewerModal').classList.add('show');
-      try {
-        const data = await api(`/api/mailboxes/${encodeURIComponent(id)}/messages`);
-        const messages = [...(data.messages || [])].reverse();
-        $('mailboxViewerMessages').innerHTML = messages.length ? messages.map((message, index) => `
-          <article class="panel" style="padding:16px">
-            <strong>${esc(message.subject || '无主题')}</strong>
-            <div class="muted" style="margin:6px 0">发件人：${esc(message.from || '-')} · ${esc(exactTimeText(message.received_at || message.created_at))}</div>
-            ${message.html_body ? `<iframe class="mail-html-frame" sandbox="" referrerpolicy="no-referrer" title="邮件正文" data-mail-html-index="${index}"></iframe>` : renderLegacyMailBody(message.body)}
-          </article>`).join('') : '<div class="muted">暂无已同步邮件，请先点击“同步邮件”。</div>';
-        messages.forEach((message, index) => {
-          if (!message.html_body) return;
-          const frame = document.querySelector(`[data-mail-html-index="${index}"]`);
-          if (frame) frame.srcdoc = safeMailHTML(message.html_body);
-        });
-      } catch (err) { $('mailboxViewerMessages').innerHTML = `<div class="error">读取邮件失败：${esc(err.message)}</div>`; }
+      if (!row || !row.api_url) { log('查看邮箱失败：取码地址不可用'); return; }
+      window.open(mailboxAccessURL(row, 'visual'), '_blank', 'noopener');
+      log(`已打开可视化邮箱：${row.email}；页面会自动同步新邮件`);
     }
 
     function renderLegacyMailBody(body) {
@@ -3445,8 +3504,12 @@
       if (activeMailboxCopyMenuID !== id) return '';
       return `<span class="copy-choice-menu" role="group" aria-label="复制选项">
         <button type="button" onclick="copyMailboxValue('${id}', 'email')">复制邮箱</button>
-        <button type="button" onclick="copyMailboxValue('${id}', 'api')">复制API</button>
-        <button type="button" onclick="copyMailboxValue('${id}', 'both')">邮箱+API</button>
+        <button type="button" onclick="copyMailboxValue('${id}', 'json')">复制 JSON 取码地址</button>
+        <button type="button" onclick="copyMailboxValue('${id}', 'visual')">复制可视化取码地址</button>
+        <button type="button" onclick="copyMailboxValue('${id}', 'content')">复制邮件内容取码地址</button>
+        <button type="button" onclick="copyMailboxValue('${id}', 'both-json')">邮箱 + JSON 地址</button>
+        <button type="button" onclick="copyMailboxValue('${id}', 'both-visual')">邮箱 + 可视化地址</button>
+        <button type="button" onclick="copyMailboxValue('${id}', 'both-content')">邮箱 + 内容地址</button>
       </span>`;
     }
 
@@ -3525,12 +3588,12 @@
         const expanded = expandedSessionAccounts.has(key);
         const childHTML = children.length ? children.map(m => `<div class="submailbox-item"><strong>${esc(m.email)}</strong><span>${esc(m.label || '无标签')} · ${esc(statusText(m.status))} · 收件 ${m.receive_count || 0}</span></div>`).join('') : '<span class="muted">该登录态下暂无同步到的子邮箱</span>';
         const autoLoginText = session.auto_login_enabled ? (session.auto_login_status || '自动接码登录已启用') : '自动接码登录未启用';
-        return `<tr class="${activeICloudSessionKey === key ? 'selected-session-row' : ''}"><td><div class="session-account">${esc(session.apple_id || `账号 ${index+1}`)}</div><span class="mono muted">${esc(session.account_id || '-')}</span><br><span class="login-chip ${session.auto_login_enabled ? 'on' : 'off'}">${esc(autoLoginText)}</span>${session.proxy_pool_node ? `<br><span class="login-chip on">代理：${esc(session.proxy_pool_node)}</span>` : ''}${session.auto_login_error ? sessionLoginError(session.auto_login_error) : ''}</td>
+        return `<tr class="${activeICloudSessionKey === key ? 'selected-session-row' : ''}"><td><div class="session-account">${esc(session.apple_id || `账号 ${index+1}`)}</div><span class="mono muted">${esc(session.account_id || '-')}</span><br><span class="login-chip ${session.auto_login_enabled ? 'on' : 'off'}">${esc(autoLoginText)}</span>${session.auto_login_error ? sessionLoginError(session.auto_login_error) : ''}</td>
           <td>${loginChip('新接口', session.apple_account_login_status || (appleAccountLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(appleAccountLoginSaved(session),session.apple_account_login_checked,session.apple_account_login_ok))}${sessionLoginError(session.apple_account_login_error)}<br>${sessionManageRefreshBadge(session)}</td>
           <td>${loginChip('旧接口', session.icloud_web_login_status || (iCloudWebLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudWebLoginSaved(session),session.icloud_web_login_checked,session.icloud_web_login_ok))}${sessionLoginError(session.icloud_web_login_error)}${sessionOldKeepAliveBadge(session)}</td>
           <td>${loginChip('IMAP', session.icloud_imap_login_status || (iCloudIMAPLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudIMAPLoginSaved(session),session.icloud_imap_login_checked,session.icloud_imap_login_ok))}${sessionLoginError(session.icloud_imap_login_error)}<br><span class="muted">${esc(session.icloud_imap_email || '-')}</span></td>
           <td><strong>${childCount}</strong> 个${childCount >= 750 ? '<br><span class="login-chip warn">隐私邮件已达上限</span>' : ''}</td><td>${esc(session.last_checked_at ? exactTimeText(session.last_checked_at) : '未检测')}</td>
-          <td><div class="row-actions"><button type="button" class="primary" onclick="editICloudSession(${esc(JSON.stringify(key))})">编辑/重新登录</button><button type="button" onclick="toggleSessionChildren(${esc(JSON.stringify(key))})">${expanded?'收起':'查看子邮箱'}</button></div></td></tr>
+          <td>${sessionNeedsRelogin(session)?'<span class="login-chip warn">登录已过期，需要重新登录</span>':''}<div class="row-actions"><button type="button" class="primary" onclick="editICloudSession(${esc(JSON.stringify(key))})">${sessionNeedsRelogin(session)?'立即重新登录':'编辑/重新登录'}</button><button type="button" onclick="openAutoLoginLogs(${esc(JSON.stringify(session.account_id || ''))})">自动登录日志</button><button type="button" onclick="toggleSessionChildren(${esc(JSON.stringify(key))})">${expanded?'收起':'查看子邮箱'}</button></div></td></tr>
           <tr class="session-submailboxes" ${expanded?'':'hidden'}><td colspan="7"><div class="submailbox-grid">${childHTML}</div></td></tr>`;
       }).join('') : '<tr><td colspan="7" class="muted">没有符合筛选条件的登录态</td></tr>';
       renderCreateAccountSelector();
@@ -3547,15 +3610,12 @@
       if (content) content.hidden = false;
       $('sessionAccountModalTitle').textContent = title || '添加 Apple 账号';
       $('sessionAccountModal').classList.add('show');
-      loadFixedProxy();
-      loadProxyPool();
       setTimeout(() => $('protocolAppleId').focus({preventScroll:true}), 50);
     }
 
     function closeSessionAccountModal(event) {
       if (event && event.target !== $('sessionAccountModal')) return;
       $('sessionAccountModal').classList.remove('show');
-      if ($('autoLoginLogs')) { $('autoLoginLogs').hidden=true; $('autoLoginLogs').innerHTML=''; }
     }
 
     function addICloudSession() {
@@ -3575,11 +3635,12 @@
       $('imapAppPassword').value = '';
       $('autoLoginBinding').value = '';
       $('autoLoginPassword').value = '';
-      $('autoLoginEnabled').value = 'true';
+      $('autoLoginEnabled').value = 'false';
       $('autoLoginStatus').textContent = '请先完成账号登录，再绑定自动接码登录';
-      if ($('autoLoginLogs')) { $('autoLoginLogs').hidden=true; $('autoLoginLogs').innerHTML=''; }
-      if ($('accountProxyPoolNode')) $('accountProxyPoolNode').value = '';
-      if ($('accountProxyPoolStatus')) $('accountProxyPoolStatus').textContent = '新增账号请先完成首次登录，随后编辑该账号并绑定固定节点';
+      if ($('accountProxyNode')) $('accountProxyNode').value = '';
+      if ($('accountProxyStatus')) $('accountProxyStatus').textContent = '新增账号保存后才能绑定节点';
+      $('sessionEditScope').textContent = '新增账号';
+      $('sessionCheckButton').disabled = true;
       $('sessionEditInfo').textContent = '当前为新增账号模式。输入 Apple ID 和密码后，可分别完成新接口或旧接口登录；IMAP 取码登录可按需配置。';
       $('imapLoginStatus').textContent = '取码登录用于 IMAP 收件和快速获取验证码，不参与创建邮箱。';
       if ($('loginSettingsStatus')) $('loginSettingsStatus').textContent = '';
@@ -3611,9 +3672,10 @@
       $('autoLoginPassword').value = '';
       $('autoLoginEnabled').value = session.auto_login_enabled ? 'true' : 'false';
       $('autoLoginStatus').textContent = session.auto_login_enabled ? `已绑定：${session.auto_login_phone || '-'}----${session.auto_login_url || '-'}；${session.auto_login_status || '等待自动登录'}${session.auto_login_error ? '；错误：'+session.auto_login_error : ''}` : '尚未启用自动接码登录';
-      if ($('autoLoginLogs')) { $('autoLoginLogs').hidden=true; $('autoLoginLogs').innerHTML=''; }
-      if ($('accountProxyPoolNode')) $('accountProxyPoolNode').value = session.proxy_pool_node || '';
-      if ($('accountProxyPoolStatus')) $('accountProxyPoolStatus').textContent = session.proxy_pool_node ? `当前账号固定使用：${session.proxy_pool_node}` : '当前账号使用原有固定代理或服务器直连';
+      loadProxyPoolNodes().then(() => { if ($('accountProxyNode')) $('accountProxyNode').value = session.proxy_node_tag || ''; if ($('accountProxyStatus')) $('accountProxyStatus').textContent = session.proxy_node_tag ? `已绑定：${session.proxy_node_name || session.proxy_node_tag}` : '直连 / 用户固定代理回退'; });
+      $('sessionEditScope').textContent = `仅此账号 · ${session.account_id || '-'}`;
+      $('sessionCheckButton').disabled = !session.account_id;
+      updateSessionEditSummary(session);
       renderICloudSessions(lastICloudSessions);
       showSessionAccountModal(`编辑账号：${session.apple_id || email || key}`);
       $('protocolPassword').focus({preventScroll:true});
@@ -3635,8 +3697,20 @@
 
     function activeICloudSessionAccountID() {
       const session = activeICloudSessionForBinding();
-      if (!session || !createLoginSaved(session)) return '';
+      if (!session) return '';
       return session.account_id || '';
+    }
+
+    function updateSessionEditSummary(session) {
+      session = session || activeICloudSessionForBinding();
+      if (!session || !activeICloudSessionKey) return;
+      const parts = [
+        `新接口：${session.apple_account_login_status || (appleAccountLoginSaved(session) ? '已保存' : '未开启')}`,
+        `旧接口：${session.icloud_web_login_status || (iCloudWebLoginSaved(session) ? '已保存' : '未开启')}`,
+        `取码：${session.icloud_imap_login_status || (iCloudIMAPLoginSaved(session) ? '已保存' : '未开启')}`,
+        `自动登录：${session.auto_login_enabled ? '已开启' : '已暂停'}`
+      ];
+      $('sessionEditInfo').textContent = `当前账号：${session.apple_id || session.account_id || '-'}。${parts.join('；')}。每个功能区独立操作，未点击保存或登录的功能不会改变。`;
     }
 
     async function syncICloudMailboxes() {
@@ -3662,7 +3736,7 @@
           const name = createAccountDisplayName(session) || session.apple_id || session.account_id;
           $('mailboxHistorySyncStatus').textContent = `正在检测旧接口登录态：${name}（${completed + 1}/${targets.length}）`;
           try {
-            const check = await api('/api/icloud/web-login/check', {method:'POST', body:JSON.stringify({account_id:session.account_id})});
+            const check = await api('/api/icloud/web-login/check', {method:'POST', body:JSON.stringify({account_id:session.account_id}), showLoading:false});
             lines.push(`检测正常：${name} · ${check.message || '旧接口可以使用'}`);
             completedSteps++;
             updateMailboxHistorySyncProgress(Math.round(completedSteps * 100 / totalSteps), lines);
@@ -3676,7 +3750,7 @@
           }
           $('mailboxHistorySyncStatus').textContent = `登录正常，正在同步：${name}（${completed + 1}/${targets.length}）`;
           try {
-            const data = await api('/api/icloud/mailboxes/sync', {method:'POST', body: JSON.stringify({account_id: session.account_id})});
+            const data = await api('/api/icloud/mailboxes/sync', {method:'POST', body: JSON.stringify({account_id: session.account_id}), showLoading:false});
             total += Number(data.total || 0); created += Number(data.created || 0); updated += Number(data.updated || 0); skipped += Number(data.skipped || 0);
             if (Number(data.failed || 0) > 0) throw new Error((data.results || []).map(item => item.error).filter(Boolean).join('；') || '旧接口同步失败');
             success++;
@@ -3777,37 +3851,31 @@
       if (!activeICloudSessionKey) { $('autoLoginStatus').textContent = '新增账号请先完成新接口或旧接口登录，再点击编辑账号进行绑定'; return; }
       const session = activeICloudSessionForBinding();
       if (!session || !session.account_id) { $('autoLoginStatus').textContent = '请先保存账号登录态，再绑定自动接码登录'; return; }
+      const enabled = $('autoLoginEnabled').value === 'true';
       const binding = $('autoLoginBinding').value.trim();
-      if (!binding.includes('----')) { $('autoLoginStatus').textContent = '格式错误，必须是：手机号----接码地址'; return; }
+      if (enabled && !binding.includes('----')) { $('autoLoginStatus').textContent = '格式错误，必须是：手机号----接码地址'; return; }
       const button = $('autoLoginSaveButton'); button.disabled=true; button.textContent='正在加密保存...';
       try {
-        const data = await api('/api/icloud/auto-login/bind',{method:'POST',body:JSON.stringify({account_id:session.account_id,binding,password:$('autoLoginPassword').value,enabled:$('autoLoginEnabled').value==='true'})});
+        const data = await api('/api/icloud/auto-login/bind',{method:'POST',body:JSON.stringify({account_id:session.account_id,binding,password:$('autoLoginPassword').value,enabled})});
         $('autoLoginPassword').value=''; $('autoLoginBinding').value=''; $('autoLoginStatus').textContent=data.message || '自动接码登录配置已保存'; await refresh();
       } catch(err) { $('autoLoginStatus').textContent='保存失败：'+err.message; }
       finally { button.disabled=false; button.textContent='保存自动接码登录'; }
     }
 
-    function autoLoginLogStatusText(status) {
-      return ({running:'进行中',success:'成功',failed:'失败'})[status] || status || '未知';
-    }
-
-    async function loadAutoLoginLogs(revealCodes) {
-      const session=activeICloudSessionForBinding();
-      const container=$('autoLoginLogs');
-      if(!session||!session.account_id){container.hidden=false;container.textContent='请先保存账号登录态，再查看自动登录日志';return;}
-      container.hidden=false;container.textContent=revealCodes?'正在解密读取验证码和自动登录日志...':'正在读取自动登录日志...';
+    async function openAutoLoginLogs(accountID) {
+      if (!accountID) return;
+      $('autoLoginLogsModal').classList.add('show');
+      $('autoLoginLogsHint').textContent = `账号 ${accountID}；验证码明文仅限当前账号用户查看。`;
+      $('autoLoginLogsBody').innerHTML = '<div class="muted">正在加载…</div>';
       try {
-        const data=await api('/api/icloud/auto-login/logs',{method:'POST',loadingText:'正在读取自动登录日志...',body:JSON.stringify({account_id:session.account_id,reveal_codes:!!revealCodes})});
-        const logs=data.logs||[];
-        if(!logs.length){container.innerHTML='<strong>自动登录日志</strong><p class="muted">该账号还没有触发过自动接码登录。只有系统明确检测到新接口或旧接口登录态失效时才会自动执行。</p>';return;}
-        const warning=revealCodes?'<div class="guide-warning">日志按产品设置显示短信验证码，请勿截图或转发；关闭账号弹窗后会立即从页面移除。</div>':'';
-        container.innerHTML=`<div class="selector-label-row"><strong>最近 ${logs.length} 次自动登录日志（每账号最多 10 次）</strong><span class="muted">账号：${esc(data.apple_id||session.apple_id||'-')}</span></div>${warning}`+logs.map((entry,index)=>{
-          const steps=(entry.steps||[]).map(step=>`<div class="submailbox-item"><strong>${esc(step.stage||'流程')}</strong><span>${esc(step.at||'-')} · ${esc(step.message||'')}${step.code?` · 验证码：<span class="mono">${esc(step.code)}</span>`:''}</span></div>`).join('');
-          const summary=`${autoLoginLogStatusText(entry.status)} · ${entry.started_at||'-'}${entry.finished_at?' 至 '+entry.finished_at:''}`;
-          return `<details ${index===0?'open':''}><summary><strong>${esc(entry.trigger||'自动登录')}</strong> · ${esc(summary)}</summary><div class="submailbox-grid">${steps||'<span class="muted">暂无流程明细</span>'}</div>${entry.error?`<div class="guide-warning">失败原因：${esc(entry.error)}</div>`:''}</details>`;
-        }).join('');
-      } catch(err){container.textContent='读取自动登录日志失败：'+err.message;}
+        const data = await api('/api/icloud/auto-login/logs?account_id=' + encodeURIComponent(accountID));
+        const logs = data.logs || [];
+        $('autoLoginLogsBody').innerHTML = logs.length ? logs.map((item, index) => `<section class="session-tool-card"><div class="panel-head"><div><h3>#${index + 1} ${item.status === 'success' ? '成功' : (item.status === 'running' ? '进行中' : '失败/取消')}</h3><p>${esc(exactTimeText(item.started_at || ''))}${item.finished_at ? ' → ' + esc(exactTimeText(item.finished_at)) : ''}</p></div><span class="login-chip ${item.status === 'success' ? 'on' : 'off'}">${esc(item.status || '-')}</span></div>${item.error ? `<div class="notice">${esc(item.error)}</div>` : ''}<div class="log" style="min-height:0">${(item.steps || []).map(step => `[${esc(exactTimeText(step.at || ''))}] ${step.ok ? '✓' : '✗'} ${esc(step.stage || '-')}：${esc(step.message || '-')}${step.code ? ` ｜ 验证码：<strong>${esc(step.code)}</strong>` : ''}`).join('<br>') || '暂无流程步骤'}</div></section>`).join('') : '<div class="empty">该账号暂无自动登录记录。</div>';
+      } catch (err) {
+        $('autoLoginLogsBody').innerHTML = `<div class="notice">日志读取失败：${esc(err.message)}</div>`;
+      }
     }
+    function closeAutoLoginLogs(event) { if (event && event.target !== $('autoLoginLogsModal')) return; $('autoLoginLogsModal').classList.remove('show'); }
 
     async function loadFixedProxy() {
       try {
@@ -3818,67 +3886,55 @@
     }
 
     let proxyPoolNodes = [];
-    function updateProxyPoolSourceHint() {
-      const subscription = $('proxyPoolSourceType').value === 'subscription';
-      $('proxyPoolSource').rows = subscription ? 2 : 7;
-      $('proxyPoolSource').placeholder = subscription ? 'https://example.com/clash-subscription' : '粘贴 Clash/Mihomo YAML，系统只读取 proxies 节点';
-    }
-
-    function renderProxyPoolNodes(selected) {
-      const select = $('accountProxyPoolNode'); if (!select) return;
-      const current = selected !== undefined ? selected : select.value;
-      select.innerHTML = '<option value="">使用原有固定代理或服务器直连</option>' + proxyPoolNodes.map(node => `<option value="${esc(node.name)}">${esc(node.name)} · ${esc(node.type)}${node.dialer_proxy ? ' · 经 '+esc(node.dialer_proxy) : ''}</option>`).join('');
-      select.value = proxyPoolNodes.some(node => node.name === current) ? current : '';
-    }
-
-    async function loadProxyPool() {
+    async function loadProxyPoolNodes() {
       try {
-        const data = await api('/api/user/proxy-pool'); const pool = data.pool || {};
-        proxyPoolNodes = pool.nodes || [];
-        $('proxyPoolEnabled').value = data.configured ? (pool.enabled ? 'true' : 'false') : 'true';
-        const session = activeICloudSessionForBinding();
-        renderProxyPoolNodes(session ? (session.proxy_pool_node || '') : '');
-        $('proxyPoolStatus').textContent = data.configured ? `${pool.status || '代理池已配置'}；${proxyPoolNodes.length} 个节点${pool.source_masked ? '；来源 '+pool.source_masked : ''}${pool.last_error ? '；错误 '+pool.last_error : ''}` : '尚未导入代理池';
-      } catch (err) { $('proxyPoolStatus').textContent = '读取代理池失败：' + err.message; }
+        const data = await api('/api/proxy-pool/nodes'); proxyPoolNodes = data.nodes || [];
+        if ($('proxyPoolRows')) $('proxyPoolRows').innerHTML = proxyPoolNodes.length ? proxyPoolNodes.map(n => `<tr><td><strong>${esc(n.name||n.tag)}</strong><br><span class="mono muted">${esc(n.tag)}</span></td><td>${n.port||'-'}</td><td>${n.available&&!n.blacklisted?'<span class="login-chip on">可用</span>':'<span class="login-chip off">不可用</span>'}${n.last_error?sessionLoginError(n.last_error):''}</td><td>${Number(n.latency_ms)>=0?esc(String(n.latency_ms))+' ms':'未测速'}</td><td>${(n.bound_accounts||[]).length?(n.bound_accounts||[]).map(v=>`<span class="login-chip">${esc(v)}</span>`).join(' '):'<span class="muted">未绑定</span>'}</td></tr>`).join('') : '<tr><td colspan="5" class="muted">代理池为空，请先导入订阅或 YAML</td></tr>';
+        if ($('proxyPoolStatus')) $('proxyPoolStatus').textContent = `共 ${proxyPoolNodes.length} 个节点，可用 ${proxyPoolNodes.filter(n=>n.available&&!n.blacklisted).length} 个`;
+        if ($('navProxyCount')) $('navProxyCount').textContent = String(proxyPoolNodes.filter(n=>n.available&&!n.blacklisted).length);
+        const select=$('accountProxyNode'); if(select){const selected=select.value;select.innerHTML='<option value="">直连 / 用户固定代理回退</option>'+proxyPoolNodes.map(n=>`<option value="${esc(n.tag)}" ${n.available&&!n.blacklisted?'':'disabled'}>${esc(n.name||n.tag)} · ${n.available?((n.latency_ms||0)+'ms'):'不可用'} · 已绑 ${(n.bound_accounts||[]).length}</option>`).join('');select.value=selected;}
+        return proxyPoolNodes;
+      } catch(err) { if($('proxyPoolStatus')) $('proxyPoolStatus').textContent='代理池不可用：'+err.message; if($('navProxyCount')) $('navProxyCount').textContent='!'; return []; }
     }
 
     async function importProxyPool() {
-      const source = $('proxyPoolSource').value.trim(); if (!source) { $('proxyPoolStatus').textContent='请填写 YAML 或 HTTPS 订阅链接'; return; }
-      try {
-        const data = await api('/api/user/proxy-pool/import',{method:'POST',loadingText:'正在校验并加密导入代理池...',body:JSON.stringify({source_type:$('proxyPoolSourceType').value,source,enabled:$('proxyPoolEnabled').value==='true'})});
-        $('proxyPoolSource').value=''; $('proxyPoolStatus').textContent=data.message || '代理池已导入'; await loadProxyPool();
-      } catch(err) { $('proxyPoolStatus').textContent='导入失败：'+err.message; }
+      const url=$('proxySubscriptionURL').value.trim(), yaml=$('proxyYAML').value.trim(); if(!url&&!yaml){$('proxyPoolStatus').textContent='请输入订阅链接或 YAML 内容';return;}
+      $('proxyPoolStatus').textContent='正在解析、测速并生成代理节点，请稍候…';
+      try{const data=await api('/api/proxy-pool/import',{method:'POST',loadingText:'正在导入代理池...',body:JSON.stringify({url,yaml,tag_prefix:'icloud'})});$('proxyPoolStatus').textContent=data.message||'代理导入任务已启动';setTimeout(loadProxyPoolNodes,3000);}catch(err){$('proxyPoolStatus').textContent='导入失败：'+err.message;}
     }
 
-    async function refreshProxyPool() {
-      try { const data=await api('/api/user/proxy-pool/refresh',{method:'POST',loadingText:'正在安全刷新代理订阅...',body:'{}'}); $('proxyPoolStatus').textContent=data.message; await loadProxyPool(); }
-      catch(err) { $('proxyPoolStatus').textContent='刷新失败：'+err.message; }
+    async function testProxyPool() {
+      const button=$('proxyPoolTestButton');
+      if(button){button.disabled=true;button.textContent='测速中…';}
+      $('proxyPoolStatus').textContent='正在测试全部代理池节点，请稍候…';
+      try{
+        const data=await api('/api/proxy-pool/test',{method:'POST',body:'{}',loadingText:'正在启动测速任务...'});
+        const jobID=String(data.job_id||'');
+        if(!jobID) throw new Error('服务器未返回测速任务编号');
+        const deadline=Date.now()+5*60*1000;
+        let finished=false;
+        while(Date.now()<deadline){
+          const status=await api('/api/proxy-pool/test-status?id='+encodeURIComponent(jobID),{showLoading:false});
+          const result=status.result||{};
+          $('proxyPoolStatus').textContent=status.message||'正在测速…';
+          if(result.status==='finished'){finished=true;break;}
+          if(result.status==='failed'||result.status==='canceled') throw new Error(status.message||result.error||'测速任务失败');
+          await new Promise(resolve=>setTimeout(resolve,1000));
+        }
+        if(!finished) throw new Error('测速超过 5 分钟，请稍后刷新查看节点状态');
+        await loadProxyPoolNodes();
+      }catch(err){$('proxyPoolStatus').textContent='测速失败：'+err.message;}
+      finally{if(button){button.disabled=false;button.textContent='全部节点测速';}}
     }
 
-    async function saveProxyPoolEnabled() {
-      const enabled=$('proxyPoolEnabled').value==='true';
-      try { const data=await api('/api/user/proxy-pool/status',{method:'POST',loadingText:enabled?'正在启用代理池...':'正在暂停代理池...',body:JSON.stringify({enabled})}); $('proxyPoolStatus').textContent=data.message; await loadProxyPool(); }
-      catch(err) { $('proxyPoolStatus').textContent='保存启用状态失败：'+err.message; }
-    }
-
-    async function bindAccountProxyPoolNode() {
-      const session=activeICloudSessionForBinding(); if(!session||!session.account_id){$('accountProxyPoolStatus').textContent='请先保存账号登录态，再绑定代理节点';return;}
-      const node=$('accountProxyPoolNode').value;
-      try { const data=await api('/api/user/proxy-pool/bind',{method:'POST',loadingText:'正在保存账号固定代理...',body:JSON.stringify({account_id:session.account_id,node})});$('accountProxyPoolStatus').textContent=data.message;await refresh(); }
-      catch(err){$('accountProxyPoolStatus').textContent='保存失败：'+err.message;}
-    }
-
-    async function testAccountProxyPoolNode() {
-      const session=activeICloudSessionForBinding();const node=$('accountProxyPoolNode').value;if(!node){$('accountProxyPoolStatus').textContent='请先选择代理池节点';return;}
-      try {const data=await api('/api/user/proxy-pool/test',{method:'POST',loadingText:'正在启动并检测代理节点...',body:JSON.stringify({account_id:(session||{}).account_id||'',node})});$('accountProxyPoolStatus').textContent=`节点正常；出口 IP ${data.exit_ip||'-'}；延迟 ${data.latency_ms||0}ms；TLS ${data.tls_ok?'正常':'异常'}`;}
-      catch(err){$('accountProxyPoolStatus').textContent='节点异常：'+err.message;}
+    async function bindAccountProxy() {
+      const session=activeICloudSessionForBinding(); if(!session||!session.account_id){$('accountProxyStatus').textContent='请先保存登录态账号';return;}
+      try{const d=await api('/api/proxy-pool/bind',{method:'POST',loadingText:'正在保存账号代理...',body:JSON.stringify({account_id:session.account_id,node_tag:$('accountProxyNode').value})});$('accountProxyStatus').textContent=d.message;await refresh();await loadProxyPoolNodes();}catch(err){$('accountProxyStatus').textContent='保存失败：'+err.message;}
     }
 
     async function saveFixedProxy() {
       try {
-        let proxyURL=$('fixedProxyURL').value.trim();
-        if (proxyURL && !proxyURL.includes('://')) proxyURL='http://'+proxyURL;
-        const data=await api('/api/user/fixed-proxy',{method:'POST',loadingText:'正在加密保存固定代理...',body:JSON.stringify({url:proxyURL,enabled:$('fixedProxyEnabled').value==='true'})});
+        const data=await api('/api/user/fixed-proxy',{method:'POST',loadingText:'正在加密保存固定代理...',body:JSON.stringify({url:$('fixedProxyURL').value.trim(),enabled:$('fixedProxyEnabled').value==='true'})});
         $('fixedProxyURL').value=''; $('fixedProxyStatus').textContent=data.message; await loadFixedProxy();
       } catch(err) { $('fixedProxyStatus').textContent='代理异常：'+err.message; }
     }
@@ -3897,13 +3953,19 @@
 
     async function checkICloudIMAPLogin() {
       const button = $('imapCheckButton');
+      const session = activeICloudSessionForBinding();
+      const accountID = activeICloudSessionKey && session ? String(session.account_id || '').trim() : '';
+      if (!accountID) {
+        $('imapLoginStatus').textContent = '新增账号尚未保存，不能执行单账号取码检测。';
+        return;
+      }
       button.disabled = true;
-      $('imapLoginStatus').textContent = '正在检测已保存的取码登录...';
+      $('imapLoginStatus').textContent = '正在检测当前账号的取码登录...';
       try {
-        const data = await api('/api/icloud/imap-login/check', {method:'POST', body: JSON.stringify({account_id: activeICloudSessionKey ? activeICloudSessionAccountID() : ''})});
+        const data = await api('/api/icloud/imap-login/check', {method:'POST', body: JSON.stringify({account_id:accountID})});
         if (data.sessions) renderICloudSessions(data.sessions);
-        $('imapLoginStatus').textContent = data.message || '取码登录检测完成';
-        log(data.message || '取码登录检测完成');
+        $('imapLoginStatus').textContent = '当前账号：' + (data.message || '取码登录检测完成');
+        log('当前账号取码检测：' + (data.message || '检测完成'));
         await refresh();
       } catch (err) {
         $('imapLoginStatus').textContent = '取码登录检测失败：' + err.message;
@@ -3920,7 +3982,7 @@
       if (!appleId || !password) { setLoginActionState(button, false, '', '旧接口登录', '请输入 Apple ID 和密码'); return; }
       setLoginActionState(button, true, '旧接口登录中...', '旧接口登录', '正在提交旧接口登录，请稍候...');
       try {
-        const data = await apiWithTimeout('/api/icloud/protocol-login/start', {method:'POST', body: JSON.stringify({account_id:activeICloudSessionKey ? activeICloudSessionAccountID() : '',apple_id:appleId,password,two_factor_method:twoFactorMethodPayloadValue('iCloudWeb2FAMethod')})});
+        const session=activeICloudSessionForBinding(); const data = await apiWithTimeout('/api/icloud/protocol-login/start', {method:'POST', body: JSON.stringify({account_id:(session||{}).account_id||'',apple_id:appleId,password,two_factor_method:twoFactorMethodPayloadValue('iCloudWeb2FAMethod')})});
         $('protocolPassword').value = '';
         if (data.needs_2fa) {
           protocolPendingID = data.pending_id || '';
@@ -3982,7 +4044,7 @@
       if (!appleId || !password) { setLoginActionState(button, false, '', '新接口登录', '请输入 Apple ID 和密码'); return; }
       setLoginActionState(button, true, '新接口登录中...', '新接口登录', '正在提交新接口登录，请稍候...');
       try {
-        const data = await apiWithTimeout('/api/apple-account/login/start', {method:'POST', body:JSON.stringify({account_id:activeICloudSessionKey ? activeICloudSessionAccountID() : '',apple_id:appleId,password,two_factor_method:twoFactorMethodPayloadValue('appleAccount2FAMethod')})});
+        const session=activeICloudSessionForBinding(); const data = await apiWithTimeout('/api/apple-account/login/start', {method:'POST', body:JSON.stringify({account_id:(session||{}).account_id||'',apple_id:appleId,password,two_factor_method:twoFactorMethodPayloadValue('appleAccount2FAMethod')})});
         $('protocolPassword').value = '';
         if (data.needs_2fa) {
           appleAccountPendingID = data.pending_id || '';
@@ -4152,6 +4214,14 @@
       return url;
     }
 
+    function mailboxAccessURL(row, type = 'json') {
+      const url = new URL(row.api_url || '', location.origin);
+      const suffix = type === 'visual' ? 'view' : (type === 'content' ? 'content' : 'code');
+      url.pathname = url.pathname.replace(/\/(?:code|view|content)\/?$/, '/' + suffix);
+      url.search = '';
+      return url.toString();
+    }
+
     async function syncMailbox(id) {
       const row = lastMailboxes.find(x => x.id === id);
       log('开始同步邮件：' + (row ? row.email : id));
@@ -4241,12 +4311,14 @@
       const row = lastMailboxes.find(x => x.id === id);
       if (!row) return;
       const email = row.email || '';
-      const apiURL = mailboxCodeURL(row, {waitMs: 12000}).toString();
-      const value = mode === 'email' ? email : (mode === 'api' ? apiURL : `${email}----${apiURL}`);
+      const type = mode.includes('visual') ? 'visual' : (mode.includes('content') ? 'content' : 'json');
+      const apiURL = mailboxAccessURL(row, type);
+      const value = mode === 'email' ? email : (mode.startsWith('both-') ? `${email}----${apiURL}` : apiURL);
       await writeClipboard(value);
       activeMailboxCopyMenuID = '';
       renderMailboxes();
-      const label = mode === 'email' ? '邮箱' : (mode === 'api' ? 'API' : '邮箱+API');
+      const typeName = type === 'visual' ? '可视化地址' : (type === 'content' ? '邮件内容地址' : 'JSON 取码地址');
+      const label = mode === 'email' ? '邮箱' : (mode.startsWith('both-') ? `邮箱+${typeName}` : typeName);
       log(`已复制${label}：${email}`);
     }
 
@@ -4317,7 +4389,7 @@
     ensureAuth()
       .then(() => checkUnreadAnnouncements().catch(err => log('读取公告失败：' + err.message)))
       .then(() => currentUser && currentUser.expired ? null : loadCreateSettings().catch(err => log('读取创建配置失败：' + err.message)))
-      .then(() => currentUser && currentUser.expired ? null : Promise.all([refresh(), refreshMailboxScheduler({silent: true})]))
+      .then(() => currentUser && currentUser.expired ? null : Promise.all([refresh(), refreshMailboxScheduler({silent: true}), loadFixedProxy(), loadProxyPoolNodes()]))
       .then(() => currentUser && currentUser.expired ? null : loadUpdateStatus().catch(err => log('检查更新失败：' + err.message)))
       .then(() => currentUser && currentUser.expired ? null : ensureSchedulerPolling())
       .catch(err => log('登录检查失败：' + err.message));

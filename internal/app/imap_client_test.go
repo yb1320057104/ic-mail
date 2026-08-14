@@ -1,12 +1,57 @@
 package app
 
 import (
+	"bufio"
+	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestIMAPWaitForExistsAcceptsEventBeforeIdleContinuation(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		reader := bufio.NewReader(server)
+		command, err := reader.ReadString('\n')
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if command != "A003 IDLE\r\n" {
+			serverErr <- fmt.Errorf("IDLE command = %q", command)
+			return
+		}
+		if _, err := fmt.Fprint(server, "* 31 EXISTS\r\n+ idling\r\n"); err != nil {
+			serverErr <- err
+			return
+		}
+		done, err := reader.ReadString('\n')
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if done != "DONE\r\n" {
+			serverErr <- fmt.Errorf("DONE command = %q", done)
+			return
+		}
+		_, err = fmt.Fprint(server, "A003 OK IDLE completed\r\n")
+		serverErr <- err
+	}()
+
+	if err := imapWaitForExists(context.Background(), client, bufio.NewReader(client), "A003"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDecodeMIMEHeaderAcceptsUTF8Alias(t *testing.T) {
 	got := decodeMIMEHeader(`=?UTF8?B?5p2o5Y2a?= <sender@example.com>`)

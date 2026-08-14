@@ -17,16 +17,17 @@ const (
 	maxMailboxSchedulerEvents        = 200
 )
 
-var defaultMailboxSchedulerRoundInterval = 5 * time.Second
+var defaultMailboxSchedulerRoundInterval = 120 * time.Second
 
 type mailboxSchedulerConfig struct {
-	AccountIDs    []string
-	Label         string
-	Note          string
-	CreateChannel mailboxCreateChannel
-	BatchSize     int
-	Interval      time.Duration
-	RoundInterval time.Duration
+	AccountIDs         []string
+	Label              string
+	Note               string
+	CreateChannel      mailboxCreateChannel
+	BatchSize          int
+	Interval           time.Duration
+	RoundInterval      time.Duration
+	TargetMailboxCount int
 }
 
 type mailboxSchedulerJob struct {
@@ -49,6 +50,7 @@ type mailboxSchedulerState struct {
 	BatchSize            int
 	IntervalSeconds      int
 	RoundIntervalSeconds int
+	TargetMailboxCount   int
 	Status               string
 	BatchIndex           int
 	Success              int
@@ -84,6 +86,7 @@ type publicMailboxScheduler struct {
 	IntervalSeconds      int                           `json:"interval_seconds"`
 	IntervalMinutes      int                           `json:"interval_minutes"`
 	RoundIntervalSeconds int                           `json:"round_interval_seconds"`
+	TargetMailboxCount   int                           `json:"target_mailbox_count"`
 	Status               string                        `json:"status"`
 	BatchIndex           int                           `json:"batch_index"`
 	Success              int                           `json:"success"`
@@ -126,6 +129,7 @@ func (s *Server) handleStartMailboxScheduler(w http.ResponseWriter, r *http.Requ
 		IntervalMinutes      int      `json:"interval_minutes"`
 		IntervalSeconds      int      `json:"interval_seconds"`
 		RoundIntervalSeconds int      `json:"round_interval_seconds"`
+		TargetMailboxCount   int      `json:"target_mailbox_count"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -150,13 +154,21 @@ func (s *Server) handleStartMailboxScheduler(w http.ResponseWriter, r *http.Requ
 	}
 
 	cfg := mailboxSchedulerConfig{
-		AccountIDs:    accountIDs,
-		Label:         strings.TrimSpace(payload.Label),
-		Note:          strings.TrimSpace(payload.Note),
-		CreateChannel: normalizeMailboxCreateChannel(mailboxCreateChannel(strings.ToLower(strings.TrimSpace(payload.CreateChannel)))),
-		BatchSize:     defaultMailboxSchedulerBatchSize,
-		Interval:      defaultMailboxSchedulerInterval,
-		RoundInterval: defaultMailboxSchedulerRoundInterval,
+		AccountIDs:         accountIDs,
+		Label:              strings.TrimSpace(payload.Label),
+		Note:               strings.TrimSpace(payload.Note),
+		CreateChannel:      normalizeMailboxCreateChannel(mailboxCreateChannel(strings.ToLower(strings.TrimSpace(payload.CreateChannel)))),
+		BatchSize:          defaultMailboxSchedulerBatchSize,
+		Interval:           defaultMailboxSchedulerInterval,
+		RoundInterval:      defaultMailboxSchedulerRoundInterval,
+		TargetMailboxCount: payload.TargetMailboxCount,
+	}
+	if cfg.TargetMailboxCount < 1 {
+		cfg.TargetMailboxCount = 750
+	}
+	if cfg.TargetMailboxCount > 750 {
+		writeError(w, http.StatusBadRequest, errCode("target_mailbox_count_invalid", "每账号目标邮箱数量最高不能超过 750", false))
+		return
 	}
 	if payload.IntervalSeconds > 0 {
 		cfg.Interval = time.Duration(payload.IntervalSeconds) * time.Second
@@ -188,6 +200,7 @@ func (s *Server) handleStartMailboxScheduler(w http.ResponseWriter, r *http.Requ
 			BatchSize:            cfg.BatchSize,
 			IntervalSeconds:      int(cfg.Interval.Round(time.Second).Seconds()),
 			RoundIntervalSeconds: int(cfg.RoundInterval.Round(time.Second).Seconds()),
+			TargetMailboxCount:   cfg.TargetMailboxCount,
 			Status:               "running",
 			StartedAt:            time.Now(),
 		},
@@ -274,7 +287,15 @@ func (s *Server) runMailboxScheduler(ctx context.Context, ownerID string, job *m
 		job.addEventLocked("batch_started", schedulerBatchStartedMessage(batch), batch, Mailbox{}, nil)
 		job.mu.Unlock()
 
-		s.runMailboxSchedulerBatch(ctx, ownerID, job, cfg, batch)
+		if s.runMailboxSchedulerBatch(ctx, ownerID, job, cfg, batch) {
+			job.mu.Lock()
+			job.state.Running = false
+			job.state.Status = "target_reached"
+			job.state.StoppedAt = time.Now()
+			job.addEventLocked("target_reached", fmt.Sprintf("全部参与账号均已达到每账号 %d 个邮箱的目标，自动创建已停止", cfg.TargetMailboxCount), batch, Mailbox{}, nil)
+			job.mu.Unlock()
+			return
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -296,7 +317,10 @@ func (s *Server) runMailboxScheduler(ctx context.Context, ownerID string, job *m
 	}
 }
 
-func (s *Server) runMailboxSchedulerBatch(ctx context.Context, ownerID string, job *mailboxSchedulerJob, cfg mailboxSchedulerConfig, batch int) {
+func (s *Server) runMailboxSchedulerBatch(ctx context.Context, ownerID string, job *mailboxSchedulerJob, cfg mailboxSchedulerConfig, batch int) bool {
+	if cfg.TargetMailboxCount < 1 || cfg.TargetMailboxCount > 750 {
+		cfg.TargetMailboxCount = 750
+	}
 	batchAccountIDs := normalizeAccountIDSelection("", cfg.AccountIDs)
 	if len(batchAccountIDs) == 0 {
 		for _, session := range s.sessionsForOwnerAccounts(ownerID, cfg.AccountIDs) {
@@ -310,9 +334,25 @@ func (s *Server) runMailboxSchedulerBatch(ctx context.Context, ownerID string, j
 	oneShotNextChannels := make(map[string]mailboxCreateChannel)
 	transientRetriedChannels := make(map[string]map[mailboxCreateChannel]bool)
 	skippedThisBatch := make(map[string]bool)
+	targetReached := make(map[string]bool)
+	markTargetsReached := func() {
+		counts := s.mailboxCountsByAccount(ownerID)
+		for _, accountID := range batchAccountIDs {
+			accountID = strings.TrimSpace(accountID)
+			if accountID == "" || targetReached[accountID] || counts[accountID] < cfg.TargetMailboxCount {
+				continue
+			}
+			targetReached[accountID] = true
+			skippedThisBatch[accountID] = true
+			job.addEventLocked("target_reached", fmt.Sprintf("账号 %s 已有 %d 个邮箱，达到目标 %d，本账号停止创建", s.schedulerMailboxAccountLabel(accountID), counts[accountID], cfg.TargetMailboxCount), batch, Mailbox{}, nil)
+		}
+	}
+	job.mu.Lock()
+	markTargetsReached()
+	job.mu.Unlock()
 	for _, accountID := range batchAccountIDs {
 		accountID = strings.TrimSpace(accountID)
-		if accountID == "" || len(accountChannels[accountID]) > 0 {
+		if accountID == "" || targetReached[accountID] || len(accountChannels[accountID]) > 0 {
 			continue
 		}
 		skippedThisBatch[accountID] = true
@@ -325,20 +365,20 @@ func (s *Server) runMailboxSchedulerBatch(ctx context.Context, ownerID string, j
 	}
 	for index := 1; ; index++ {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		activeRequests := activeSchedulerCreateRequests(batchAccountIDs, accountChannels, disabledChannels, skippedThisBatch, oneShotNextChannels)
 		if len(activeRequests) == 0 {
 			job.mu.Lock()
 			job.addEventLocked("skipped", fmt.Sprintf("第 %d 次定时创建剩余账号都已临时跳过，下一次定时创建会重新尝试", batch), batch, Mailbox{}, nil)
 			job.mu.Unlock()
-			return
+			return len(targetReached) == len(batchAccountIDs) && len(batchAccountIDs) > 0
 		}
 		label := schedulerMailboxLabel(cfg.Label, batch, index, 0)
 		mailboxes, remotes, failures, err := s.createMailboxesForOwnerWithChannels(ctx, ownerID, activeRequests, label, cfg.Note)
 		if err != nil && len(mailboxes) == 0 && len(failures) == 0 {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return
+				return false
 			}
 			s.logICloudCreateError(ownerID, err)
 			message := schedulerErrorMessage(err)
@@ -347,7 +387,7 @@ func (s *Server) runMailboxSchedulerBatch(ctx context.Context, ownerID string, j
 			job.state.LastError = message
 			job.addEventLocked("failed", schedulerBatchFailedMessage(index, message), batch, Mailbox{}, err)
 			job.mu.Unlock()
-			return
+			return false
 		}
 		job.mu.Lock()
 		job.state.Success += len(mailboxes)
@@ -410,14 +450,29 @@ func (s *Server) runMailboxSchedulerBatch(ctx context.Context, ownerID string, j
 				job.addEventLocked("failed", schedulerAccountFailedMessage(index, accountLabel, channel, failure.Error), batch, Mailbox{}, errors.New(failure.Error))
 			}
 		}
+		markTargetsReached()
 		hasNextRound := len(activeSchedulerCreateRequests(batchAccountIDs, accountChannels, disabledChannels, skippedThisBatch, oneShotNextChannels)) > 0
+		allTargetsReached := len(targetReached) == len(batchAccountIDs) && len(batchAccountIDs) > 0
 		job.mu.Unlock()
+		if allTargetsReached {
+			return true
+		}
 		if hasNextRound {
 			if err := waitMailboxSchedulerRoundInterval(ctx, cfg.RoundInterval); err != nil {
-				return
+				return false
 			}
 		}
 	}
+}
+
+func (s *Server) mailboxCountsByAccount(ownerID string) map[string]int {
+	counts := make(map[string]int)
+	for _, mailbox := range s.store.SnapshotForOwner(ownerID).Mailboxes {
+		if accountID := strings.TrimSpace(mailbox.AccountID); accountID != "" {
+			counts[accountID]++
+		}
+	}
+	return counts
 }
 
 func waitMailboxSchedulerRoundInterval(ctx context.Context, interval time.Duration) error {
@@ -683,6 +738,7 @@ func (s *Server) publicMailboxScheduler(r *http.Request) publicMailboxScheduler 
 			IntervalSeconds:      int(defaultMailboxSchedulerInterval.Seconds()),
 			IntervalMinutes:      int(defaultMailboxSchedulerInterval.Minutes()),
 			RoundIntervalSeconds: int(defaultMailboxSchedulerRoundInterval.Seconds()),
+			TargetMailboxCount:   750,
 			CreateChannel:        string(mailboxCreateChannelAuto),
 			CreateChannelLabel:   mailboxCreateChannelLabel(mailboxCreateChannelAuto),
 			Status:               "stopped",
@@ -703,6 +759,7 @@ func (s *Server) publicMailboxScheduler(r *http.Request) publicMailboxScheduler 
 		IntervalSeconds:      state.IntervalSeconds,
 		IntervalMinutes:      state.IntervalSeconds / 60,
 		RoundIntervalSeconds: state.RoundIntervalSeconds,
+		TargetMailboxCount:   state.TargetMailboxCount,
 		Status:               state.Status,
 		BatchIndex:           state.BatchIndex,
 		Success:              state.Success,

@@ -386,6 +386,8 @@ func (s *Server) handleImportProxyPool(w http.ResponseWriter, r *http.Request) {
 		SourceType string `json:"source_type"`
 		Source     string `json:"source"`
 		Enabled    bool   `json:"enabled"`
+		URL        string `json:"url"`
+		YAML       string `json:"yaml"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, 400, err)
@@ -398,6 +400,12 @@ func (s *Server) handleImportProxyPool(w http.ResponseWriter, r *http.Request) {
 	}
 	typ := strings.ToLower(strings.TrimSpace(payload.SourceType))
 	source := strings.TrimSpace(payload.Source)
+	if source == "" && strings.TrimSpace(payload.YAML) != "" {
+		typ, source, payload.Enabled = "yaml", strings.TrimSpace(payload.YAML), true
+	}
+	if source == "" && strings.TrimSpace(payload.URL) != "" {
+		typ, source, payload.Enabled = "subscription", strings.TrimSpace(payload.URL), true
+	}
 	var data []byte
 	var err error
 	switch typ {
@@ -548,12 +556,16 @@ func (s *Server) handleBindAccountProxyPool(w http.ResponseWriter, r *http.Reque
 	var payload struct {
 		AccountID string `json:"account_id"`
 		Node      string `json:"node"`
+		NodeTag   string `json:"node_tag"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, 400, err)
 		return
 	}
 	owner := requestOwnerID(r, s.store)
+	if strings.TrimSpace(payload.Node) == "" {
+		payload.Node = payload.NodeTag
+	}
 	if strings.TrimSpace(payload.AccountID) == "" {
 		writeError(w, 400, errCode("account_required", "请选择 Apple 账号", false))
 		return
@@ -579,6 +591,142 @@ func (s *Server) handleBindAccountProxyPool(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, 200, map[string]any{"success": true, "message": firstNonEmpty(map[bool]string{true: "账号已改回原有固定代理/直连", false: "账号已绑定固定代理池节点"}[strings.TrimSpace(payload.Node) == ""], "代理设置已保存")})
+}
+
+type proxyPoolNodeTestResult struct {
+	Available bool   `json:"available"`
+	LatencyMS int64  `json:"latency_ms"`
+	ExitIP    string `json:"exit_ip,omitempty"`
+	TLSOK     bool   `json:"tls_ok"`
+	LastError string `json:"last_error,omitempty"`
+}
+
+type proxyPoolTestJob struct {
+	ID        string `json:"id"`
+	OwnerID   string `json:"-"`
+	Status    string `json:"status"`
+	Total     int    `json:"total"`
+	Completed int    `json:"completed"`
+	Passed    int    `json:"passed"`
+	Failed    int    `json:"failed"`
+	Message   string `json:"message,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (s *Server) handleProxyPoolNodesCompat(w http.ResponseWriter, r *http.Request) {
+	owner := requestOwnerID(r, s.store)
+	config, _ := s.store.UserProxyConfig(owner)
+	state := s.store.SnapshotForOwner(owner)
+	bound := make(map[string][]string)
+	for _, account := range state.Accounts {
+		if node := strings.TrimSpace(account.ProxyPoolNode); node != "" {
+			label := firstNonEmpty(account.AppleID, account.Label, account.ID)
+			bound[node] = append(bound[node], label)
+		}
+	}
+	s.proxyPoolTestMu.Lock()
+	results := make(map[string]proxyPoolNodeTestResult)
+	for name, result := range s.proxyPoolNodeResults[owner] {
+		results[name] = result
+	}
+	s.proxyPoolTestMu.Unlock()
+	nodes := make([]map[string]any, 0, len(config.PoolNodes))
+	for _, node := range config.PoolNodes {
+		result, tested := results[node.Name]
+		nodes = append(nodes, map[string]any{
+			"tag": node.Name, "name": node.Name, "type": node.Type,
+			"available": tested && result.Available, "blacklisted": false,
+			"latency_ms": map[bool]int64{true: result.LatencyMS, false: -1}[tested],
+			"exit_ip":    result.ExitIP, "tls_ok": result.TLSOK,
+			"last_error": result.LastError, "bound_accounts": bound[node.Name],
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "enabled": config.PoolEnabled, "nodes": nodes})
+}
+
+func (s *Server) handleStartProxyPoolTestCompat(w http.ResponseWriter, r *http.Request) {
+	owner := requestOwnerID(r, s.store)
+	config, ok := s.store.UserProxyConfig(owner)
+	if !ok || !config.PoolEnabled || len(config.PoolNodes) == 0 {
+		writeError(w, http.StatusBadRequest, errCode("proxy_pool_disabled", "该账号绑定的代理池未启用或没有节点", false))
+		return
+	}
+	jobID, err := randomToken(18)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	job := &proxyPoolTestJob{ID: jobID, OwnerID: owner, Status: "running", Total: len(config.PoolNodes), Message: "代理节点异步测速已启动"}
+	s.proxyPoolTestMu.Lock()
+	s.proxyPoolTestJobs[job.ID] = job
+	s.proxyPoolNodeResults[owner] = make(map[string]proxyPoolNodeTestResult, len(config.PoolNodes))
+	s.proxyPoolTestMu.Unlock()
+	go s.runProxyPoolTestJob(job.ID, owner, config.PoolNodes)
+	writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "job_id": job.ID, "id": job.ID, "message": job.Message})
+}
+
+func (s *Server) runProxyPoolTestJob(jobID, owner string, nodes []ProxyPoolNode) {
+	type completedResult struct {
+		name   string
+		result proxyPoolNodeTestResult
+	}
+	results := make(chan completedResult, len(nodes))
+	limit := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for _, node := range nodes {
+		node := node
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			limit <- struct{}{}
+			defer func() { <-limit }()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			result := proxyPoolNodeTestResult{LatencyMS: -1}
+			port, err := s.proxyPool.ensure(owner, node.Name)
+			if err == nil {
+				result.ExitIP, result.LatencyMS, result.TLSOK, err = testLoopbackHTTPProxy(ctx, port)
+			}
+			result.Available = err == nil
+			if err != nil {
+				result.LastError = err.Error()
+			}
+			results <- completedResult{name: node.Name, result: result}
+		}()
+	}
+	go func() { wg.Wait(); close(results) }()
+	for completed := range results {
+		s.proxyPoolTestMu.Lock()
+		s.proxyPoolNodeResults[owner][completed.name] = completed.result
+		job := s.proxyPoolTestJobs[jobID]
+		job.Completed++
+		if completed.result.Available {
+			job.Passed++
+		} else {
+			job.Failed++
+		}
+		s.proxyPoolTestMu.Unlock()
+	}
+	s.proxyPoolTestMu.Lock()
+	if job := s.proxyPoolTestJobs[jobID]; job != nil {
+		job.Status = "finished"
+		job.Message = fmt.Sprintf("测速完成：可用 %d，不可用 %d", job.Passed, job.Failed)
+	}
+	s.proxyPoolTestMu.Unlock()
+}
+
+func (s *Server) handleProxyPoolTestStatusCompat(w http.ResponseWriter, r *http.Request) {
+	owner, id := requestOwnerID(r, s.store), strings.TrimSpace(r.URL.Query().Get("id"))
+	s.proxyPoolTestMu.Lock()
+	job := s.proxyPoolTestJobs[id]
+	if job != nil && job.OwnerID == owner {
+		copy := *job
+		s.proxyPoolTestMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "job": copy, "result": copy, "status": copy.Status, "total": copy.Total, "completed": copy.Completed, "passed": copy.Passed, "failed": copy.Failed, "message": copy.Message})
+		return
+	}
+	s.proxyPoolTestMu.Unlock()
+	writeError(w, http.StatusNotFound, errCode("proxy_pool_test_missing", "测速任务不存在或已过期", false))
 }
 
 func (s *Server) handleTestAccountProxyPool(w http.ResponseWriter, r *http.Request) {

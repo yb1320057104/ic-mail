@@ -382,7 +382,7 @@ func TestAppleHTTP503IsTemporaryAndDoesNotTriggerAutoLogin(t *testing.T) {
 	}
 }
 
-func TestICloudWebTemporaryErrorsDoNotTriggerAutoLogin(t *testing.T) {
+func TestICloudWebTemporaryErrorsDoNotTriggerAutoLoginServerCoverage(t *testing.T) {
 	for _, status := range []string{"423", "429", "502", "503", "504"} {
 		err := errCode("icloud_validate_failed", "iCloud 登录态校验失败，HTTP "+status, true)
 		if shouldTriggerICloudWebAutoLogin(err) {
@@ -2704,6 +2704,65 @@ func TestSaveICloudIMAPLoginStoresStateWithoutReturningPassword(t *testing.T) {
 	}
 }
 
+func TestIMAPLoginCheckScopesToRequestedAccount(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{}, store, discardLogger())
+	server := handler.(*Server)
+	cookie, user := registerTestUser(t, handler, "imap-scope-user", "imap123")
+	for _, session := range []ICloudSession{
+		testIMAPSession(user.ID, "acc-first", "first@icloud.com"),
+		testIMAPSession(user.ID, "acc-second", "second@icloud.com"),
+	} {
+		session.LoginStates[0].LastCheckedAt = time.Time{}
+		session.LoginStates[0].LastCheckOK = false
+		if err := store.SaveICloudSessionForOwner(user.ID, session); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	checked := make([]string, 0, 1)
+	server.checkIMAPLogin = func(_ context.Context, email, _ string) error {
+		checked = append(checked, email)
+		return nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/icloud/imap-login/check", strings.NewReader(`{"account_id":"acc-second"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("check scoped IMAP login = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(checked) != 1 || checked[0] != "second@icloud.com" {
+		t.Fatalf("checked IMAP accounts = %#v, want only second account", checked)
+	}
+	first, ok := store.ICloudSessionForOwnerAccount(user.ID, "acc-first")
+	if !ok {
+		t.Fatal("first session missing")
+	}
+	firstState, ok := iCloudIMAPLoginState(first)
+	if !ok || !firstState.LastCheckedAt.IsZero() {
+		t.Fatalf("unrequested account was modified: %+v", firstState)
+	}
+}
+
+func TestPruneBackupsKeepsAvailableRowsWhenBelowLimit(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.CreateBackup("prune-boundary"); err != nil {
+		t.Fatal(err)
+	}
+	if removed := store.PruneBackups(14); removed != 0 {
+		t.Fatalf("removed backups = %d, want 0", removed)
+	}
+	backups, err := store.Backups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("backups = %d, want 1", len(backups))
+	}
+}
+
 func TestSaveICloudIMAPLoginCanAttachICloudMailAliasToDifferentAppleID(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewServer(Config{}, store, discardLogger())
@@ -4669,6 +4728,91 @@ func TestMailWatcherIMAPGroupSignatureIgnoresMailboxSyncCursor(t *testing.T) {
 	if before != after {
 		t.Fatalf("signature changed after LastSyncUID update: %q vs %q", before, after)
 	}
+	state.IMAPAppPassword = "new-app-specific-password"
+	changedPassword := mailWatcherIMAPGroupSignature(state, []Mailbox{{
+		ID:    "mbx_1",
+		Email: "alias@icloud.com",
+	}})
+	if before == changedPassword {
+		t.Fatal("signature did not change after IMAP password update")
+	}
+}
+
+func TestSyncMailboxCodeBatchDeduplicatesSharedIMAPLogin(t *testing.T) {
+	oldInterval := mailboxMailSyncMinInterval
+	mailboxMailSyncMinInterval = 0
+	t.Cleanup(func() { mailboxMailSyncMinInterval = oldInterval })
+
+	store := newTestStore(t)
+	ownerID := "owner-shared-qq-imap"
+	bad := testIMAPSession(ownerID, "acc-bad", "shared@qq.com")
+	bad.AppleID = "bad-apple@example.com"
+	bad.DSID = "dsid-bad"
+	bad.Cookies = []SessionCookie{{Name: "session", Value: "bad"}}
+	bad.LoginStates[0].IMAPHost = "imap.qq.com"
+	bad.LoginStates[0].IMAPAppPassword = "stale-password"
+	bad.LoginStates[0].LastCheckOK = false
+	bad.LoginStates[0].LastCheckedAt = time.Now()
+	good := testIMAPSession(ownerID, "acc-good", "shared@qq.com")
+	good.AppleID = "good-apple@example.com"
+	good.DSID = "dsid-good"
+	good.Cookies = []SessionCookie{{Name: "session", Value: "good"}}
+	good.LoginStates[0].IMAPHost = "imap.qq.com"
+	good.LoginStates[0].IMAPAppPassword = "working-password"
+	good.LoginStates[0].LastCheckOK = true
+	good.LoginStates[0].LastCheckedAt = time.Now().Add(-time.Minute)
+	if err := store.SaveICloudSessionForOwner(ownerID, bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveICloudSessionForOwner(ownerID, good); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.AddMailboxForOwner(ownerID, "acc-bad", "first", "first@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.AddMailboxForOwner(ownerID, "acc-good", "second", "second@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	calls := 0
+	server.syncCodeMailboxBatchWithCursor = func(ctx context.Context, state LoginState, mailboxes []Mailbox, after time.Time, keyword string, maxMessages int) (iCloudIMAPSyncResult, error) {
+		calls++
+		if state.IMAPAppPassword != "working-password" {
+			t.Fatalf("selected password = %q, want checked working credential", state.IMAPAppPassword)
+		}
+		if len(mailboxes) != 2 {
+			t.Fatalf("mailboxes = %d, want both aliases in one IMAP fetch", len(mailboxes))
+		}
+		return iCloudIMAPSyncResult{LastUID: "321", MessagesByMailbox: map[string][]ICloudSyncedMessage{}}, nil
+	}
+	if _, err := server.syncMailboxCodeBatchForOwnerWithLimit(context.Background(), ownerID, []Mailbox{first, second}, time.Time{}, "OpenAI", 8); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("IMAP fetch calls = %d, want 1", calls)
+	}
+	for _, accountID := range []string{"acc-bad", "acc-good"} {
+		session, ok := store.ICloudSessionForOwnerAccount(ownerID, accountID)
+		if !ok {
+			t.Fatalf("session %s missing", accountID)
+		}
+		state, ok := iCloudIMAPLoginState(session)
+		if !ok || state.IMAPLastSyncUID != "321" {
+			t.Fatalf("session %s cursor = %q, want 321", accountID, state.IMAPLastSyncUID)
+		}
+	}
+}
+
+func TestMailWatcherQQLoginBackoffAndFallbackInterval(t *testing.T) {
+	if got := nextMailWatcherIdleBackoff(errors.New("A001 NO Login fail: login frequency limited"), time.Second); got != 5*time.Minute {
+		t.Fatalf("QQ frequency-limit backoff = %s, want 5m", got)
+	}
+	if got := mailWatcherFallbackSyncInterval(3 * time.Second); got != time.Minute {
+		t.Fatalf("fallback sync interval = %s, want 1m", got)
+	}
 }
 
 func TestLoginProtectsManagementAPI(t *testing.T) {
@@ -4920,8 +5064,8 @@ func TestMailboxSchedulerStatusDefaultsRoundInterval(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Scheduler.RoundIntervalSeconds != 5 {
-		t.Fatalf("default round interval = %d, want 5", body.Scheduler.RoundIntervalSeconds)
+	if body.Scheduler.RoundIntervalSeconds != 120 {
+		t.Fatalf("default round interval = %d, want 120", body.Scheduler.RoundIntervalSeconds)
 	}
 }
 
@@ -5194,6 +5338,39 @@ func TestMailboxSchedulerBatchWaitsBetweenCreateRounds(t *testing.T) {
 		if got := attemptTimes[i].Sub(attemptTimes[i-1]); got < roundInterval-5*time.Millisecond {
 			t.Fatalf("attempt %d delay = %s, want at least %s", i+1, got, roundInterval)
 		}
+	}
+}
+
+func TestMailboxSchedulerStopsAccountAtConfiguredTarget(t *testing.T) {
+	store := newTestStore(t)
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	ownerID := "owner-target"
+	if err := store.SaveICloudSessionForOwner(ownerID, ICloudSession{AccountID: "acc-target", AppleID: "target@example.com", DSID: "dsid", IsICloudPlus: true, CanCreateHME: true, Cookies: []SessionCookie{{Name: "a", Value: "1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 2; i++ {
+		if _, err := store.AddMailboxForOwner(ownerID, "acc-target", "existing", fmt.Sprintf("existing-%d@icloud.com", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	called := false
+	server.createMailboxForOwner = func(context.Context, string, string, string, string) (Mailbox, ICloudRemoteMailbox, error) {
+		called = true
+		return Mailbox{}, ICloudRemoteMailbox{}, errors.New("must not create")
+	}
+	job := &mailboxSchedulerJob{state: mailboxSchedulerState{Running: true}}
+	allReached := server.runMailboxSchedulerBatch(context.Background(), ownerID, job, mailboxSchedulerConfig{AccountIDs: []string{"acc-target"}, TargetMailboxCount: 2}, 1)
+	if !allReached || called {
+		t.Fatalf("allReached=%v called=%v", allReached, called)
+	}
+}
+
+func TestNormalizeCreateSettingsClampsTargetMailboxCount(t *testing.T) {
+	if got := normalizeCreateSettings("owner", CreateSettings{TargetMailboxCount: 999}).TargetMailboxCount; got != 750 {
+		t.Fatalf("target=%d want 750", got)
+	}
+	if got := normalizeCreateSettings("owner", CreateSettings{}).TargetMailboxCount; got != 750 {
+		t.Fatalf("default target=%d want 750", got)
 	}
 }
 

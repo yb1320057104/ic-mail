@@ -14,11 +14,15 @@ import (
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
+	"net/http"
 	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	xproxy "golang.org/x/net/proxy"
 )
 
 const (
@@ -100,6 +104,72 @@ func dialICloudIMAPTLS(ctx context.Context, serverName string, port int) (net.Co
 		return nil, fmt.Errorf("IMAP DNS-over-TCP 解析失败：%v；域名拨号失败：%w", lookupErr, err)
 	}
 	return nil, err
+}
+
+func dialIMAPTLSForState(ctx context.Context, state LoginState) (net.Conn, error) {
+	if strings.TrimSpace(state.ProxyURL) == "" {
+		return dialICloudIMAPTLS(ctx, state.IMAPHost, state.IMAPPort)
+	}
+	u, err := url.Parse(state.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	address := net.JoinHostPort(state.IMAPHost, strconv.Itoa(state.IMAPPort))
+	var conn net.Conn
+	switch u.Scheme {
+	case "socks5":
+		var auth *xproxy.Auth
+		if u.User != nil {
+			password, _ := u.User.Password()
+			auth = &xproxy.Auth{User: u.User.Username(), Password: password}
+		}
+		d, e := xproxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: 10 * time.Second})
+		if e != nil {
+			return nil, e
+		}
+		conn, err = d.Dial("tcp", address)
+	case "http", "https":
+		conn, err = dialHTTPConnectProxy(ctx, u, address)
+	default:
+		return nil, fmt.Errorf("IMAP 不支持代理协议 %s", u.Scheme)
+	}
+	if err != nil {
+		return nil, err
+	}
+	tlsConn := tls.Client(conn, &tls.Config{ServerName: state.IMAPHost, MinVersion: tls.VersionTLS12})
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return tlsConn, nil
+}
+
+func dialHTTPConnectProxy(ctx context.Context, proxyURL *url.URL, target string) (net.Conn, error) {
+	d := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", proxyURL.Host)
+	if err != nil {
+		return nil, err
+	}
+	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: target}, Host: target, Header: make(http.Header)}
+	if proxyURL.User != nil {
+		password, _ := proxyURL.User.Password()
+		req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(proxyURL.User.Username()+":"+password)))
+	}
+	if err = req.Write(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		resp.Body.Close()
+		conn.Close()
+		return nil, fmt.Errorf("HTTP CONNECT %s", resp.Status)
+	}
+	return conn, nil
 }
 
 func safePublicMailHost(host string) bool {
@@ -508,7 +578,7 @@ func WatchICloudIMAPExists(ctx context.Context, state LoginState, onExists func(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	conn, err := dialICloudIMAPTLS(ctx, state.IMAPHost, state.IMAPPort)
+	conn, err := dialIMAPTLSForState(ctx, state)
 	if err != nil {
 		return errCode("imap_connect_failed", "连接 iCloud IMAP 失败："+err.Error(), true)
 	}
@@ -567,16 +637,42 @@ func imapWaitForExists(ctx context.Context, conn net.Conn, reader *bufio.Reader,
 	if _, err := fmt.Fprintf(conn, "%s IDLE\r\n", tag); err != nil {
 		return err
 	}
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return err
+	pendingExists := false
+	lastLine := ""
+	entered := false
+	for i := 0; i < 50; i++ {
+		_ = conn.SetReadDeadline(time.Now().Add(imapIdleReadTimeout))
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		lastLine = strings.TrimSpace(line)
+		if strings.HasPrefix(lastLine, "+") {
+			entered = true
+			break
+		}
+		// Some IMAP servers (including QQ in production) can emit an
+		// unsolicited EXISTS response before the IDLE continuation line.
+		// Preserve that notification and keep reading until IDLE is entered.
+		if imapLineHasExistsEvent(lastLine) {
+			pendingExists = true
+			continue
+		}
+		if strings.HasPrefix(strings.ToUpper(lastLine), strings.ToUpper(tag)+" ") {
+			return fmt.Errorf("IMAP IDLE 被服务器拒绝：%s", lastLine)
+		}
 	}
-	if !strings.HasPrefix(strings.TrimSpace(line), "+") {
-		return fmt.Errorf("IMAP IDLE 未进入等待状态：%s", strings.TrimSpace(line))
+	if !entered {
+		return fmt.Errorf("IMAP IDLE 未进入等待状态：%s", lastLine)
+	}
+	if pendingExists {
+		_, _ = fmt.Fprint(conn, "DONE\r\n")
+		_, err := imapReadUntilTag(reader, tag)
+		return err
 	}
 	for ctx.Err() == nil {
 		_ = conn.SetReadDeadline(time.Now().Add(imapIdleReadTimeout))
-		line, err = reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			_, _ = fmt.Fprint(conn, "DONE\r\n")
 			return err
@@ -682,7 +778,7 @@ func LatestICloudIMAPUID(ctx context.Context, state LoginState) (string, error) 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	conn, err := dialICloudIMAPTLS(ctx, state.IMAPHost, state.IMAPPort)
+	conn, err := dialIMAPTLSForState(ctx, state)
 	if err != nil {
 		return "", errCode("imap_connect_failed", "连接 iCloud IMAP 失败："+err.Error(), true)
 	}
@@ -739,7 +835,7 @@ func SyncICloudIMAPMessagesWithCursor(ctx context.Context, state LoginState, mai
 
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	conn, err := dialICloudIMAPTLS(ctx, state.IMAPHost, state.IMAPPort)
+	conn, err := dialIMAPTLSForState(ctx, state)
 	if err != nil {
 		return iCloudIMAPSyncResult{}, errCode("imap_connect_failed", "连接 iCloud IMAP 失败："+err.Error(), true)
 	}

@@ -37,25 +37,27 @@ type State struct {
 	Announcements     []Announcement     `json:"announcements,omitempty"`
 	AnnouncementReads []AnnouncementRead `json:"announcement_reads,omitempty"`
 	AutoLoginBindings []AutoLoginBinding `json:"auto_login_bindings,omitempty"`
+	AutoLoginLogs     []AutoLoginAttempt `json:"auto_login_logs,omitempty"`
 	UserProxyConfigs  []UserProxyConfig  `json:"user_proxy_configs,omitempty"`
 	RedemptionPools   []RedemptionPool   `json:"redemption_pools,omitempty"`
 	RedemptionCodes   []RedemptionCode   `json:"redemption_codes,omitempty"`
 	RedemptionItems   []RedemptionItem   `json:"redemption_items,omitempty"`
+	RedemptionOrders  []RedemptionOrder  `json:"redemption_orders,omitempty"`
 	RecycleBin        []RecycleBinItem   `json:"recycle_bin,omitempty"`
 }
 
 type UserProxyConfig struct {
-	OwnerID          string          `json:"owner_id"`
-	URLCipher        string          `json:"url_cipher"`
-	URLMasked        string          `json:"url_masked"`
-	Enabled          bool            `json:"enabled"`
-	Status           string          `json:"status,omitempty"`
-	ExitIP           string          `json:"exit_ip,omitempty"`
-	LatencyMS        int64           `json:"latency_ms,omitempty"`
-	TLSOK            bool            `json:"tls_ok,omitempty"`
-	LastError        string          `json:"last_error,omitempty"`
-	LastTestedAt     time.Time       `json:"last_tested_at,omitempty"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	OwnerID      string    `json:"owner_id"`
+	URLCipher    string    `json:"url_cipher"`
+	URLMasked    string    `json:"url_masked"`
+	Enabled      bool      `json:"enabled"`
+	Status       string    `json:"status,omitempty"`
+	ExitIP       string    `json:"exit_ip,omitempty"`
+	LatencyMS    int64     `json:"latency_ms,omitempty"`
+	TLSOK        bool      `json:"tls_ok,omitempty"`
+	LastError    string    `json:"last_error,omitempty"`
+	LastTestedAt time.Time `json:"last_tested_at,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
 	PoolEnabled      bool            `json:"pool_enabled,omitempty"`
 	PoolSourceType   string          `json:"pool_source_type,omitempty"`
 	PoolSourceCipher string          `json:"pool_source_cipher,omitempty"`
@@ -152,20 +154,20 @@ type WebSession struct {
 }
 
 type Account struct {
-	ID            string    `json:"id"`
-	OwnerID       string    `json:"owner_id,omitempty"`
-	Label         string    `json:"label"`
-	AppleID       string    `json:"apple_id"`
-	Status        string    `json:"status"`
-	ICloudStatus  string    `json:"icloud_status"`
-	Note          string    `json:"note"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	Category      string    `json:"category,omitempty"`
-	Tags          []string  `json:"tags,omitempty"`
-	CreatedBy     string    `json:"created_by,omitempty"`
-	AssignedBy    string    `json:"assigned_by,omitempty"`
-	ProxyPoolNode string    `json:"proxy_pool_node,omitempty"`
+	ID           string    `json:"id"`
+	OwnerID      string    `json:"owner_id,omitempty"`
+	Label        string    `json:"label"`
+	AppleID      string    `json:"apple_id"`
+	Status       string    `json:"status"`
+	ICloudStatus string    `json:"icloud_status"`
+	Note         string    `json:"note"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Category     string    `json:"category,omitempty"`
+	Tags         []string  `json:"tags,omitempty"`
+	CreatedBy    string    `json:"created_by,omitempty"`
+	AssignedBy   string    `json:"assigned_by,omitempty"`
+	ProxyPoolNode string   `json:"proxy_pool_node,omitempty"`
 }
 
 type InviteCode struct {
@@ -219,42 +221,51 @@ type AnnouncementRead struct {
 }
 
 type AutoLoginBinding struct {
-	OwnerID        string                `json:"owner_id"`
-	AccountID      string                `json:"account_id"`
-	AppleID        string                `json:"apple_id"`
-	PhoneMasked    string                `json:"phone_masked"`
-	PhoneCipher    string                `json:"phone_cipher"`
-	URLMasked      string                `json:"url_masked"`
-	URLCipher      string                `json:"url_cipher"`
-	PasswordCipher string                `json:"password_cipher"`
-	Enabled        bool                  `json:"enabled"`
-	Status         string                `json:"status,omitempty"`
-	LastError      string                `json:"last_error,omitempty"`
-	LastAttemptAt  time.Time             `json:"last_attempt_at,omitempty"`
-	LastSuccessAt  time.Time             `json:"last_success_at,omitempty"`
-	NextAttemptAt  time.Time             `json:"next_attempt_at,omitempty"`
-	UpdatedAt      time.Time             `json:"updated_at"`
-	Logs           []AutoLoginAttemptLog `json:"logs,omitempty"`
+	OwnerID        string    `json:"owner_id"`
+	AccountID      string    `json:"account_id"`
+	AppleID        string    `json:"apple_id"`
+	PhoneMasked    string    `json:"phone_masked"`
+	PhoneCipher    string    `json:"phone_cipher"`
+	URLMasked      string    `json:"url_masked"`
+	URLCipher      string    `json:"url_cipher"`
+	PasswordCipher string    `json:"password_cipher"`
+	Enabled        bool      `json:"enabled"`
+	Status         string    `json:"status,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+	LastAttemptAt  time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessAt  time.Time `json:"last_success_at,omitempty"`
+	NextAttemptAt  time.Time `json:"next_attempt_at,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-type AutoLoginAttemptLog struct {
-	ID         string             `json:"id"`
-	Trigger    string             `json:"trigger"`
-	Status     string             `json:"status"`
-	StartedAt  time.Time          `json:"started_at"`
-	FinishedAt time.Time          `json:"finished_at,omitempty"`
-	Error      string             `json:"error,omitempty"`
-	Steps      []AutoLoginLogStep `json:"steps,omitempty"`
+type AutoLoginAttempt struct {
+	ID         string          `json:"id"`
+	OwnerID    string          `json:"owner_id"`
+	AccountID  string          `json:"account_id"`
+	AppleID    string          `json:"apple_id,omitempty"`
+	Status     string          `json:"status"`
+	Error      string          `json:"error,omitempty"`
+	StartedAt  time.Time       `json:"started_at"`
+	FinishedAt time.Time       `json:"finished_at,omitempty"`
+	Steps      []AutoLoginStep `json:"steps,omitempty"`
 }
 
-type AutoLoginLogStep struct {
-	At         time.Time `json:"at"`
-	Stage      string    `json:"stage"`
-	Level      string    `json:"level"`
-	Message    string    `json:"message"`
-	Code       string    `json:"code,omitempty"`
-	CodeMasked string    `json:"code_masked,omitempty"`
-	CodeCipher string    `json:"code_cipher,omitempty"`
+type AutoLoginStep struct {
+	Stage   string    `json:"stage"`
+	Message string    `json:"message"`
+	Code    string    `json:"code,omitempty"`
+	OK      bool      `json:"ok"`
+	At      time.Time `json:"at"`
+}
+
+type RedemptionOrder struct {
+	ID           string    `json:"id"`
+	PoolID       string    `json:"pool_id"`
+	OwnerID      string    `json:"owner_id"`
+	PasswordHash string    `json:"password_hash"`
+	CodeIDs      []string  `json:"code_ids,omitempty"`
+	MailboxIDs   []string  `json:"mailbox_ids,omitempty"`
+	RedeemedAt   time.Time `json:"redeemed_at"`
 }
 
 type Mailbox struct {
@@ -315,7 +326,8 @@ type ICloudSession struct {
 	LastCheckedAt      time.Time       `json:"last_checked_at,omitempty"`
 	LastCheckOK        bool            `json:"last_check_ok,omitempty"`
 	LastStatusMessage  string          `json:"last_status_message,omitempty"`
-	ProxyPoolNode      string          `json:"proxy_pool_node,omitempty"`
+	ProxyNodeTag       string          `json:"proxy_node_tag,omitempty"`
+	ProxyNodeName      string          `json:"proxy_node_name,omitempty"`
 }
 
 type LoginState struct {
@@ -347,6 +359,7 @@ type LoginState struct {
 	KeepAliveLastOK   time.Time       `json:"keep_alive_last_ok,omitempty"`
 	KeepAliveNextTry  time.Time       `json:"keep_alive_next_try,omitempty"`
 	KeepAliveError    string          `json:"keep_alive_error,omitempty"`
+	ProxyURL          string          `json:"-"`
 }
 
 type CreateSettings struct {
@@ -360,6 +373,7 @@ type CreateSettings struct {
 	ICloudWebTwoFactorMethod      string    `json:"icloud_web_two_factor_method,omitempty"`
 	SchedulerIntervalMinutes      int       `json:"scheduler_interval_minutes,omitempty"`
 	SchedulerRoundIntervalSeconds int       `json:"scheduler_round_interval_seconds,omitempty"`
+	TargetMailboxCount            int       `json:"target_mailbox_count,omitempty"`
 	MailboxPageSize               int       `json:"mailbox_page_size,omitempty"`
 	UpdatedAt                     time.Time `json:"updated_at,omitempty"`
 }
@@ -634,7 +648,8 @@ type publicICloudSession struct {
 	AutoLoginError               string `json:"auto_login_error,omitempty"`
 	AutoLoginLastAttemptAt       string `json:"auto_login_last_attempt_at,omitempty"`
 	AutoLoginLastSuccessAt       string `json:"auto_login_last_success_at,omitempty"`
-	ProxyPoolNode                string `json:"proxy_pool_node,omitempty"`
+	ProxyNodeTag                 string `json:"proxy_node_tag,omitempty"`
+	ProxyNodeName                string `json:"proxy_node_name,omitempty"`
 }
 
 type apiError struct {
