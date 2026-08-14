@@ -208,6 +208,8 @@ func TestExtractOTP(t *testing.T) {
 		{name: "hindi", text: "आपका सत्यापन कोड 135790 है।", want: "135790"},
 		{name: "korean", text: "인증 코드는 975310 입니다.", want: "975310"},
 		{name: "arabic", text: "رمز التحقق الخاص بك هو 246810", want: "246810"},
+		{name: "arabic temporary authentication", text: "أدخل كود المصادقة المؤقت هذا للمتابعة: 691288", want: "691288"},
+		{name: "arabic indic digits", text: "أدخل كود المصادقة المؤقت هذا للمتابعة: ٦٩١٢٨٨", want: "691288"},
 		{name: "russian", text: "Ваш код подтверждения: 864209", want: "864209"},
 		{name: "thai", text: "รหัสยืนยันของคุณคือ 357924", want: "357924"},
 		{name: "metadata and japanese code", text: "注文番号: 123456\n確認コード: 654321", want: "654321"},

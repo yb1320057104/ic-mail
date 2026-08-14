@@ -7555,7 +7555,7 @@ func parseAfter(value string) (time.Time, error) {
 }
 
 var (
-	otpKeywordRegex   = regexp.MustCompile(`(?i)(?:openai|chatgpt|otp|verification\s*code|security\s*code|login\s*code|one[ -]?time\s*(?:code|password)|passcode|pin\s*code|code|验证码|驗證碼|校验码|校驗碼|动态码|動態碼|安全码|安全碼|登录码|登錄碼|代码|代碼|認証コード|確認コード|検証コード|ワンタイムパスワード|인증\s*코드|확인\s*코드|보안\s*코드|일회용\s*비밀번호|mã\s*(?:xác\s*minh|xác\s*thực|đăng\s*nhập|bảo\s*mật)|सत्यापन\s*कोड|पुष्टि\s*कोड|सुरक्षा\s*कोड|ओटीपी|código\s*(?:de\s*)?(?:verificación|seguridad|acesso)|code\s*(?:de\s*)?(?:vérification|sécurité|connexion)|bestätigungscode|sicherheitscode|verifizierungscode|código\s*(?:de\s*)?(?:verificação|segurança)|код\s*(?:подтверждения|проверки|безопасности)|одноразовый\s*пароль|رمز\s*(?:التحقق|التأكيد|الأمان)|كلمة\s*المرور\s*لمرة\s*واحدة|รหัส(?:ยืนยัน|ตรวจสอบ|ความปลอดภัย)|รหัสผ่านใช้ครั้งเดียว|kode\s*(?:verifikasi|keamanan|masuk)|codice\s*(?:di\s*)?(?:verifica|sicurezza|accesso)|doğrulama\s*kodu|güvenlik\s*kodu)`)
+	otpKeywordRegex   = regexp.MustCompile(`(?i)(?:openai|chatgpt|otp|verification\s*code|security\s*code|login\s*code|one[ -]?time\s*(?:code|password)|passcode|pin\s*code|code|验证码|驗證碼|校验码|校驗碼|动态码|動態碼|安全码|安全碼|登录码|登錄碼|代码|代碼|認証コード|確認コード|検証コード|ワンタイムパスワード|인증\s*코드|확인\s*코드|보안\s*코드|일회용\s*비밀번호|mã\s*(?:xác\s*minh|xác\s*thực|đăng\s*nhập|bảo\s*mật)|सत्यापन\s*कोड|पुष्टि\s*कोड|सुरक्षा\s*कोड|ओटीपी|código\s*(?:de\s*)?(?:verificación|seguridad|acesso)|code\s*(?:de\s*)?(?:vérification|sécurité|connexion)|bestätigungscode|sicherheitscode|verifizierungscode|código\s*(?:de\s*)?(?:verificação|segurança)|код\s*(?:подтверждения|проверки|безопасности)|одноразовый\s*пароль|رمز\s*(?:التحقق|التأكيد|الأمان)|(?:كود|رمز)\s*(?:المصادقة|التوثيق|التحقق)\s*(?:المؤقت|لمرة\s*واحدة)?|كلمة\s*المرور\s*لمرة\s*واحدة|รหัส(?:ยืนยัน|ตรวจสอบ|ความปลอดภัย)|รหัสผ่านใช้ครั้งเดียว|kode\s*(?:verifikasi|keamanan|masuk)|codice\s*(?:di\s*)?(?:verifica|sicurezza|accesso)|doğrulama\s*kodu|güvenlik\s*kodu)`)
 	otpCandidateRegex = regexp.MustCompile(`[A-Za-z0-9]{2,10}(?:-[A-Za-z0-9]{2,10}){1,2}|[A-Za-z0-9]{4,10}`)
 	plainOTPRegex     = regexp.MustCompile(`\b(\d{6})\b`)
 	otpDateRegex      = regexp.MustCompile(`^\d{4}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?$`)
@@ -7673,6 +7673,10 @@ func looksLikeOTPMetadata(text string, candidateStart int) bool {
 func normalizeOTPText(text string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
+		case r >= '٠' && r <= '٩':
+			return '0' + (r - '٠')
+		case r >= '۰' && r <= '۹':
+			return '0' + (r - '۰')
 		case r >= '０' && r <= '９':
 			return '0' + (r - '０')
 		case r >= 'Ａ' && r <= 'Ｚ':
