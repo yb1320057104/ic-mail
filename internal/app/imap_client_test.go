@@ -145,6 +145,57 @@ func TestICloudIMAPVisualSyncKeepsOrdinaryAliasMail(t *testing.T) {
 	}
 }
 
+func TestICloudIMAPVisualSyncRecoversMessageSkippedBeforeLastSync(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	receivedAt := now.Add(-10 * time.Minute)
+	mailboxes := []Mailbox{{ID: "mbx_recover", Email: "recover@icloud.com", LastSyncAt: now}}
+	raw := "From: Service <noreply@example.com>\r\n" +
+		"To: recover@icloud.com\r\n" +
+		"Subject: Older message\r\n" +
+		"Date: " + receivedAt.Format(time.RFC1123Z) + "\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"This message was skipped by an older recognizer.\r\n"
+	got := iCloudIMAPMessagesByMailbox(
+		[]iCloudIMAPFetchedMessage{{UID: "3150", Raw: []byte(raw)}},
+		mailboxes,
+		now.Add(-time.Hour),
+		"",
+	)
+	if len(got["mbx_recover"]) != 1 {
+		t.Fatalf("visual recovery dropped message older than LastSyncAt: %+v", got)
+	}
+}
+
+func TestICloudIMAPCodeSyncRecognizesArabicHTML(t *testing.T) {
+	mailboxes := []Mailbox{{ID: "mbx_arabic", Email: "arabic@icloud.com"}}
+	raw := "From: Service <noreply@example.com>\r\n" +
+		"To: arabic@icloud.com\r\n" +
+		"Subject: تسجيل الدخول\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n\r\n" +
+		`<html><head><style>.code-111111{color:red}</style></head><body><p>أدخل كود المصادقة المؤقت هذا للمتابعة: <strong>٦٩١٢٨٨</strong></p></body></html>`
+	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{UID: "3151", Raw: []byte(raw)}}, mailboxes, time.Time{}, "OpenAI")
+	messages := got["mbx_arabic"]
+	if len(messages) != 1 {
+		t.Fatalf("Arabic HTML verification mail was filtered before storage: %+v", got)
+	}
+	if details := extractOTPFromParts(messages[0].Subject, messages[0].Body, messages[0].HTMLBody); details.Code != "691288" {
+		t.Fatalf("Arabic HTML code=%q details=%+v", details.Code, details)
+	}
+}
+
+func TestICloudIMAPMatchesArabicForwardedRecipientLabel(t *testing.T) {
+	mailboxes := []Mailbox{{ID: "mbx_arabic_recipient", Email: "arabic-alias@icloud.com"}}
+	raw := "To: destination@example.com\r\n" +
+		"From: Service <noreply@example.com>\r\n" +
+		"Subject: تسجيل الدخول\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"إلى: Arabic User <arabic-alias@icloud.com>\nأدخل كود المصادقة المؤقت هذا للمتابعة: 691288"
+	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{UID: "3152", Raw: []byte(raw)}}, mailboxes, time.Time{}, "OpenAI")
+	if len(got["mbx_arabic_recipient"]) != 1 {
+		t.Fatalf("Arabic forwarded recipient should match alias: %+v", got)
+	}
+}
+
 func TestICloudIMAPMessagesByMailboxMatchesMultipleRecipientAliases(t *testing.T) {
 	firstAt := time.Date(2026, 7, 1, 5, 2, 50, 0, time.UTC)
 	secondAt := firstAt.Add(20 * time.Second)

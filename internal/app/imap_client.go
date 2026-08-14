@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	htmlcharset "golang.org/x/net/html/charset"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -1045,7 +1046,14 @@ func iCloudIMAPMessagesByMailbox(fetched []iCloudIMAPFetchedMessage, mailboxes [
 			continue
 		}
 		aliases[id] = email
-		afterByMailbox[id] = mailboxSyncAfter(mailbox, after, now)
+		// Visual/content synchronization must be able to recover a message that
+		// an older recognizer skipped. The bounded UID rescan already limits the
+		// work, so do not let LastSyncAt permanently hide an older missed UID.
+		if strings.TrimSpace(keyword) == "" {
+			afterByMailbox[id] = after
+		} else {
+			afterByMailbox[id] = mailboxSyncAfter(mailbox, after, now)
+		}
 	}
 	out := make(map[string][]ICloudSyncedMessage, len(aliases))
 	for _, item := range fetched {
@@ -1056,7 +1064,7 @@ func iCloudIMAPMessagesByMailbox(fetched []iCloudIMAPFetchedMessage, mailboxes [
 		// An empty keyword is used by the visual/content mailbox endpoints: they
 		// must retain every message addressed to the privacy alias. Code polling
 		// supplies a keyword and keeps the stricter verification-mail filter.
-		if strings.TrimSpace(keyword) != "" && !looksLikeVerificationText(message.Subject+"\n"+message.Body, keyword) {
+		if strings.TrimSpace(keyword) != "" && extractOTPFromParts(message.Subject, message.Body, message.HTMLBody).Code == "" && !looksLikeVerificationText(message.Subject+"\n"+message.Body, keyword) {
 			continue
 		}
 		matchedMailboxIDs := matchingMailboxIDs(recipients, aliases)
@@ -1120,7 +1128,7 @@ func imapRecipientEvidence(header mail.Header, body string) string {
 	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		lower := strings.ToLower(trimmed)
-		prefixes := []string{"to:", "original-to:", "x-original-to:", "delivered-to:", "envelope-to:", "收件人:", "收件人：", "原始收件人:", "原始收件人："}
+		prefixes := []string{"to:", "original-to:", "x-original-to:", "delivered-to:", "envelope-to:", "收件人:", "收件人：", "原始收件人:", "原始收件人：", "إلى:", "إلى：", "المستلم:", "المستلم："}
 		for _, prefix := range prefixes {
 			if strings.HasPrefix(lower, prefix) {
 				evidence += "\nForwarded-" + trimmed
@@ -1136,7 +1144,7 @@ func imapRecipientEvidence(header mail.Header, body string) string {
 	return evidence
 }
 
-var imapLabelledRecipientPattern = regexp.MustCompile(`(?i)(?:to|original-to|x-original-to|delivered-to|envelope-to|收件人|原始收件人)\s*[:：]\s*(?:[^@\r\n]{0,120})?[a-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}`)
+var imapLabelledRecipientPattern = regexp.MustCompile(`(?i)(?:to|original-to|x-original-to|delivered-to|envelope-to|收件人|原始收件人|إلى|المستلم)\s*[:：]\s*(?:[^@\r\n]{0,120})?[a-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}`)
 
 func normalizeICloudIMAPState(state LoginState) (LoginState, error) {
 	email := normalizeICloudIMAPEmail(state.IMAPEmail)
@@ -1257,12 +1265,7 @@ func imapHeaderText(header mail.Header) string {
 
 func decodeMIMEHeader(value string) string {
 	decoder := &mime.WordDecoder{CharsetReader: func(charset string, input io.Reader) (io.Reader, error) {
-		switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(charset), "-", "")) {
-		case "utf8", "usascii", "ascii":
-			return input, nil
-		default:
-			return nil, fmt.Errorf("unsupported MIME charset %q", charset)
-		}
+		return htmlcharset.NewReaderLabel(charset, input)
 	}}
 	decoded, err := decoder.DecodeHeader(value)
 	if err != nil {
@@ -1288,6 +1291,13 @@ func decodeICloudIMAPContent(header mail.Header, body []byte) imapBodyContent {
 		mediaType = strings.ToLower(strings.TrimSpace(header.Get("Content-Type")))
 	}
 	decoded := decodeICloudIMAPTransfer(header.Get("Content-Transfer-Encoding"), body)
+	if charsetName := strings.TrimSpace(params["charset"]); charsetName != "" {
+		if reader, charsetErr := htmlcharset.NewReaderLabel(charsetName, bytes.NewReader(decoded)); charsetErr == nil {
+			if converted, readErr := io.ReadAll(io.LimitReader(reader, 1<<20)); readErr == nil {
+				decoded = converted
+			}
+		}
+	}
 	if strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
 		boundary := params["boundary"]
 		if boundary == "" {
