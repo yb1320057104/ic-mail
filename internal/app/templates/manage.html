@@ -393,9 +393,16 @@
     input, textarea, select { color:#eef6ff !important; background:#061a3b !important; caret-color:#60a5fa; }
     input::placeholder, textarea::placeholder { color:#7194c3; opacity:1; }
     input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus { -webkit-text-fill-color:#eef6ff; -webkit-box-shadow:0 0 0 1000px #061a3b inset; caret-color:#60a5fa; }
+    body.embedded-mode { background:#020b1d; }
+    body.embedded-mode .shell { grid-template-columns:minmax(0,1fr); min-height:0; }
+    body.embedded-mode .sidebar { display:none; }
+    body.embedded-mode header { position:static; border-radius:0; }
+    body.embedded-mode main { padding:18px; }
+    body.embedded-mode .embedded-hide { display:none; }
   </style>
 </head>
 <body>
+  <script>if(new URLSearchParams(location.search).get('embedded')==='1')document.body.classList.add('embedded-mode');</script>
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">
@@ -428,7 +435,7 @@
             <div class="subtitle" id="whoami">正在读取账号...</div>
           </div>
           <div class="actions">
-            <button class="btn" onclick="location.href='/'">生成隐私邮箱</button>
+            <button class="btn embedded-hide" onclick="window.top.location.href='/'">生成隐私邮箱</button>
             <button class="btn primary" onclick="refresh()">刷新</button>
             <button class="btn" onclick="exportData()">导出数据</button>
             <select id="mailboxExportFormat" class="export-format" title="导出格式">
@@ -442,8 +449,8 @@
             </select>
             <button class="btn" onclick="exportMailboxAPIs()">导出邮箱API</button>
             <button class="btn" onclick="exportMailboxEmails()">只导出邮箱</button>
-            <button class="btn" onclick="changePassword()">修改密码</button>
-            <button class="btn" onclick="logout()">退出登录</button>
+            <button class="btn embedded-hide" onclick="changePassword()">修改密码</button>
+            <button class="btn embedded-hide" onclick="logout()">退出登录</button>
           </div>
         </div>
       </header>
@@ -737,7 +744,7 @@
     function initViewNavigation() {
       let saved = 'overview';
       try {
-        saved = localStorage.getItem(viewStorageKey) || 'overview';
+        saved = new URLSearchParams(location.search).get('view') || localStorage.getItem(viewStorageKey) || 'overview';
       } catch (_) {}
       setActiveView(saved);
     }

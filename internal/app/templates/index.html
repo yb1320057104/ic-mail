@@ -220,6 +220,16 @@
     .eyebrow { color: var(--green); font-size: 12px; font-weight: 900; letter-spacing: 0; text-transform: uppercase; margin: 0; }
     .user-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .side-nav { display: grid; gap: 9px; padding: 4px 0; }
+    .nav-group-label {
+      grid-column: 1 / -1;
+      margin: 12px 10px 2px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .nav-group-label:first-child { margin-top: 2px; }
     .nav-item {
       width: 100%;
       display: grid;
@@ -269,6 +279,16 @@
       font-size: 12px;
     }
     .nav-item.active .count-dot { color: var(--green-2); background: rgba(255,255,255,.88); }
+    .account-data-frame {
+      display: block;
+      width: 100%;
+      min-height: calc(100vh - 210px);
+      height: 1180px;
+      border: 0;
+      border-radius: 14px;
+      background: #020b1d;
+    }
+    .account-data-shell { padding: 0; overflow: hidden; }
     .tool-panel-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(220px, 1fr));
@@ -1279,12 +1299,28 @@
       </div>
 
       <nav class="side-nav" aria-label="功能分类">
+        <div class="nav-group-label">工作台</div>
         <button class="nav-item active" data-view="overview" onclick="setActiveView('overview')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.7"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.7"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.7"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.7"/></svg></span><span>概览</span><span class="count-dot" id="navOverviewCount">0</span></button>
+        <div class="nav-group-label">Apple 账号</div>
         <button class="nav-item" data-view="session" onclick="setActiveView('session')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="4.6"/><path d="m12.4 12.4 7.6 7.6"/><path d="m16.6 16.6 2-2"/></svg></span><span>登录态</span><span class="count-dot" id="navSessionCount">0</span></button>
         <button class="nav-item" data-view="proxy" onclick="setActiveView('proxy')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 7.5h9v9h-9z"/><path d="M4 10.5V8a4 4 0 0 1 4-4h2.5M20 13.5V16a4 4 0 0 1-4 4h-2.5"/><circle cx="4" cy="13.5" r="1.5"/><circle cx="20" cy="10.5" r="1.5"/></svg></span><span>代理管理</span><span class="count-dot" id="navProxyCount">0</span></button>
+        <div class="nav-group-label">邮箱业务</div>
         <button class="nav-item" data-view="create" onclick="setActiveView('create')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg></span><span>创建邮箱</span></button>
         <button class="nav-item" data-view="mailboxes" onclick="setActiveView('mailboxes')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.4 6.3 6.7A2 2 0 0 1 8.2 5.4h7.6a2 2 0 0 1 1.9 1.3L20 13.4"/><path d="M4 13.4h4.2l1.3 2.2h5l1.3-2.2H20v3.7A1.9 1.9 0 0 1 18.1 19.2H5.9A1.9 1.9 0 0 1 4 17.1z"/></svg></span><span>邮箱池</span><span class="count-dot" id="navMailboxCount">0</span></button>
         <button class="nav-item" data-view="redemption" onclick="setActiveView('redemption')"><span class="nav-ico">⇄</span><span>兑换隐私邮箱</span><span class="count-dot" id="navRedemptionCount">0</span></button>
+        <div class="nav-group-label">账号数据</div>
+        <button class="nav-item" data-view="data-overview" onclick="setActiveView('data-overview')"><span class="nav-ico">⌂</span><span>数据仪表盘</span></button>
+        <button class="nav-item" data-view="data-accountManage" onclick="setActiveView('data-accountManage')"><span class="nav-ico">▣</span><span>账号归属</span></button>
+        <button class="nav-item" data-view="data-users" onclick="setActiveView('data-users')"><span class="nav-ico">◉</span><span>用户列表</span></button>
+        <button class="nav-item" data-view="data-mailboxes" onclick="setActiveView('data-mailboxes')"><span class="nav-ico">✉</span><span>邮箱数据</span></button>
+        <button class="nav-item" data-view="data-accounts" onclick="setActiveView('data-accounts')"><span class="nav-ico">◎</span><span>登录账号数据</span></button>
+        <button class="nav-item" data-view="data-sessions" onclick="setActiveView('data-sessions')"><span class="nav-ico">◫</span><span>用户登录态</span></button>
+        <div class="nav-group-label admin-data-nav" hidden>平台管理</div>
+        <button class="nav-item admin-data-nav" data-view="data-invites" onclick="setActiveView('data-invites')" hidden><span class="nav-ico">✦</span><span>注册邀请</span></button>
+        <button class="nav-item admin-data-nav" data-view="data-announcements" onclick="setActiveView('data-announcements')" hidden><span class="nav-ico">▤</span><span>平台公告</span></button>
+        <button class="nav-item admin-data-nav" data-view="data-audit" onclick="setActiveView('data-audit')" hidden><span class="nav-ico">◉</span><span>安全审计</span></button>
+        <button class="nav-item admin-data-nav" data-view="data-operations" onclick="setActiveView('data-operations')" hidden><span class="nav-ico">⚙</span><span>运维中心</span></button>
+        <button class="nav-item" data-view="data-logs" onclick="setActiveView('data-logs')"><span class="nav-ico">☰</span><span>运行日志</span></button>
       </nav>
     </aside>
 
@@ -1329,7 +1365,7 @@
           </div>
           <div class="account-dock">
             <div class="user-badge"><span id="currentUserBadge">未登录</span><span class="account-expiry" id="currentUserExpiry">到期时间：-</span></div>
-            <button onclick="location.href='/manage'">账号数据</button>
+            <button onclick="setActiveView('data-overview')">账号数据</button>
             <button id="renewInviteTopButton" class="ghost" onclick="openRenewInviteModal(true)">邀请码续期</button>
             <button class="ghost" onclick="changePassword()">修改密码</button>
             <button class="ghost" onclick="logout()">退出</button>
@@ -1339,6 +1375,9 @@
 
       <main class="content-main">
         <div id="pageGuide" class="page-guide"></div>
+        <section class="view-section panel account-data-shell" data-view="accountData">
+          <iframe id="accountDataFrame" class="account-data-frame" title="账号数据管理" loading="lazy"></iframe>
+        </section>
         <section class="view-section active" data-view="overview">
           <section class="grid">
             <div class="card"><strong id="accountCount">0</strong><span>登录账号</span></div>
@@ -1739,7 +1778,18 @@
       proxy: ['代理管理', '管理用户可信固定代理和账号代理池。'],
       create: ['创建邮箱', '按已保存账号创建 Hide My Email 地址。'],
       mailboxes: ['邮箱池', '搜索、复制 API、取码和维护邮箱状态。'],
-      redemption: ['兑换隐私邮箱', '管理专属兑换池、一次性兑换码和已兑换批次。']
+      redemption: ['兑换隐私邮箱', '管理专属兑换池、一次性兑换码和已兑换批次。'],
+      'data-overview': ['账号数据 · 仪表盘', '集中查看平台账号、邮箱和运行数据。'],
+      'data-accountManage': ['账号数据 · 账号归属', '按平台用户核对账号、邮箱和邮件归属。'],
+      'data-users': ['账号数据 · 用户列表', '查询用户、角色、有效期和最近登录时间。'],
+      'data-mailboxes': ['账号数据 · 邮箱数据', '从管理视角筛选和维护隐私邮箱。'],
+      'data-accounts': ['账号数据 · 登录账号', '查询 Apple/iCloud 登录账号分类和归属。'],
+      'data-sessions': ['账号数据 · 用户登录态', '集中查看用户的新接口、旧接口和 IMAP 状态。'],
+      'data-invites': ['平台管理 · 注册邀请', '生成、导出和维护注册邀请码。'],
+      'data-announcements': ['平台管理 · 平台公告', '发布公告并查看用户已读情况。'],
+      'data-audit': ['平台管理 · 安全审计', '查询登录、权限和数据操作记录。'],
+      'data-operations': ['平台管理 · 运维中心', '查看监控、任务、备份和用户回收站。'],
+      'data-logs': ['账号数据 · 运行日志', '查看账号数据页面的最近操作结果。']
     };
     const viewDescriptions = {
 	  overview:'查看账号、邮箱和验证码总量，并通过快捷入口进入常用任务。',
@@ -1747,7 +1797,18 @@
 	  proxy:'配置当前用户的可信固定代理，导入和测速代理池节点，并查看节点绑定的账号。',
 	  create:'选择一个或多个可用 Apple 账号，配置新旧接口策略，手动或定时创建隐私邮箱。',
 	  mailboxes:'组合搜索全部隐私邮箱；按账号、邮箱状态、API、iCloud 和收件数量筛选并执行取码、同步、导出与状态维护。',
-	  redemption:'将未导出且可正常接码的邮箱加入专属兑换池，生成定量一次性兑换码，并管理已兑换批次的取码地址。'
+	  redemption:'将未导出且可正常接码的邮箱加入专属兑换池，生成定量一次性兑换码，并管理已兑换批次的取码地址。',
+      'data-overview':'账号数据功能已经整合到当前工作台，使用左侧分类即可切换，不需要离开创建邮箱页面。',
+      'data-accountManage':'按用户查看账号、邮箱和邮件归属，避免多人数据混淆。',
+      'data-users':'管理平台用户、到期时间和使用状态。',
+      'data-mailboxes':'使用管理筛选器查询邮箱数据并执行授权范围内的操作。',
+      'data-accounts':'维护登录账号分类、标签和所属用户。',
+      'data-sessions':'查看所有授权范围内的登录态、保活和异常原因。',
+      'data-invites':'管理员专用的邀请码批次管理。',
+      'data-announcements':'管理员专用的平台公告管理。',
+      'data-audit':'管理员专用的安全审计查询。',
+      'data-operations':'管理员专用的监控、任务与备份中心。',
+      'data-logs':'查看账号数据功能产生的前端操作日志。'
 	};
     const featureGuides = {
       overview: {
@@ -1780,10 +1841,16 @@
         steps:['将未导出、状态可用且接码正常的邮箱加入兑换池。','设置每个兑换码领取数量、生成数量和有效期；可选择永久有效。','生成后按批次导出“兑换地址----兑换码”TXT 文件。','客户在兑换页可一次输入多个兑换码，并选择三种取码地址格式导出。','如某批地址需要失效，按兑换码批次重置取码地址；原兑换码失效，邮箱恢复到兑换池。'],
         tips:['兑换码是领取凭证，请不要在公开渠道泄露。','重置后旧取码地址立即不可用，应及时把新地址交付给客户。']
       }
+      ,accountData: {
+        title:'账号数据使用教学',
+        summary:'账号数据已整合到当前工作台。通过左侧“账号数据”和“平台管理”分组切换功能，右侧会保留原有筛选、表格和操作能力。',
+        steps:['从左侧选择需要的数据分类。','在右侧填写筛选条件并执行查询。','核对所属用户、账号和当前数据范围。','执行修改、导出或运维操作后查看中文结果提示。'],
+        tips:['普通用户只能查看自己的数据。','注册邀请、公告、安全审计和运维中心仍仅管理员可用。']
+      }
     };
 
     function openFeatureGuide(view = activeView) {
-      const guide = featureGuides[view] || featureGuides.overview;
+      const guide = featureGuides[view] || (String(view).startsWith('data-') ? featureGuides.accountData : featureGuides.overview);
       $('featureGuideTitle').textContent = guide.title;
       $('featureGuideSubtitle').textContent = viewMeta[view] ? viewMeta[view][1] : '按照步骤完成当前功能配置。';
       const steps = (guide.steps || []).map(item => `<li>${esc(item)}</li>`).join('');
@@ -1803,8 +1870,10 @@
       for (const button of document.querySelectorAll('.nav-item[data-view]')) {
         button.classList.toggle('active', button.dataset.view === normalized);
       }
+      const accountDataView = normalized.startsWith('data-') ? normalized.slice(5) : '';
+      const sectionView = accountDataView ? 'accountData' : normalized;
       for (const section of document.querySelectorAll('.view-section[data-view]')) {
-        section.classList.toggle('active', section.dataset.view === normalized);
+        section.classList.toggle('active', section.dataset.view === sectionView);
       }
       if ($('activeViewTitle')) $('activeViewTitle').textContent = meta[0];
       if ($('activeViewSubtitle')) $('activeViewSubtitle').textContent = meta[1];
@@ -1812,6 +1881,11 @@
         localStorage.setItem(viewStorageKey, normalized);
       } catch (_) {}
       activeView = normalized;
+      if (accountDataView) {
+        const frame = $('accountDataFrame');
+        const nextURL = `/manage?embedded=1&view=${encodeURIComponent(accountDataView)}`;
+        if (frame && frame.getAttribute('src') !== nextURL) frame.setAttribute('src', nextURL);
+      }
       if (normalized === 'proxy') Promise.all([loadFixedProxy(), loadProxyPoolNodes()]).catch(err => log('加载代理配置失败：'+err.message));
       if (normalized === 'mailboxes') renderMailboxes();
       if (normalized === 'redemption') loadRedemptionPool().catch(err => log('加载兑换池失败：'+err.message));
@@ -1957,6 +2031,8 @@
 		$('currentUserExpiry').classList.toggle('expired', !!currentUser.expired);
 	  }
 	  if ($('renewInviteTopButton')) $('renewInviteTopButton').hidden = !!currentUser.is_admin;
+	  for (const item of document.querySelectorAll('.admin-data-nav')) item.hidden = !currentUser.is_admin;
+	  if (!currentUser.is_admin && ['data-invites','data-announcements','data-audit','data-operations'].includes(activeView)) setActiveView('data-overview');
 	  if (currentUser.expired) openRenewInviteModal(false);
       return currentUser;
     }
