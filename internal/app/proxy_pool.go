@@ -472,27 +472,35 @@ func intValue(value any) (int, error) {
 }
 
 func validatePublicProxyHost(host string) error {
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+	host = strings.TrimSpace(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if ip := net.ParseIP(host); ip != nil {
 		if isUnsafeProxyIP(ip) {
 			return errors.New("unsafe")
 		}
 		return nil
 	}
-	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".local") {
+	lower := strings.ToLower(host)
+	if host == "" || len(host) > 253 || !strings.Contains(host, ".") || strings.ContainsAny(host, " /\\@:#") ||
+		lower == "localhost" || strings.HasSuffix(lower, ".localhost") || strings.HasSuffix(lower, ".local") ||
+		strings.HasSuffix(lower, ".lan") || strings.HasSuffix(lower, ".internal") || strings.HasSuffix(lower, ".home.arpa") ||
+		strings.HasSuffix(lower, ".localdomain") {
 		return errors.New("unsafe")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if err != nil || len(ips) == 0 {
-		return errors.New("dns lookup failed")
+		// Proxy subscription domains may intentionally be resolved by Mihomo's
+		// own DNS or through a dialer proxy. A local DNS miss is not proof that
+		// the configured destination is private.
+		return nil
 	}
 	for _, ip := range ips {
-		if isUnsafeProxyIP(ip) {
-			return errors.New("unsafe")
+		if !isUnsafeProxyIP(ip) {
+			return nil
 		}
 	}
-	return nil
+	return errors.New("unsafe")
 }
 
 func isUnsafeProxyIP(ip net.IP) bool {

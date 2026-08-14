@@ -3769,15 +3769,12 @@ func TestMailboxCodeQuerySyncsBeforeReturningCachedOldCode(t *testing.T) {
 		t.Fatalf("sync calls = %d, want 1", got)
 	}
 	updated, ok := store.FindMailboxByID(mailbox.ID)
-	if !ok {
-		t.Fatal("mailbox missing")
-	}
-	if updated.LastCodeMessageID == "" || updated.LastCodeMessageID != body.MessageID {
-		t.Fatalf("LastCodeMessageID=%q response message_id=%q", updated.LastCodeMessageID, body.MessageID)
+	if !ok || updated.LastCodeMessageID != "" {
+		t.Fatalf("latest-value lookup must not consume code: %+v", updated)
 	}
 }
 
-func TestMailboxCodeQueryReturnsLocalCachedCodeBeforeSync(t *testing.T) {
+func TestMailboxCodeQuerySyncsBeforeReturningRecentCache(t *testing.T) {
 	oldInterval := mailboxMailSyncMinInterval
 	mailboxMailSyncMinInterval = 0
 	t.Cleanup(func() { mailboxMailSyncMinInterval = oldInterval })
@@ -3819,8 +3816,8 @@ func TestMailboxCodeQueryReturnsLocalCachedCodeBeforeSync(t *testing.T) {
 	if !body.Success || body.Code != "333333" {
 		t.Fatalf("code body = %+v, want local cached 333333", body)
 	}
-	if got := atomic.LoadInt64(&calls); got != 0 {
-		t.Fatalf("sync calls = %d, want 0", got)
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Fatalf("sync calls = %d, want 1", got)
 	}
 }
 
@@ -3845,7 +3842,7 @@ func TestMailboxContentReturnsRecentCacheWithoutSync(t *testing.T) {
 		return nil, nil
 	}
 	rr := httptest.NewRecorder()
-	path := "/api/v1/access/" + url.PathEscape(mailbox.APIToken) + "/mailboxes/" + url.PathEscape(mailbox.Email) + "/content"
+	path := "/api/v1/access/" + url.PathEscape(mailbox.APIToken) + "/mailboxes/" + url.PathEscape(mailbox.Email) + "/content?cache=1"
 	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "fresh body") || strings.Contains(rr.Body.String(), "expired body") {
 		t.Fatalf("content status=%d body=%s", rr.Code, rr.Body.String())
@@ -4246,7 +4243,7 @@ func TestMailboxCodeQueryReturnsCodeInsertedDuringWaitTimeout(t *testing.T) {
 	}
 }
 
-func TestMailboxCodeQueryDoesNotRepeatServedCachedCode(t *testing.T) {
+func TestMailboxCodeQueryConsistentlyReturnsLatestCachedCode(t *testing.T) {
 	oldInterval := mailboxMailSyncMinInterval
 	mailboxMailSyncMinInterval = 0
 	t.Cleanup(func() { mailboxMailSyncMinInterval = oldInterval })
@@ -4300,8 +4297,8 @@ func TestMailboxCodeQueryDoesNotRepeatServedCachedCode(t *testing.T) {
 		t.Fatalf("first code = %+v, want 135790", first)
 	}
 	second := requestCode("")
-	if second.Success || second.Code != "no_code" {
-		t.Fatalf("second code = %+v, want no_code without repeating cached OTP", second)
+	if !second.Success || second.Code != "135790" {
+		t.Fatalf("second code = %+v, want latest 135790 again", second)
 	}
 	cached := requestCode("&cache=1")
 	if !cached.Success || cached.Code != "135790" {
@@ -4309,7 +4306,7 @@ func TestMailboxCodeQueryDoesNotRepeatServedCachedCode(t *testing.T) {
 	}
 }
 
-func TestMailboxCodePeekDoesNotConsumeServedCode(t *testing.T) {
+func TestMailboxCodePeekAndPublicBothReturnLatestCode(t *testing.T) {
 	oldInterval := mailboxMailSyncMinInterval
 	mailboxMailSyncMinInterval = 0
 	t.Cleanup(func() { mailboxMailSyncMinInterval = oldInterval })
@@ -4365,8 +4362,8 @@ func TestMailboxCodePeekDoesNotConsumeServedCode(t *testing.T) {
 		t.Fatalf("public code after peek = %+v, want 246802", firstPublic)
 	}
 	secondPublic := requestCode("")
-	if secondPublic.Success || secondPublic.Code != "no_code" {
-		t.Fatalf("second public code = %+v, want no_code", secondPublic)
+	if !secondPublic.Success || secondPublic.Code != "246802" {
+		t.Fatalf("second public code = %+v, want latest 246802", secondPublic)
 	}
 	secondPeek := requestCode("&peek=1")
 	if !secondPeek.Success || secondPeek.Code != "246802" {
@@ -4396,6 +4393,22 @@ func TestLatestMailboxCodeSelectsNewestAndHonorsAfter(t *testing.T) {
 	_, _, ok = latestMailboxCode(messages, newTime.Add(time.Minute), "ChatGPT", now)
 	if ok {
 		t.Fatalf("latestMailboxCode(after future) ok=true, want false")
+	}
+}
+
+func TestLatestMailboxCodeUsesIMAPUIDWhenTimesMatch(t *testing.T) {
+	now := time.Date(2026, 8, 14, 20, 30, 0, 0, time.UTC)
+	messages := []Message{
+		{ID: "newer-local-id", RemoteID: "imap:101", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-time.Minute), CreatedAt: now},
+		{ID: "older-local-id", RemoteID: "imap:102", Subject: "ChatGPT code", Body: "code 222222", ReceivedAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Second)},
+	}
+	msg, code, ok := latestMailboxCode(messages, time.Time{}, "ChatGPT", now)
+	if !ok || msg.RemoteID != "imap:102" || code != "222222" {
+		t.Fatalf("latestMailboxCode() msg=%+v code=%q ok=%v, want UID 102", msg, code, ok)
+	}
+	content, found := latestRecentMailboxMessage(messages, now.Add(-5*time.Minute))
+	if !found || content.RemoteID != "imap:102" {
+		t.Fatalf("latestRecentMailboxMessage()=%+v found=%v, want UID 102", content, found)
 	}
 }
 

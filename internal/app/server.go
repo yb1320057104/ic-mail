@@ -4304,11 +4304,11 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	cutoff := mailboxCodeAfter(after, time.Now())
-	if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
-		s.writeMailboxContent(w, mailbox, msg)
-		return
-	}
 	if truthy(r.URL.Query().Get("cache")) {
+		if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+			s.writeMailboxContent(w, mailbox, msg)
+			return
+		}
 		writeError(w, http.StatusOK, errCode("no_recent_message", "最近5分钟本地缓存中暂无邮件", true))
 		return
 	}
@@ -4369,15 +4369,14 @@ func (s *Server) writeMailboxContent(w http.ResponseWriter, mailbox Mailbox, msg
 
 func latestRecentMailboxMessage(messages []Message, after time.Time) (Message, bool) {
 	var latest Message
-	var latestAt time.Time
 	for _, msg := range messages {
 		msgAt := firstNonZeroTime(msg.ReceivedAt, msg.CreatedAt)
-		if msgAt.IsZero() || msgAt.Before(after) || (!latestAt.IsZero() && !msgAt.After(latestAt)) {
+		if msgAt.IsZero() || msgAt.Before(after) || (latest.ID != "" && !mailboxMessageIsNewer(msg, latest)) {
 			continue
 		}
-		latest, latestAt = msg, msgAt
+		latest = msg
 	}
-	return latest, !latestAt.IsZero()
+	return latest, latest.ID != ""
 }
 
 func (s *Server) startMailboxContentSync(mailbox Mailbox, after time.Time) <-chan error {
@@ -4464,7 +4463,7 @@ func (s *Server) handleMailboxVisualRefresh(w http.ResponseWriter, r *http.Reque
 func (s *Server) mailboxVisualCards(mailbox Mailbox, limit int) (string, int, string) {
 	messages := s.store.MessagesForMailbox(mailbox.ID)
 	sort.SliceStable(messages, func(i, j int) bool {
-		return firstNonZeroTime(messages[i].ReceivedAt, messages[i].CreatedAt).After(firstNonZeroTime(messages[j].ReceivedAt, messages[j].CreatedAt))
+		return mailboxMessageIsNewer(messages[i], messages[j])
 	})
 	if limit <= 0 {
 		limit = 5
@@ -4553,11 +4552,9 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 	codeAfter := mailboxCodeAfter(after, now)
 	allowStale := truthy(r.URL.Query().Get("allow_stale"))
 	cacheOnly := truthy(r.URL.Query().Get("cache"))
-	peekOnly := truthy(r.URL.Query().Get("peek")) || truthy(r.URL.Query().Get("preview"))
-	skipMessageID := strings.TrimSpace(mailbox.LastCodeMessageID)
-	if peekOnly {
-		skipMessageID = ""
-	}
+	// Code APIs are latest-value lookups, not a consumable queue. Skipping the
+	// previously returned message makes two recent messages alternate forever.
+	skipMessageID := ""
 	messages := s.store.MessagesForMailbox(mailbox.ID)
 	if cacheOnly {
 		if msg, code, ok := latestMailboxCode(messages, codeAfter, keyword, now); ok {
@@ -4568,29 +4565,23 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 		writeError(w, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
 		return
 	}
-	if msg, code, ok := latestMailboxCodeSkipping(messages, codeAfter, keyword, now, skipMessageID); ok {
-		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, "", !peekOnly)
-		metricMessage = "本地取码成功"
-		return
-	}
-
 	result := s.waitMailboxCode(r.Context(), mailbox, codeAfter, keyword, true, skipMessageID, s.mailboxCodeWaitDuration(r))
 	if result.syncErr != nil {
 		s.logger.Warn("icloud sync failed", "mailbox_id", mailbox.ID, "err", result.syncErr)
 	}
 	if result.ok {
-		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, result.message, result.code, staleCacheMessage(result.syncErr), !peekOnly)
+		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, result.message, result.code, staleCacheMessage(result.syncErr), false)
 		metricMessage = "同步取码成功"
 		return
 	}
 	if msg, code, ok := latestMailboxCodeSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID); ok {
-		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, staleCacheMessage(result.syncErr), !peekOnly)
+		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, staleCacheMessage(result.syncErr), false)
 		metricMessage = "同步后取码成功"
 		return
 	}
 	if result.syncErr != nil && allowStale {
 		if msg, code, ok := latestMailboxCodeSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID); ok {
-			metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, "取码同步失败，当前验证码来自本地缓存", !peekOnly)
+			metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, "取码同步失败，当前验证码来自本地缓存", false)
 			metricMessage = "旧缓存取码成功"
 			return
 		}
@@ -4671,7 +4662,6 @@ func latestMailboxCodeSkipping(messages []Message, after time.Time, keyword stri
 	after = mailboxCodeAfter(after, now)
 	var latest Message
 	var latestCode string
-	var latestAt time.Time
 	for _, msg := range messages {
 		if skipMessageID != "" && msg.ID == skipMessageID {
 			continue
@@ -4688,11 +4678,39 @@ func latestMailboxCodeSkipping(messages []Message, after time.Time, keyword stri
 		if code == "" {
 			continue
 		}
-		if latestAt.IsZero() || msgTime.After(latestAt) {
-			latest, latestCode, latestAt = msg, code, msgTime
+		if latest.ID == "" || mailboxMessageIsNewer(msg, latest) {
+			latest, latestCode = msg, code
 		}
 	}
-	return latest, latestCode, !latestAt.IsZero()
+	return latest, latestCode, latest.ID != ""
+}
+
+func mailboxMessageIsNewer(candidate, current Message) bool {
+	candidateAt := firstNonZeroTime(candidate.ReceivedAt, candidate.CreatedAt)
+	currentAt := firstNonZeroTime(current.ReceivedAt, current.CreatedAt)
+	if !candidateAt.Equal(currentAt) {
+		return candidateAt.After(currentAt)
+	}
+	if candidateUID, candidateOK := mailboxMessageUID(candidate); candidateOK {
+		if currentUID, currentOK := mailboxMessageUID(current); currentOK && candidateUID != currentUID {
+			return candidateUID > currentUID
+		}
+	}
+	if !candidate.CreatedAt.Equal(current.CreatedAt) {
+		return candidate.CreatedAt.After(current.CreatedAt)
+	}
+	return candidate.ID > current.ID
+}
+
+func mailboxMessageUID(message Message) (uint64, bool) {
+	value := strings.TrimSpace(message.RemoteID)
+	if strings.HasPrefix(strings.ToLower(value), "imap:") {
+		value = strings.TrimSpace(value[len("imap:"):])
+	} else {
+		return 0, false
+	}
+	uid, err := strconv.ParseUint(value, 10, 64)
+	return uid, err == nil
 }
 
 func truthy(value string) bool {

@@ -113,3 +113,16 @@ func TestParseProxyPoolRejectsDialerCycleAndPrivateTarget(t *testing.T) {
 		t.Fatal("expected private target rejection")
 	}
 }
+
+func TestParseProxyPoolAllowsPublicShapedDomainWithoutLocalDNS(t *testing.T) {
+	raw := []byte(`proxies:
+  - {name: remote-dns, type: vless, server: edge-node.example.invalid, port: 443, uuid: 11111111-1111-1111-1111-111111111111}
+`)
+	_, nodes, err := parseAndSanitizeProxyPoolYAML(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].Name != "remote-dns" {
+		t.Fatalf("unexpected nodes: %+v", nodes)
+	}
+}
