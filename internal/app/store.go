@@ -1511,6 +1511,7 @@ func (s *FileStore) DeleteICloudSessionForOwner(ownerID, accountID string) (int,
 	if ownerID == "" || accountID == "" {
 		return 0, false, errCode("account_required", "请选择需要删除的登录态账号", false)
 	}
+	original := cloneState(s.state)
 	removed := 0
 	nextSessions := s.state.ICloudSessions[:0]
 	for _, session := range s.state.ICloudSessions {
@@ -1554,7 +1555,11 @@ func (s *FileStore) DeleteICloudSessionForOwner(ownerID, accountID string) (int,
 		nextAccounts = append(nextAccounts, account)
 	}
 	s.state.Accounts = nextAccounts
-	return removed, preservedMailboxes, s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		s.state = original
+		return 0, false, err
+	}
+	return removed, preservedMailboxes, nil
 }
 
 func (s *FileStore) SetICloudSessionProxy(ownerID, accountID, nodeTag, nodeName string) (ICloudSession, bool, error) {
@@ -2698,8 +2703,10 @@ func (s *FileStore) updateICloudAccountFromSessionLocked(index int, session IClo
 }
 
 func sameICloudSessionIdentity(a, b ICloudSession) bool {
-	if strings.TrimSpace(a.AccountID) != "" && constantTimeEqual(a.AccountID, b.AccountID) {
-		return true
+	leftAccountID := strings.TrimSpace(a.AccountID)
+	rightAccountID := strings.TrimSpace(b.AccountID)
+	if leftAccountID != "" && rightAccountID != "" {
+		return constantTimeEqual(leftAccountID, rightAccountID)
 	}
 	if strings.TrimSpace(a.DSID) != "" && constantTimeEqual(a.DSID, b.DSID) {
 		return true
@@ -2881,7 +2888,38 @@ func (s *FileStore) userByIDLocked(id string) (User, bool) {
 }
 
 func (s *FileStore) saveLocked() error {
+	s.normalizeICloudSessionsLocked()
 	return s.saveSQLiteLocked()
+}
+
+// normalizeICloudSessionsLocked repairs legacy duplicate session rows before
+// persisting normalized SQLite tables. Explicit account IDs are authoritative:
+// login identifiers and DSIDs must never merge two different account records.
+func (s *FileStore) normalizeICloudSessionsLocked() {
+	for i := range s.state.ICloudSessions {
+		session := &s.state.ICloudSessions[i]
+		ownerID := strings.TrimSpace(session.OwnerID)
+		if ownerID != "" && strings.TrimSpace(session.AccountID) == "" {
+			session.AccountID = s.ensureICloudAccountLocked(ownerID, *session)
+		}
+	}
+
+	indexes := make(map[string]int, len(s.state.ICloudSessions))
+	next := make([]ICloudSession, 0, len(s.state.ICloudSessions))
+	for _, session := range s.state.ICloudSessions {
+		ownerID := strings.TrimSpace(session.OwnerID)
+		accountID := strings.TrimSpace(session.AccountID)
+		if ownerID != "" && accountID != "" {
+			key := ownerID + "\x00" + accountID
+			if index, ok := indexes[key]; ok {
+				next[index] = mergeICloudSession(next[index], session)
+				continue
+			}
+			indexes[key] = len(next)
+		}
+		next = append(next, session)
+	}
+	s.state.ICloudSessions = next
 }
 
 func (s *FileStore) migrateLegacyMailboxAccountIDsLocked() bool {

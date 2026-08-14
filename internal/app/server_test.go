@@ -5888,6 +5888,37 @@ func TestSaveICloudSessionForOwnerMergesPhoneLoginAcrossInterfaces(t *testing.T)
 	}
 }
 
+func TestICloudSessionIdentityKeepsDifferentExplicitAccountsSeparate(t *testing.T) {
+	left := ICloudSession{AccountID: "acc-left", LoginIdentifier: "+8613800138000", DSID: "same-dsid"}
+	right := ICloudSession{AccountID: "acc-right", LoginIdentifier: "+8613800138000", DSID: "same-dsid"}
+	if sameICloudSessionIdentity(left, right) {
+		t.Fatal("sessions with different explicit account IDs must remain separate")
+	}
+}
+
+func TestSaveLockedRepairsDuplicateICloudSessionRows(t *testing.T) {
+	store := newTestStore(t)
+	ownerID := "owner-duplicate-repair"
+	accountID := "acc-duplicate"
+	store.mu.Lock()
+	store.state.ICloudSessions = append(store.state.ICloudSessions,
+		ICloudSession{OwnerID: ownerID, AccountID: accountID, AppleID: "same@example.com", LoginStates: []LoginState{{Kind: LoginStateICloudWeb, Host: "www.icloud.com"}}},
+		ICloudSession{OwnerID: ownerID, AccountID: accountID, AppleID: "same@example.com", LoginStates: []LoginState{{Kind: LoginStateAppleAccount, Host: "appleid.apple.com"}}},
+	)
+	err := store.saveLocked()
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := store.ICloudSessionsForOwner(ownerID)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1: %+v", len(sessions), sessions)
+	}
+	if !hasLoginStateKind(sessions[0].LoginStates, LoginStateICloudWeb) || !hasLoginStateKind(sessions[0].LoginStates, LoginStateAppleAccount) {
+		t.Fatalf("login states not preserved while repairing duplicate: %+v", sessions[0].LoginStates)
+	}
+}
+
 func TestDeleteICloudSessionKeepsMailboxData(t *testing.T) {
 	store := newTestStore(t)
 	ownerID := "owner-delete-session"
