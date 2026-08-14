@@ -4374,7 +4374,7 @@ func TestMailboxCodePeekAndPublicBothReturnLatestCode(t *testing.T) {
 func TestLatestMailboxCodeSelectsNewestAndHonorsAfter(t *testing.T) {
 	oldTime := time.Date(2026, 6, 21, 21, 36, 50, 0, time.FixedZone("CST", 8*3600))
 	newTime := oldTime.Add(30 * time.Minute)
-	now := newTime.Add(time.Minute)
+	now := newTime.Add(5 * time.Second)
 	messages := []Message{
 		{ID: "old", Subject: "Your temporary ChatGPT verification code", Body: "Enter this temporary verification code to continue: 733849", ReceivedAt: oldTime},
 		{ID: "new", Subject: "Your temporary ChatGPT verification code", Body: "Enter this temporary verification code to continue: 246810", ReceivedAt: newTime},
@@ -4412,12 +4412,12 @@ func TestLatestMailboxCodeUsesIMAPUIDWhenTimesMatch(t *testing.T) {
 	}
 }
 
-func TestLatestMailboxCodeOnlyUsesFiveMinuteWindow(t *testing.T) {
+func TestLatestMailboxCodeOnlyUsesTenSecondWindow(t *testing.T) {
 	now := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
 	messages := []Message{
-		{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-6 * time.Minute)},
-		{ID: "older", Subject: "ChatGPT code", Body: "code 222222", ReceivedAt: now.Add(-4 * time.Minute)},
-		{ID: "newest", Subject: "ChatGPT code", Body: "code 333333", ReceivedAt: now.Add(-30 * time.Second)},
+		{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-11 * time.Second)},
+		{ID: "older", Subject: "ChatGPT code", Body: "code 222222", ReceivedAt: now.Add(-9 * time.Second)},
+		{ID: "newest", Subject: "ChatGPT code", Body: "code 333333", ReceivedAt: now.Add(-time.Second)},
 	}
 
 	msg, code, ok := latestMailboxCode(messages, time.Time{}, "ChatGPT", now)
@@ -4425,7 +4425,7 @@ func TestLatestMailboxCodeOnlyUsesFiveMinuteWindow(t *testing.T) {
 		t.Fatalf("latestMailboxCode() msg=%s code=%q ok=%v, want newest 333333 true", msg.ID, code, ok)
 	}
 
-	tooOld := Message{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-6 * time.Minute)}
+	tooOld := Message{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-11 * time.Second)}
 	_, _, ok = latestMailboxCode([]Message{tooOld}, time.Time{}, "ChatGPT", now)
 	if ok {
 		t.Fatalf("latestMailboxCode(old only) ok=true, want false")
@@ -4435,13 +4435,25 @@ func TestLatestMailboxCodeOnlyUsesFiveMinuteWindow(t *testing.T) {
 func TestLatestMailboxCodeUsesCreatedAtWhenReceivedAtMissing(t *testing.T) {
 	now := time.Date(2026, 6, 21, 20, 6, 0, 0, time.UTC)
 	messages := []Message{
-		{ID: "old", Subject: "ChatGPT code", Body: "code 111111", CreatedAt: time.Date(2026, 6, 21, 20, 0, 0, 0, time.UTC)},
-		{ID: "new", Subject: "ChatGPT code", Body: "code 222222", CreatedAt: time.Date(2026, 6, 21, 20, 5, 0, 0, time.UTC)},
+		{ID: "old", Subject: "ChatGPT code", Body: "code 111111", CreatedAt: now.Add(-11 * time.Second)},
+		{ID: "new", Subject: "ChatGPT code", Body: "code 222222", CreatedAt: now.Add(-time.Second)},
 	}
 
 	msg, code, ok := latestMailboxCode(messages, time.Time{}, "ChatGPT", now)
 	if !ok || msg.ID != "new" || code != "222222" {
 		t.Fatalf("latestMailboxCode() msg=%s code=%q ok=%v, want new 222222 true", msg.ID, code, ok)
+	}
+}
+
+func TestMailboxMessageAvailableAtUsesRecentIngestionWithoutRevivingHistory(t *testing.T) {
+	now := time.Date(2026, 8, 14, 22, 0, 0, 0, time.UTC)
+	rounded := Message{ReceivedAt: now.Add(-45 * time.Second), CreatedAt: now}
+	if got := mailboxMessageAvailableAt(rounded); !got.Equal(now) {
+		t.Fatalf("rounded new mail available at %v, want ingestion %v", got, now)
+	}
+	historical := Message{ReceivedAt: now.Add(-10 * time.Minute), CreatedAt: now}
+	if got := mailboxMessageAvailableAt(historical); !got.Equal(historical.ReceivedAt) {
+		t.Fatalf("historical mail available at %v, want received %v", got, historical.ReceivedAt)
 	}
 }
 

@@ -28,7 +28,9 @@ import (
 //go:embed templates/*.html
 var webFS embed.FS
 
-const mailboxCodeFreshWindow = 5 * time.Minute
+const mailboxCodeFreshWindow = 10 * time.Second
+const mailboxCodeSyncLookback = 5 * time.Minute
+const mailboxReceivedTimePrecisionAllowance = 2 * time.Minute
 const mailboxCodeRequestFetchLimit = 20
 const mailboxCreateMinInterval = 3 * time.Second
 const mailboxCreateLimitCooldown = 2 * time.Minute
@@ -4309,11 +4311,11 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 			s.writeMailboxContent(w, mailbox, msg)
 			return
 		}
-		writeError(w, http.StatusOK, errCode("no_recent_message", "最近5分钟本地缓存中暂无邮件", true))
+		writeError(w, http.StatusOK, errCode("no_recent_message", "最近10秒本地缓存中暂无邮件", true))
 		return
 	}
 
-	done := s.startMailboxContentSync(mailbox, cutoff)
+	done := s.startMailboxContentSync(mailbox, mailboxCodeSyncAfter(cutoff, time.Now()))
 	waitDuration := s.mailboxCodeWaitDuration(r)
 	if waitDuration <= 0 {
 		waitDuration = mailboxCodeFastWait
@@ -4340,7 +4342,7 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 				writeError(w, http.StatusBadGateway, errCode("mail_sync_failed", "同步最近邮件失败，请检查取码登录或稍后重试", true))
 				return
 			}
-			writeError(w, http.StatusOK, errCode("no_recent_message", "最近5分钟暂未收到邮件", true))
+			writeError(w, http.StatusOK, errCode("no_recent_message", "最近10秒暂未收到邮件", true))
 			return
 		case <-ticker.C:
 			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
@@ -4352,7 +4354,7 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 				s.writeMailboxContent(w, mailbox, msg)
 				return
 			}
-			writeError(w, http.StatusOK, errCode("no_recent_message", "最近5分钟暂未收到邮件，后台仍在同步", true))
+			writeError(w, http.StatusOK, errCode("no_recent_message", "最近10秒暂未收到邮件，后台仍在同步", true))
 			return
 		case <-r.Context().Done():
 			return
@@ -4370,7 +4372,7 @@ func (s *Server) writeMailboxContent(w http.ResponseWriter, mailbox Mailbox, msg
 func latestRecentMailboxMessage(messages []Message, after time.Time) (Message, bool) {
 	var latest Message
 	for _, msg := range messages {
-		msgAt := firstNonZeroTime(msg.ReceivedAt, msg.CreatedAt)
+		msgAt := mailboxMessageAvailableAt(msg)
 		if msgAt.IsZero() || msgAt.Before(after) || (latest.ID != "" && !mailboxMessageIsNewer(msg, latest)) {
 			continue
 		}
@@ -4649,6 +4651,17 @@ func mailboxCodeAfter(after, now time.Time) time.Time {
 	return cutoff
 }
 
+func mailboxCodeSyncAfter(after, now time.Time) time.Time {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	lookback := now.Add(-mailboxCodeSyncLookback)
+	if after.IsZero() || after.After(lookback) {
+		return lookback
+	}
+	return after
+}
+
 func latestMailboxCode(messages []Message, after time.Time, keyword string, now time.Time) (Message, string, bool) {
 	return latestMailboxCodeSkipping(messages, after, keyword, now, "")
 }
@@ -4666,7 +4679,7 @@ func latestMailboxCodeSkipping(messages []Message, after time.Time, keyword stri
 		if skipMessageID != "" && msg.ID == skipMessageID {
 			continue
 		}
-		msgTime := firstNonZeroTime(msg.ReceivedAt, msg.CreatedAt)
+		msgTime := mailboxMessageAvailableAt(msg)
 		if msgTime.IsZero() || msgTime.Before(after) {
 			continue
 		}
@@ -4700,6 +4713,24 @@ func mailboxMessageIsNewer(candidate, current Message) bool {
 		return candidate.CreatedAt.After(current.CreatedAt)
 	}
 	return candidate.ID > current.ID
+}
+
+func mailboxMessageAvailableAt(message Message) time.Time {
+	receivedAt := message.ReceivedAt
+	createdAt := message.CreatedAt
+	if receivedAt.IsZero() {
+		return createdAt
+	}
+	if createdAt.IsZero() || !createdAt.After(receivedAt) {
+		return receivedAt
+	}
+	// Most email Date headers only have second or minute precision. Use the
+	// local ingestion time for a newly arrived message, but never make an old
+	// historical message fresh merely because it was imported just now.
+	if createdAt.Sub(receivedAt) <= mailboxReceivedTimePrecisionAllowance {
+		return createdAt
+	}
+	return receivedAt
 }
 
 func mailboxMessageUID(message Message) (uint64, bool) {
@@ -4936,7 +4967,8 @@ func (s *Server) syncMailboxesForCodeWaiters(ctx context.Context, ownerID string
 		sort.Slice(mailboxes, func(i, j int) bool {
 			return mailboxes[i].Email < mailboxes[j].Email
 		})
-		_, err := s.syncMailboxCodeBatchForOwnerWithLimit(ctx, ownerID, mailboxes, group.minAfter, group.keyword, mailboxCodeRequestFetchLimit)
+		syncAfter := mailboxCodeSyncAfter(group.minAfter, time.Now())
+		_, err := s.syncMailboxCodeBatchForOwnerWithLimit(ctx, ownerID, mailboxes, syncAfter, group.keyword, mailboxCodeRequestFetchLimit)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
