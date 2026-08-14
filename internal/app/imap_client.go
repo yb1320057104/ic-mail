@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -17,6 +18,8 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -877,11 +880,7 @@ func SyncICloudIMAPMessagesWithCursor(ctx context.Context, state LoginState, mai
 		return iCloudIMAPSyncResult{MessagesByMailbox: map[string][]ICloudSyncedMessage{}}, nil
 	}
 	sortInts(uids)
-	uids = lastIntValues(uids, maxMessages)
-	lastUID := ""
-	if len(uids) > 0 {
-		lastUID = strconv.Itoa(uids[len(uids)-1])
-	}
+	uids, lastUID := imapUIDsForSync(uids, imapUIDNumber(state.IMAPLastSyncUID), maxMessages)
 
 	fetched := make([]iCloudIMAPFetchedMessage, 0, len(uids))
 	tag := 4
@@ -908,6 +907,45 @@ func SyncICloudIMAPMessagesWithCursor(ctx context.Context, state LoginState, mai
 		MessagesByMailbox: iCloudIMAPMessagesByMailbox(fetched, mailboxes, after, keyword, state.IMAPEmail, state.IMAPUsername),
 		LastUID:           lastUID,
 	}, nil
+}
+
+// imapUIDsForSync never skips new mail when a busy shared IMAP inbox receives
+// more messages than one polling round can fetch. New UIDs are consumed from
+// oldest to newest and the cursor advances only through messages actually
+// fetched. Once caught up, the remaining budget re-reads a recent UID window
+// so providers that rewrite forwarding headers can be recovered.
+func imapUIDsForSync(uids []int, cursor, limit int) ([]int, string) {
+	if limit <= 0 || len(uids) == 0 {
+		if cursor > 0 {
+			return nil, strconv.Itoa(cursor)
+		}
+		return nil, ""
+	}
+	if cursor <= 0 {
+		selected := append([]int(nil), uids...)
+		if len(selected) > limit {
+			selected = selected[:limit]
+		}
+		return selected, strconv.Itoa(selected[len(selected)-1])
+	}
+	newerAt := sort.SearchInts(uids, cursor+1)
+	newer := uids[newerAt:]
+	if len(newer) >= limit {
+		selected := append([]int(nil), newer[:limit]...)
+		return selected, strconv.Itoa(selected[len(selected)-1])
+	}
+	selected := append([]int(nil), newer...)
+	remaining := limit - len(selected)
+	older := uids[:newerAt]
+	if len(older) > remaining {
+		older = older[len(older)-remaining:]
+	}
+	selected = append(append([]int(nil), older...), selected...)
+	nextCursor := cursor
+	if len(newer) > 0 && newer[len(newer)-1] > nextCursor {
+		nextCursor = newer[len(newer)-1]
+	}
+	return selected, strconv.Itoa(nextCursor)
 }
 
 func imapSearchCommand(state LoginState, mailboxes []Mailbox, after time.Time) string {
@@ -1056,7 +1094,11 @@ func parseICloudIMAPMessage(item iCloudIMAPFetchedMessage) (ICloudSyncedMessage,
 	if uid != "" {
 		remoteID += ":" + uid
 	}
-	recipients := imapRecipientEvidence(msg.Header, body)
+	recipientBody := strings.Join([]string{content.Text, normalizeMailBodyWithLines(content.HTML)}, "\n")
+	recipients := imapRecipientEvidence(msg.Header, recipientBody)
+	if strings.TrimSpace(content.RecipientEvidence) != "" {
+		recipients += "\n" + content.RecipientEvidence
+	}
 	return ICloudSyncedMessage{
 		RemoteID:   remoteID,
 		UID:        uid,
@@ -1085,8 +1127,15 @@ func imapRecipientEvidence(header mail.Header, body string) string {
 			}
 		}
 	}
+	// Forwarding services also render the original header as a compact HTML
+	// table or a single text line, so it may not begin at a line boundary.
+	for _, match := range imapLabelledRecipientPattern.FindAllString(body, -1) {
+		evidence += "\nForwarded-" + match
+	}
 	return evidence
 }
+
+var imapLabelledRecipientPattern = regexp.MustCompile(`(?i)(?:to|original-to|x-original-to|delivered-to|envelope-to|收件人|原始收件人)\s*[:：]\s*(?:[^@\r\n]{0,120})?[a-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}`)
 
 func normalizeICloudIMAPState(state LoginState) (LoginState, error) {
 	email := normalizeICloudIMAPEmail(state.IMAPEmail)
@@ -1227,8 +1276,9 @@ func decodeICloudIMAPBody(header mail.Header, body []byte) string {
 }
 
 type imapBodyContent struct {
-	Text string
-	HTML string
+	Text              string
+	HTML              string
+	RecipientEvidence string
 }
 
 func decodeICloudIMAPContent(header mail.Header, body []byte) imapBodyContent {
@@ -1243,7 +1293,7 @@ func decodeICloudIMAPContent(header mail.Header, body []byte) imapBodyContent {
 			return imapBodyContent{Text: string(decoded)}
 		}
 		reader := multipart.NewReader(bytes.NewReader(decoded), boundary)
-		var textParts, htmlParts []string
+		var textParts, htmlParts, recipientParts []string
 		for i := 0; i < 30; i++ {
 			part, err := reader.NextPart()
 			if err != nil {
@@ -1257,8 +1307,21 @@ func decodeICloudIMAPContent(header mail.Header, body []byte) imapBodyContent {
 			if strings.TrimSpace(partContent.HTML) != "" {
 				htmlParts = append(htmlParts, partContent.HTML)
 			}
+			if strings.TrimSpace(partContent.RecipientEvidence) != "" {
+				recipientParts = append(recipientParts, partContent.RecipientEvidence)
+			}
 		}
-		return imapBodyContent{Text: strings.Join(textParts, "\n"), HTML: strings.Join(htmlParts, "\n")}
+		return imapBodyContent{Text: strings.Join(textParts, "\n"), HTML: strings.Join(htmlParts, "\n"), RecipientEvidence: strings.Join(recipientParts, "\n")}
+	}
+	if strings.EqualFold(mediaType, "message/rfc822") {
+		nested, nestedErr := mail.ReadMessage(bytes.NewReader(decoded))
+		if nestedErr != nil {
+			return imapBodyContent{Text: string(decoded)}
+		}
+		nestedBody, _ := io.ReadAll(io.LimitReader(nested.Body, 1<<20))
+		content := decodeICloudIMAPContent(nested.Header, nestedBody)
+		content.RecipientEvidence = strings.Join([]string{imapHeaderText(nested.Header), content.RecipientEvidence}, "\n")
+		return content
 	}
 	if strings.EqualFold(mediaType, "text/html") {
 		return imapBodyContent{HTML: string(decoded)}
@@ -1268,6 +1331,16 @@ func decodeICloudIMAPContent(header mail.Header, body []byte) imapBodyContent {
 	}
 	return imapBodyContent{}
 }
+
+func normalizeMailBodyWithLines(value string) string {
+	value = html.UnescapeString(value)
+	value = imapAngleAddressPattern.ReplaceAllString(value, "$1")
+	value = regexp.MustCompile(`(?i)</?(?:br|p|div|tr|td|li|table|h[1-6])\b[^>]*>`).ReplaceAllString(value, "\n")
+	value = htmlTagRegex.ReplaceAllString(value, " ")
+	return strings.TrimSpace(value)
+}
+
+var imapAngleAddressPattern = regexp.MustCompile(`(?i)<\s*([a-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-z0-9.-]+\.[a-z]{2,})\s*>`)
 
 func decodeICloudIMAPTransfer(encoding string, body []byte) []byte {
 	switch strings.ToLower(strings.TrimSpace(encoding)) {

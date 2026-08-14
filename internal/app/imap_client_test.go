@@ -255,6 +255,30 @@ func TestIMAPSearchCommandPrefersAccountCursor(t *testing.T) {
 	}
 }
 
+func TestIMAPUIDsForSyncDoesNotSkipBusyInboxBacklog(t *testing.T) {
+	uids := make([]int, 0, 520)
+	for uid := 101; uid <= 620; uid++ {
+		uids = append(uids, uid)
+	}
+	selected, cursor := imapUIDsForSync(uids, 600, 8)
+	if got := fmt.Sprint(selected); got != "[601 602 603 604 605 606 607 608]" {
+		t.Fatalf("selected = %s", got)
+	}
+	if cursor != "608" {
+		t.Fatalf("cursor = %q, want 608", cursor)
+	}
+}
+
+func TestIMAPUIDsForSyncUsesSpareBudgetForOverlap(t *testing.T) {
+	selected, cursor := imapUIDsForSync([]int{595, 596, 597, 598, 599, 600, 601, 602}, 600, 5)
+	if got := fmt.Sprint(selected); got != "[598 599 600 601 602]" {
+		t.Fatalf("selected = %s", got)
+	}
+	if cursor != "602" {
+		t.Fatalf("cursor = %q, want 602", cursor)
+	}
+}
+
 func TestICloudIMAPMessagesByMailboxMatchesForwardedRecipientLine(t *testing.T) {
 	mailboxes := []Mailbox{{ID: "mbx_forwarded", Email: "private-alias@icloud.com"}}
 	raw := "To: destination@qq.com\r\n" +
@@ -265,6 +289,33 @@ func TestICloudIMAPMessagesByMailboxMatchesForwardedRecipientLine(t *testing.T) 
 	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{UID: "88", Raw: []byte(raw)}}, mailboxes, time.Time{}, "ChatGPT")
 	if len(got["mbx_forwarded"]) != 1 {
 		t.Fatalf("forwarded recipient should match alias, got=%+v", got)
+	}
+}
+
+func TestICloudIMAPMessagesByMailboxMatchesHTMLForwardedRecipient(t *testing.T) {
+	mailboxes := []Mailbox{{ID: "mbx_html", Email: "html-alias@icloud.com"}}
+	raw := "To: destination@qq.com\r\nFrom: ChatGPT <noreply@example.com>\r\nSubject: Verification code 654321\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +
+		"<table><tr><td>收件人：</td><td>HTML User &lt;html-alias@icloud.com&gt;</td></tr></table><p>验证码 654321</p>"
+	_, evidence, parsed := parseICloudIMAPMessage(iCloudIMAPFetchedMessage{UID: "89", Raw: []byte(raw)})
+	if !parsed || !strings.Contains(strings.ToLower(evidence), "html-alias@icloud.com") {
+		t.Fatalf("HTML recipient evidence missing: parsed=%t evidence=%q", parsed, evidence)
+	}
+	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{UID: "89", Raw: []byte(raw)}}, mailboxes, time.Time{}, "ChatGPT")
+	if len(got["mbx_html"]) != 1 {
+		t.Fatalf("HTML forwarded recipient should match alias, got=%+v", got)
+	}
+}
+
+func TestICloudIMAPMessagesByMailboxMatchesRFC822ForwardedRecipient(t *testing.T) {
+	mailboxes := []Mailbox{{ID: "mbx_rfc822", Email: "attached-alias@icloud.com"}}
+	raw := "To: destination@qq.com\r\nFrom: Forwarder <forward@example.com>\r\nSubject: Fwd: ChatGPT verification code\r\nContent-Type: multipart/mixed; boundary=outer\r\n\r\n" +
+		"--outer\r\nContent-Type: text/plain\r\n\r\nForwarded message\r\n" +
+		"--outer\r\nContent-Type: message/rfc822\r\n\r\n" +
+		"To: attached-alias@icloud.com\r\nFrom: ChatGPT <noreply@example.com>\r\nSubject: Verification code 246810\r\nContent-Type: text/plain\r\n\r\nYour code is 246810\r\n" +
+		"--outer--\r\n"
+	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{UID: "90", Raw: []byte(raw)}}, mailboxes, time.Time{}, "ChatGPT")
+	if len(got["mbx_rfc822"]) != 1 {
+		t.Fatalf("RFC822 forwarded recipient should match alias, got=%+v", got)
 	}
 }
 
