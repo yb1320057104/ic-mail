@@ -18,6 +18,77 @@ import (
 	xproxy "golang.org/x/net/proxy"
 )
 
+const (
+	proxyFallbackStop   = "stop"
+	proxyFallbackFixed  = "fixed"
+	proxyFallbackDirect = "direct"
+)
+
+type proxyFallbackTransport struct {
+	primary  http.RoundTripper
+	fallback http.RoundTripper
+	logger   func(error)
+}
+
+func (t *proxyFallbackTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	retryRequest, retryOK := cloneProxyFallbackRequest(request)
+	response, err := t.primary.RoundTrip(request)
+	if err == nil || !retryOK || !safeProxyFallbackError(request.Method, err) {
+		return response, err
+	}
+	if response != nil && response.Body != nil {
+		response.Body.Close()
+	}
+	if t.logger != nil {
+		t.logger(err)
+	}
+	return t.fallback.RoundTrip(retryRequest)
+}
+
+func cloneProxyFallbackRequest(request *http.Request) (*http.Request, bool) {
+	clone := request.Clone(request.Context())
+	if request.Body == nil || request.Body == http.NoBody {
+		return clone, true
+	}
+	if request.GetBody == nil {
+		return nil, false
+	}
+	body, err := request.GetBody()
+	if err != nil {
+		return nil, false
+	}
+	clone.Body = body
+	return clone, true
+}
+
+func safeProxyFallbackError(method string, err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"proxyconnect", "proxy connect", "socks", "connection refused", "no such host", "dial tcp", "connectex", "tls handshake"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeProxyFallbackMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case proxyFallbackFixed:
+		return proxyFallbackFixed
+	case proxyFallbackDirect:
+		return proxyFallbackDirect
+	default:
+		return proxyFallbackStop
+	}
+}
+
 func normalizeFixedProxyURL(raw string) (string, bool) {
 	normalized := strings.TrimSpace(raw)
 	if normalized == "" || strings.Contains(normalized, "://") {
@@ -239,16 +310,28 @@ func (s *Server) appleHTTPClientForOwner(ownerID string) (*http.Client, error) {
 
 func (s *Server) appleHTTPClientForAccount(ctx context.Context, ownerID, accountID, appleID string) (*http.Client, error) {
 	_ = ctx
+	config, configured := s.store.UserProxyConfig(ownerID)
+	fallbackMode := normalizeProxyFallbackMode(config.FallbackMode)
 	if s.proxyPool != nil {
 		if client, selected, err := s.proxyPool.client(ownerID, accountID, appleID); selected {
 			if err != nil {
+				if fallback, fallbackErr := s.proxyFallbackHTTPClient(config, configured, fallbackMode); fallbackErr == nil && fallback != nil {
+					s.logProxyFallback(ownerID, accountID, fallbackMode, err)
+					return fallback, nil
+				}
 				return nil, errCode("proxy_pool_unavailable", "账号代理异常，已停止 Apple 请求："+err.Error(), true)
+			}
+			if fallback, fallbackErr := s.proxyFallbackHTTPClient(config, configured, fallbackMode); fallbackErr != nil {
+				return nil, fallbackErr
+			} else if fallback != nil {
+				client = clientWithProxyFallback(client, fallback, func(primaryErr error) {
+					s.logProxyFallback(ownerID, accountID, fallbackMode, primaryErr)
+				})
 			}
 			return client, nil
 		}
 	}
-	config, ok := s.store.UserProxyConfig(ownerID)
-	if !ok || !config.Enabled {
+	if !configured || !config.Enabled {
 		return &http.Client{Timeout: 30 * time.Second}, nil
 	}
 	raw, err := decryptAutoSecret(s.cfg.AutoLoginSecret, config.URLCipher)
@@ -257,9 +340,62 @@ func (s *Server) appleHTTPClientForAccount(ctx context.Context, ownerID, account
 	}
 	client, err := proxyHTTPClient(raw, 30*time.Second)
 	if err != nil {
+		if fallbackMode == proxyFallbackDirect {
+			s.logProxyFallback(ownerID, accountID, fallbackMode, err)
+			return directAppleHTTPClient(), nil
+		}
 		return nil, errCode("proxy_unavailable", "代理异常，已停止 Apple 请求："+err.Error(), true)
 	}
+	if fallbackMode == proxyFallbackDirect {
+		client = clientWithProxyFallback(client, directAppleHTTPClient(), func(primaryErr error) {
+			s.logProxyFallback(ownerID, accountID, fallbackMode, primaryErr)
+		})
+	}
 	return client, nil
+}
+
+func (s *Server) proxyFallbackHTTPClient(config UserProxyConfig, configured bool, mode string) (*http.Client, error) {
+	switch normalizeProxyFallbackMode(mode) {
+	case proxyFallbackFixed:
+		if !configured || !config.Enabled || config.URLCipher == "" {
+			return nil, nil
+		}
+		raw, err := decryptAutoSecret(s.cfg.AutoLoginSecret, config.URLCipher)
+		if err != nil {
+			return nil, errCode("proxy_decrypt_failed", "备用固定代理无法解密", false)
+		}
+		client, err := proxyHTTPClient(raw, 30*time.Second)
+		if err != nil {
+			return nil, errCode("proxy_fallback_unavailable", "备用固定代理不可用："+err.Error(), true)
+		}
+		return client, nil
+	case proxyFallbackDirect:
+		return directAppleHTTPClient(), nil
+	default:
+		return nil, nil
+	}
+}
+
+func directAppleHTTPClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, MaxIdleConns: 32, MaxIdleConnsPerHost: 8, IdleConnTimeout: 5 * time.Minute}, Timeout: 30 * time.Second}
+}
+
+func clientWithProxyFallback(primary, fallback *http.Client, logFallback func(error)) *http.Client {
+	primaryTransport := primary.Transport
+	if primaryTransport == nil {
+		primaryTransport = http.DefaultTransport
+	}
+	fallbackTransport := fallback.Transport
+	if fallbackTransport == nil {
+		fallbackTransport = http.DefaultTransport
+	}
+	return &http.Client{Transport: &proxyFallbackTransport{primary: primaryTransport, fallback: fallbackTransport, logger: logFallback}, Timeout: 30 * time.Second}
+}
+
+func (s *Server) logProxyFallback(ownerID, accountID, mode string, primaryErr error) {
+	if s.logger != nil {
+		s.logger.Warn("account proxy fallback", "owner", s.ownerName(ownerID), "account_id", accountID, "fallback", normalizeProxyFallbackMode(mode), "primary_error", primaryErr)
+	}
 }
 
 func (s *Server) accountAppleID(ownerID, accountID string) string {
@@ -301,16 +437,31 @@ func (s *Server) appleAuthClientForLogin(ctx context.Context, ownerID, accountID
 // fixed proxy, matching the Apple HTTP client selection above.
 func (s *Server) proxyURLForAccount(ctx context.Context, ownerID, accountID string) (string, ProxyPoolNode, error) {
 	_ = ctx
+	config, configured := s.store.UserProxyConfig(ownerID)
 	nodeName := s.store.ProxyPoolNodeForAccount(ownerID, accountID, "")
 	if nodeName != "" && s.proxyPool != nil {
 		port, err := s.proxyPool.ensure(ownerID, nodeName)
 		if err != nil {
+			switch normalizeProxyFallbackMode(config.FallbackMode) {
+			case proxyFallbackFixed:
+				if configured && config.Enabled && config.URLCipher != "" {
+					raw, decryptErr := decryptAutoSecret(s.cfg.AutoLoginSecret, config.URLCipher)
+					if decryptErr == nil {
+						if _, validateErr := validateFixedProxyURL(raw); validateErr == nil {
+							s.logProxyFallback(ownerID, accountID, proxyFallbackFixed, err)
+							return raw, ProxyPoolNode{Name: nodeName}, nil
+						}
+					}
+				}
+			case proxyFallbackDirect:
+				s.logProxyFallback(ownerID, accountID, proxyFallbackDirect, err)
+				return "", ProxyPoolNode{Name: nodeName}, nil
+			}
 			return "", ProxyPoolNode{Name: nodeName}, errCode("proxy_pool_unavailable", "账号代理异常，已停止请求："+err.Error(), true)
 		}
 		return fmt.Sprintf("http://127.0.0.1:%d", port), ProxyPoolNode{Name: nodeName}, nil
 	}
-	config, ok := s.store.UserProxyConfig(ownerID)
-	if !ok || !config.Enabled || config.URLCipher == "" {
+	if !configured || !config.Enabled || config.URLCipher == "" {
 		return "", ProxyPoolNode{}, nil
 	}
 	raw, err := decryptAutoSecret(s.cfg.AutoLoginSecret, config.URLCipher)
@@ -341,13 +492,14 @@ func (s *Server) appleAuthClientForOwner(ownerID string) (*AppleAuthClient, erro
 
 func (s *Server) handleGetFixedProxy(w http.ResponseWriter, r *http.Request) {
 	c, ok := s.store.UserProxyConfig(requestOwnerID(r, s.store))
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "configured": ok, "proxy": map[string]any{"url_masked": c.URLMasked, "enabled": c.Enabled, "status": c.Status, "exit_ip": c.ExitIP, "latency_ms": c.LatencyMS, "tls_ok": c.TLSOK, "last_error": c.LastError, "last_tested_at": formatTime(c.LastTestedAt)}})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "configured": ok, "proxy": map[string]any{"url_masked": c.URLMasked, "enabled": c.Enabled, "fallback_mode": normalizeProxyFallbackMode(c.FallbackMode), "status": c.Status, "exit_ip": c.ExitIP, "latency_ms": c.LatencyMS, "tls_ok": c.TLSOK, "last_error": c.LastError, "last_tested_at": formatTime(c.LastTestedAt)}})
 }
 
 func (s *Server) handleSaveFixedProxy(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		URL     string `json:"url"`
-		Enabled bool   `json:"enabled"`
+		URL          string `json:"url"`
+		Enabled      bool   `json:"enabled"`
+		FallbackMode string `json:"fallback_mode"`
 	}
 	if err := decodeJSON(r, &p); err != nil {
 		writeError(w, 400, err)
@@ -385,6 +537,7 @@ func (s *Server) handleSaveFixedProxy(w http.ResponseWriter, r *http.Request) {
 	c.URLCipher = cipher
 	c.URLMasked = masked
 	c.Enabled = p.Enabled
+	c.FallbackMode = normalizeProxyFallbackMode(p.FallbackMode)
 	c.Status = "等待连通性测试"
 	c.ExitIP = ""
 	c.LatencyMS = 0

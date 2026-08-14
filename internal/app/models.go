@@ -58,6 +58,7 @@ type UserProxyConfig struct {
 	LastError        string          `json:"last_error,omitempty"`
 	LastTestedAt     time.Time       `json:"last_tested_at,omitempty"`
 	UpdatedAt        time.Time       `json:"updated_at"`
+	FallbackMode     string          `json:"fallback_mode,omitempty"`
 	PoolEnabled      bool            `json:"pool_enabled,omitempty"`
 	PoolSourceType   string          `json:"pool_source_type,omitempty"`
 	PoolSourceCipher string          `json:"pool_source_cipher,omitempty"`

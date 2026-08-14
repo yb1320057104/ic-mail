@@ -1529,11 +1529,11 @@
             <section class="session-tool-card">
               <h3>用户可信固定代理</h3>
               <p>当前用户全部未绑定专属节点的 Apple 请求共用此代理，不会影响其他用户。</p>
-              <div class="field-grid" style="padding:12px 0 0"><label class="full">代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="http://user:pass@host:port 或 socks5://host:port；留空保留"></label><label>运行状态<select id="fixedProxyEnabled"><option value="true">开启可信固定代理</option><option value="false">暂停可信固定代理</option></select></label><div class="full toolbar" style="padding:0"><button class="primary" type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测代理</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div></div>
+              <div class="field-grid" style="padding:12px 0 0"><label class="full">代理地址<input id="fixedProxyURL" type="password" autocomplete="new-password" placeholder="http://user:pass@host:port 或 socks5://host:port；留空保留"></label><label>运行状态<select id="fixedProxyEnabled"><option value="true">开启可信固定代理</option><option value="false">暂停可信固定代理</option></select></label><label>代理失败保底<select id="fixedProxyFallback"><option value="stop">停止请求，不更换出口</option><option value="fixed">账号节点失败后使用固定代理</option><option value="direct">代理失败后直连一次</option></select></label><div class="full toolbar" style="padding:0"><button class="primary" type="button" onclick="saveFixedProxy()">保存代理</button><button type="button" onclick="testFixedProxy()">检测代理</button><span id="fixedProxyStatus" class="muted">尚未配置</span></div></div>
             </section>
             <section class="session-tool-card">
               <h3>代理优先级</h3>
-              <p>请求按账号专属节点、用户可信固定代理、直连的顺序选择出口。专属节点异常时会停止请求并提示，不会静默切换 IP。</p>
+              <p>账号始终使用已绑定的单一节点并复用连接，不会在代理池节点间轮换。保底仅在代理连接失败时执行；Apple 返回 429/503 时不会切换出口。</p>
               <div class="hint">账号专属节点请在“登录态 → 编辑账号 → 账号专属代理”中选择。</div>
               <div class="toolbar"><button type="button" onclick="setActiveView('session')">前往登录态绑定账号</button></div>
             </section>
@@ -1871,7 +1871,7 @@
       proxy: {
         title:'代理管理教学', summary:'代理管理页面集中维护当前用户的固定出口、代理订阅、YAML 节点和账号绑定情况。',
         steps:['如全部未绑定账号共用一个出口，在“用户可信固定代理”中填写 HTTP 或 SOCKS5 地址并检测。','粘贴订阅链接或 Clash/Mihomo YAML，点击“导入并测速”。','等待节点进入列表，确认状态为可用并查看延迟。','前往登录态编辑指定账号，在“账号专属代理”中选择节点。','返回本页查看每个节点的已绑定账号数量和账号名称。'],
-        tips:['账号专属节点优先于用户可信固定代理。','账号绑定节点异常时系统会停止该账号请求，避免静默直连导致出口 IP 变化。','代理地址及订阅内容可能包含密码，请勿公开。']
+        tips:['账号专属节点优先于用户可信固定代理，并会尽量复用同一连接。','“停止请求”最安全；如明确接受出口变化，可选择备用固定代理或直连一次。','Apple 返回 429/503、请求超时或结果不确定时不会切换出口重试。','代理地址及订阅内容可能包含密码，请勿公开。']
       },
       create: {
         title:'创建隐私邮箱教学', summary:'使用已保存且状态正常的新接口或旧接口，为一个或多个 Apple 账号创建隐私邮箱。',
@@ -4101,6 +4101,7 @@
       try {
         const data = await api('/api/user/fixed-proxy'); const p=data.proxy||{};
         $('fixedProxyEnabled').value=p.enabled?'true':'false';
+        if($('fixedProxyFallback')) $('fixedProxyFallback').value=p.fallback_mode||'stop';
         $('fixedProxyStatus').textContent=data.configured?`${p.url_masked||'已配置'}；${p.status||'等待检测'}${p.exit_ip?'；出口IP '+p.exit_ip:''}${p.latency_ms?'；延迟 '+p.latency_ms+'ms':''}${p.tls_ok?'；TLS正常':''}${p.last_error?'；'+p.last_error:''}`:'尚未配置';
       } catch(err) { $('fixedProxyStatus').textContent='读取代理配置失败：'+err.message; }
     }
@@ -4154,7 +4155,7 @@
 
     async function saveFixedProxy() {
       try {
-        const data=await api('/api/user/fixed-proxy',{method:'POST',loadingText:'正在加密保存固定代理...',body:JSON.stringify({url:$('fixedProxyURL').value.trim(),enabled:$('fixedProxyEnabled').value==='true'})});
+        const data=await api('/api/user/fixed-proxy',{method:'POST',loadingText:'正在加密保存固定代理...',body:JSON.stringify({url:$('fixedProxyURL').value.trim(),enabled:$('fixedProxyEnabled').value==='true',fallback_mode:$('fixedProxyFallback').value})});
         $('fixedProxyURL').value=''; $('fixedProxyStatus').textContent=data.message; await loadFixedProxy();
       } catch(err) { $('fixedProxyStatus').textContent='代理异常：'+err.message; }
     }

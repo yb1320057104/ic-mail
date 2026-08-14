@@ -1,11 +1,83 @@
 package app
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 )
+
+func TestProxyFallbackRetriesSafeTransportFailure(t *testing.T) {
+	primaryCalls, fallbackCalls := 0, 0
+	transport := &proxyFallbackTransport{
+		primary: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			primaryCalls++
+			return nil, errors.New("proxyconnect tcp: connection refused")
+		}),
+		fallback: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			fallbackCalls++
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+		}),
+	}
+	request, _ := http.NewRequest(http.MethodGet, "https://example.com/test", nil)
+	response, err := transport.RoundTrip(request)
+	if err != nil || response.StatusCode != http.StatusOK || primaryCalls != 1 || fallbackCalls != 1 {
+		t.Fatalf("response=%+v err=%v primary=%d fallback=%d", response, err, primaryCalls, fallbackCalls)
+	}
+}
+
+func TestProxyFallbackDoesNotSwitchOnAppleStatusOrAmbiguousPostError(t *testing.T) {
+	fallbackCalls := 0
+	fallback := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		fallbackCalls++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})
+	statusTransport := &proxyFallbackTransport{
+		primary: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("Apple unavailable"))}, nil
+		}),
+		fallback: fallback,
+	}
+	request, _ := http.NewRequest(http.MethodGet, "https://apple.example/test", nil)
+	response, err := statusTransport.RoundTrip(request)
+	if err != nil || response.StatusCode != http.StatusServiceUnavailable || fallbackCalls != 0 {
+		t.Fatalf("503 response=%+v err=%v fallback=%d", response, err, fallbackCalls)
+	}
+
+	postTransport := &proxyFallbackTransport{
+		primary:  roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, io.ErrUnexpectedEOF }),
+		fallback: fallback,
+	}
+	request, _ = http.NewRequest(http.MethodPost, "https://apple.example/test", bytes.NewBufferString(`{"action":"create"}`))
+	if _, err = postTransport.RoundTrip(request); !errors.Is(err, io.ErrUnexpectedEOF) || fallbackCalls != 0 {
+		t.Fatalf("ambiguous POST err=%v fallback=%d", err, fallbackCalls)
+	}
+}
+
+func TestProxyFallbackAllowsPostBeforeProxyConnection(t *testing.T) {
+	fallbackCalls := 0
+	transport := &proxyFallbackTransport{
+		primary: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("proxyconnect tcp: connection refused")
+		}),
+		fallback: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			fallbackCalls++
+			body, _ := io.ReadAll(request.Body)
+			if string(body) != `{"code":"123456"}` {
+				t.Fatalf("fallback body=%q", body)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+		}),
+	}
+	request, _ := http.NewRequest(http.MethodPost, "https://apple.example/test", bytes.NewBufferString(`{"code":"123456"}`))
+	response, err := transport.RoundTrip(request)
+	if err != nil || response.StatusCode != http.StatusOK || fallbackCalls != 1 {
+		t.Fatalf("response=%+v err=%v fallback=%d", response, err, fallbackCalls)
+	}
+}
 
 func TestFixedProxyValidationAndMasking(t *testing.T) {
 	for _, raw := range []string{"ftp://8.8.8.8:1080", "socks5://127.0.0.1:1080", "http://10.0.0.1:8080", "https://8.8.8.8"} {

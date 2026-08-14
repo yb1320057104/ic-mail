@@ -42,6 +42,7 @@ type proxyPoolRuntime struct {
 type proxyPoolOwnerRuntime struct {
 	cmd       *exec.Cmd
 	ports     map[string]int
+	clients   map[string]*http.Client
 	signature string
 	dir       string
 }
@@ -570,8 +571,27 @@ func (p *proxyPoolRuntime) client(ownerID, accountID, appleID string) (*http.Cli
 	if err != nil {
 		return nil, true, err
 	}
-	transport := &http.Transport{Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)})}
-	return &http.Client{Transport: transport, Timeout: 30 * time.Second}, true, nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	runtime := p.owners[ownerID]
+	if runtime == nil || runtime.ports[node] != port {
+		return nil, true, errCode("proxy_pool_runtime_changed", "代理池运行状态已变化，请重试", true)
+	}
+	if runtime.clients == nil {
+		runtime.clients = make(map[string]*http.Client)
+	}
+	if client := runtime.clients[node]; client != nil {
+		return client, true, nil
+	}
+	transport := &http.Transport{
+		Proxy:               http.ProxyURL(&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}),
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     5 * time.Minute,
+	}
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+	runtime.clients[node] = client
+	return client, true, nil
 }
 
 func (p *proxyPoolRuntime) ensure(ownerID, node string) (int, error) {
@@ -657,7 +677,7 @@ func (p *proxyPoolRuntime) startLocked(ownerID, raw string, nodes []ProxyPoolNod
 		}
 		return 0, errCode("proxy_pool_runtime_missing", "Mihomo 未安装或无法启动："+err.Error(), false)
 	}
-	runtime := &proxyPoolOwnerRuntime{cmd: cmd, ports: ports, signature: signature, dir: dir}
+	runtime := &proxyPoolOwnerRuntime{cmd: cmd, ports: ports, clients: make(map[string]*http.Client), signature: signature, dir: dir}
 	p.owners[ownerID] = runtime
 	go func() {
 		err := cmd.Wait()
