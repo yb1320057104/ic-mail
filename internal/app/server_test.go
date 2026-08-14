@@ -3943,6 +3943,35 @@ func TestMailWatcherPreloadsCodeMessages(t *testing.T) {
 	}
 }
 
+func TestMarkMailWatcherActiveDoesNotWakeEveryRequest(t *testing.T) {
+	server := &Server{
+		mailWatcherEnabled:     true,
+		mailWatcherWake:        make(chan struct{}, 1),
+		mailWatcherActiveUntil: make(map[string]time.Time),
+	}
+	server.markMailWatcherActive("mbx-active")
+	select {
+	case <-server.mailWatcherWake:
+	default:
+		t.Fatal("first activation should wake the watcher")
+	}
+	server.markMailWatcherActive("mbx-active")
+	select {
+	case <-server.mailWatcherWake:
+		t.Fatal("repeated active request should not wake the watcher again")
+	default:
+	}
+	server.mailWatcherMu.Lock()
+	server.mailWatcherActiveUntil["mbx-active"] = time.Now().Add(-time.Second)
+	server.mailWatcherMu.Unlock()
+	server.markMailWatcherActive("mbx-active")
+	select {
+	case <-server.mailWatcherWake:
+	default:
+		t.Fatal("expired activation should wake the watcher again")
+	}
+}
+
 func TestMailWatcherPreloadsAPIActiveMailboxesWithoutPriorCodeRequest(t *testing.T) {
 	oldInterval := mailboxMailSyncMinInterval
 	mailboxMailSyncMinInterval = 0

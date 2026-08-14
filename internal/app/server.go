@@ -4957,7 +4957,6 @@ func (s *Server) runMailWatcher(ctx context.Context) {
 			return
 		case <-s.mailWatcherWake:
 			s.ensureMailWatcherIdleWorkers(ctx, idleWorkers)
-			s.syncMailWatcherRound(ctx, false)
 		case <-workerTicker.C:
 			s.ensureMailWatcherIdleWorkers(ctx, idleWorkers)
 		case <-fallbackTicker.C:
@@ -5494,13 +5493,17 @@ func (s *Server) markMailWatcherActive(mailboxID string) {
 	if ttl <= 0 {
 		ttl = 20 * time.Minute
 	}
+	now := time.Now()
 	s.mailWatcherMu.Lock()
 	if s.mailWatcherActiveUntil == nil {
 		s.mailWatcherActiveUntil = make(map[string]time.Time)
 	}
-	s.mailWatcherActiveUntil[mailboxID] = time.Now().Add(ttl)
+	previous := s.mailWatcherActiveUntil[mailboxID]
+	s.mailWatcherActiveUntil[mailboxID] = now.Add(ttl)
 	s.mailWatcherMu.Unlock()
-	s.pokeMailWatcher()
+	if !previous.After(now) {
+		s.pokeMailWatcher()
+	}
 }
 
 func (s *Server) pokeMailWatcher() {
@@ -5531,7 +5534,7 @@ func (s *Server) activeMailWatcherMailboxIDs(now time.Time) map[string]struct{} 
 }
 
 func (s *Server) mailWatcherGroups() []mailboxWatcherOwnerGroup {
-	state := s.store.Snapshot()
+	state := s.store.SnapshotForMailboxList("")
 	activeIDs := s.activeMailWatcherMailboxIDs(time.Now())
 	byOwner := make(map[string][]Mailbox)
 	for _, mailbox := range state.Mailboxes {
@@ -5566,7 +5569,7 @@ func (s *Server) mailWatcherGroups() []mailboxWatcherOwnerGroup {
 }
 
 func (s *Server) mailWatcherIMAPGroups() []mailboxWatcherIMAPGroup {
-	state := s.store.Snapshot()
+	state := s.store.SnapshotForMailboxList("")
 	type bucket struct {
 		ownerID    string
 		state      LoginState
