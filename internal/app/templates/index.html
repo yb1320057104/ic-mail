@@ -576,6 +576,27 @@
     .table-filter-bar { display:grid; grid-template-columns:minmax(240px,2fr) repeat(2,minmax(160px,1fr)) auto; gap:10px; padding:14px 18px; align-items:end; border-bottom:1px solid var(--line); background:var(--bg-soft); }
     .table-filter-bar label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:800; }
     .table-filter-bar input,.table-filter-bar select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--text); }
+    .workspace-block { margin:14px 18px; border:1px solid var(--line); border-radius:10px; background:color-mix(in srgb,var(--card) 88%,var(--bg-soft)); overflow:hidden; }
+    .workspace-block-head { display:flex; justify-content:space-between; gap:14px; align-items:flex-start; padding:14px 16px; border-bottom:1px solid var(--line); background:var(--bg-soft); }
+    .workspace-block-head h3 { margin:0 0 5px; font-size:15px; color:var(--ink); }
+    .workspace-block-head p { margin:0; color:var(--muted); font-size:12px; line-height:1.55; }
+    .workspace-block-body { padding:14px 16px; }
+    .mailbox-workflow { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; padding:14px 18px 2px; }
+    .mailbox-workflow div { min-width:0; padding:11px 12px; border:1px solid var(--line); border-radius:9px; background:var(--bg-soft); }
+    .mailbox-workflow strong { display:block; color:var(--green); font-size:12px; margin-bottom:4px; }
+    .mailbox-workflow span { color:var(--muted); font-size:11px; line-height:1.5; }
+    .mailbox-action-groups { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    .mailbox-action-group { min-width:0; padding:12px; border:1px solid var(--line); border-radius:9px; background:var(--bg-soft); }
+    .mailbox-action-group h4 { margin:0 0 5px; color:var(--ink); font-size:13px; }
+    .mailbox-action-group p { margin:0 0 10px; color:var(--muted); font-size:11px; line-height:1.5; }
+    .mailbox-action-group .toolbar { padding:0; }
+    .mailbox-danger-zone { margin-top:12px; border:1px solid var(--warn-line); border-radius:9px; background:var(--warn-soft); }
+    .mailbox-danger-zone summary { cursor:pointer; padding:11px 13px; color:var(--warn); font-weight:800; }
+    .mailbox-danger-zone > div { padding:0 12px 12px; }
+    .alias-create-layout { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr); gap:14px; padding:18px; }
+    .alias-create-card { min-width:0; padding:16px; border:1px solid var(--line); border-radius:10px; background:var(--bg-soft); }
+    .alias-create-card h3 { margin:0 0 7px; color:var(--ink); }
+    .alias-create-card p { margin:0 0 14px; color:var(--muted); line-height:1.65; }
     .page-guide { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:center; margin:0 0 16px; padding:13px 16px; border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line)); border-radius:14px; background:color-mix(in srgb,var(--accent) 7%,var(--panel)); }
     .page-guide strong { white-space:nowrap; color:var(--accent); }
     .page-guide span { color:var(--muted); line-height:1.6; }
@@ -1243,7 +1264,8 @@
       .account-dock { margin-left: auto; }
       .list-toolbar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
-    @media(max-width:760px){.content-head{margin:10px 12px 0}.content-main{padding:0 12px 20px}.mailbox-list-head{grid-template-columns:1fr}.table-filter-bar{grid-template-columns:1fr}.list-toolbar{grid-template-columns:1fr}.mailbox-filter-row{display:contents}.mailbox-control-stack{grid-template-columns:1fr;justify-items:start}.account-dock{min-width:0;grid-template-columns:repeat(3,1fr)}.account-dock .user-badge{grid-column:1/-1}.content-actions{flex-wrap:wrap}.page-guide{grid-template-columns:1fr}.page-guide button{width:100%}}
+    @media(max-width:1000px){.mailbox-workflow,.mailbox-action-groups{grid-template-columns:repeat(2,minmax(0,1fr))}.alias-create-layout{grid-template-columns:1fr}}
+    @media(max-width:760px){.content-head{margin:10px 12px 0}.content-main{padding:0 12px 20px}.mailbox-list-head{grid-template-columns:1fr}.table-filter-bar{grid-template-columns:1fr}.list-toolbar{grid-template-columns:1fr}.mailbox-filter-row{display:contents}.mailbox-control-stack{grid-template-columns:1fr;justify-items:start}.account-dock{min-width:0;grid-template-columns:repeat(3,1fr)}.account-dock .user-badge{grid-column:1/-1}.content-actions{flex-wrap:wrap}.page-guide{grid-template-columns:1fr}.page-guide button{width:100%}.mailbox-workflow,.mailbox-action-groups{grid-template-columns:1fr}.workspace-block{margin:12px}.workspace-block-head{flex-direction:column}}
     body[data-theme="midnight"] .sidebar,
     body[data-theme="midnight"] .content-head,
     body[data-theme="midnight"] .modal { background:linear-gradient(145deg,rgba(2,10,27,.98),rgba(4,18,45,.98)); }
@@ -1311,6 +1333,7 @@
         <button class="nav-item" data-view="proxy" onclick="setActiveView('proxy')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 7.5h9v9h-9z"/><path d="M4 10.5V8a4 4 0 0 1 4-4h2.5M20 13.5V16a4 4 0 0 1-4 4h-2.5"/><circle cx="4" cy="13.5" r="1.5"/><circle cx="20" cy="10.5" r="1.5"/></svg></span><span>代理管理</span><span class="count-dot" id="navProxyCount">0</span></button>
         <div class="nav-group-label">邮箱业务</div>
         <button class="nav-item" data-view="create" onclick="setActiveView('create')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg></span><span>创建邮箱</span></button>
+        <button class="nav-item" data-view="alias" onclick="setActiveView('alias')"><span class="nav-ico">↳</span><span>生成别名邮箱</span></button>
         <button class="nav-item" data-view="mailboxes" onclick="setActiveView('mailboxes')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.4 6.3 6.7A2 2 0 0 1 8.2 5.4h7.6a2 2 0 0 1 1.9 1.3L20 13.4"/><path d="M4 13.4h4.2l1.3 2.2h5l1.3-2.2H20v3.7A1.9 1.9 0 0 1 18.1 19.2H5.9A1.9 1.9 0 0 1 4 17.1z"/></svg></span><span>邮箱池</span><span class="count-dot" id="navMailboxCount">0</span></button>
         <button class="nav-item" data-view="redemption" onclick="setActiveView('redemption')"><span class="nav-ico">⇄</span><span>兑换隐私邮箱</span><span class="count-dot" id="navRedemptionCount">0</span></button>
         <div class="nav-group-label">账号数据</div>
@@ -1396,6 +1419,9 @@
               <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.4 6.3 6.7A2 2 0 0 1 8.2 5.4h7.6a2 2 0 0 1 1.9 1.3L20 13.4"/><path d="M4 13.4h4.2l1.3 2.2h5l1.3-2.2H20v3.7A1.9 1.9 0 0 1 18.1 19.2H5.9A1.9 1.9 0 0 1 4 17.1z"/></svg></i>
               <strong>邮箱池</strong>
               <span>搜索邮箱、复制 API、取码和查看自动同步邮件。</span>
+            </button>
+            <button class="quick-card" onclick="setActiveView('alias')">
+              <i>↳</i><strong>生成别名邮箱</strong><span>选择一个 Apple 账号和数量，一键批量生成别名。</span>
             </button>
             <button class="quick-card" onclick="openRunConfig()">
               <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.8v10.4"/><path d="m15.6 10.6-3.6 3.6-3.6-3.6"/><path d="M4.6 16.2v1.4A2.4 2.4 0 0 0 7 20h10a2.4 2.4 0 0 0 2.4-2.4v-1.4"/></svg></i>
@@ -1526,17 +1552,41 @@
           <div class="toolbar"><button id="startScheduleButton" class="primary" onclick="quickStartMailboxScheduler()">一键开始创建</button><button id="stopScheduleButton" class="danger" onclick="stopMailboxScheduler()">停止自动创建</button><span id="scheduleStatus" class="muted">尚未启动；点击后立即执行第一轮。</span><span id="protoBatchProgress" class="muted"></span><span id="createSettingsStatus" class="muted"></span></div>
           <details class="guide" style="margin:16px 18px"><summary>高级设置（可选）</summary><div>
             <div class="field-grid"><label>标签<input id="protoLabel" placeholder="UPI-70-13"></label><label>备注<input id="protoNote" placeholder="选填"></label><label>手动创建接口<select id="createChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>自动创建接口<select id="scheduleCreateChannelSelect"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label><label>每轮间隔分钟<input id="scheduleIntervalMinutes" type="number" min="1" max="1440" value="60"></label><label>轮内创建间隔秒<input id="scheduleRoundIntervalSeconds" type="number" min="1" max="600" value="120"></label></div>
-            <div class="field-grid"><label>创建类型<select id="createMode" onchange="toggleAliasCreateFields()"><option value="privacy">普通隐私邮箱</option><option value="alias">一键生成别名邮箱</option></select></label><label id="aliasCountField" hidden>别名数量<input id="aliasCount" type="number" min="1" max="100" value="1"></label><div id="aliasCreateHint" class="full hint" hidden>只需选择一个 Apple 账号并填写数量；系统会自动使用该账号最近创建的普通隐私邮箱记录归属，无需手动填写父邮箱。</div></div>
             <div class="toolbar"><button id="createICloudButton" onclick="createICloudMailbox()">仅手动创建一轮</button><button id="saveCreateSettingsButton" type="button" onclick="saveCreateSettings()">保存高级设置</button></div>
           </div></details>
         </section>
 
+        <section class="view-section panel" data-view="alias">
+          <div class="panel-head"><div><h2>一键生成别名邮箱</h2><p>独立创建别名邮箱，无需指定某个父邮箱；系统自动关联所选账号最近创建的普通隐私邮箱。</p></div></div>
+          <div class="alias-create-layout">
+            <section class="alias-create-card">
+              <h3>生成配置</h3><p>选择一个 Apple 账号并设置数量，点击一次即可提交。别名会在邮箱池中标明所属隐私邮箱。</p>
+              <div class="field-grid" style="padding:0">
+                <label class="full">Apple 账号<select id="aliasAccountSelect"><option value="">请先保存可用于创建的登录态</option></select></label>
+                <label>生成数量<input id="aliasCount" type="number" min="1" max="100" value="1"></label>
+                <label>创建接口<select id="aliasCreateChannel"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label>
+                <label>标签<input id="aliasLabel" placeholder="例如：别名批次-01"></label>
+                <label>备注<input id="aliasNote" placeholder="选填"></label>
+              </div>
+              <div class="toolbar" style="padding:14px 0 0"><button id="createAliasButton" class="primary" onclick="createAliasMailboxes()">一键生成别名邮箱</button><span id="aliasCreateStatus" class="muted">尚未提交</span></div>
+            </section>
+            <aside class="alias-create-card">
+              <h3>归属规则</h3>
+              <p>系统会从所选 Apple 账号中找到最近创建的普通隐私邮箱作为归属记录，不需要手工输入邮箱地址。</p>
+              <div class="notice" style="margin:0">如果该账号还没有普通隐私邮箱，请先进入“创建邮箱”生成至少一个普通隐私邮箱。</div>
+              <div class="toolbar" style="padding:14px 0 0"><button type="button" onclick="setActiveView('create')">前往创建普通邮箱</button><button type="button" onclick="setActiveView('mailboxes')">查看邮箱池</button></div>
+            </aside>
+          </div>
+        </section>
+
         <section class="view-section panel" data-view="mailboxes">
           <div class="panel-head">
-            <h2>隐私邮箱池</h2>
-            <p>复制 API、取验证码、查看自动同步邮件和修改状态。</p>
+            <div><h2>隐私邮箱池</h2><p>按照下面四个区域依次完成查询、批量处理、账号范围选择和单个邮箱操作。</p></div>
           </div>
-          <div class="toolbar list-toolbar">
+          <div class="mailbox-workflow"><div><strong>1. 查询与同步</strong><span>用条件缩小数据范围，并同步历史邮箱。</span></div><div><strong>2. 批量处理</strong><span>只处理勾选邮箱；高风险操作单独收起。</span></div><div><strong>3. 账号范围</strong><span>用账号标签快速限定当前列表。</span></div><div><strong>4. 邮箱列表</strong><span>单独取码、看邮件、复制或重置 API。</span></div></div>
+          <section class="workspace-block">
+          <div class="workspace-block-head"><div><h3>1. 查询与同步</h3><p>筛选只会改变当前列表和分页总数，不会修改邮箱状态。</p></div><span class="pill">先筛选，再操作</span></div>
+          <div class="toolbar list-toolbar workspace-block-body">
             <label class="search-field">全局搜索邮箱
               <input id="mailboxSearch" placeholder="输入完整或部分邮箱，填写后点击搜索" onkeydown="if(event.key==='Enter'){event.preventDefault();applyMailboxFilters()}">
             </label>
@@ -1571,29 +1621,25 @@
               </div>
             </div>
           </div>
-          <div class="toolbar batch-toolbar">
-            <strong>批量操作</strong><span id="mailboxSelectedCount" class="muted">已选择 0 个</span>
-            <button onclick="batchMailboxStatus('available')">设为可用</button>
-            <button onclick="batchMailboxStatus('used')">设为已使用</button>
-            <button onclick="batchMailboxStatus('disabled')">停用 API</button>
-            <select id="batchMailboxAPIExportType" title="邮箱 API 导出方式"><option value="json">JSON取码地址</option><option value="visual">邮件可视化取码地址</option><option value="content">邮件内容取码地址</option></select>
-            <button onclick="batchExportMailboxes('api')">按所选方式导出 API</button>
-            <button onclick="batchExportMailboxes('email')">只导出邮箱</button>
-            <button onclick="addSelectedToRedemptionPool()">加入兑换池</button>
-            <button onclick="addSelectedToSecondhandPool()">加入二手兑换池</button>
-            <button onclick="batchRotateMailboxAPIs(false)">重置所选取码 API</button>
-            <button class="danger" onclick="batchRotateMailboxAPIs(true)">一键重置全部取码 API</button>
-            <button onclick="openRefreshAPIImport()">导入旧地址并更新导出</button>
-            <input id="refreshAPIImportFile" type="file" accept=".txt,text/plain" hidden onchange="refreshImportedMailboxAPIs(this)">
-            <button class="danger" onclick="batchDeleteMailboxes()">删除选中邮箱</button>
-          </div>
-          <div id="mailboxAccountTabs" class="account-tabs"></div>
-          <div class="table-wrap">
+          </section>
+          <section class="workspace-block">
+            <div class="workspace-block-head"><div><h3>2. 批量处理</h3><p>以下功能默认只作用于已经勾选的邮箱。</p></div><strong id="mailboxSelectedCount" class="muted">已选择 0 个</strong></div>
+            <div class="workspace-block-body">
+              <div class="mailbox-action-groups">
+                <section class="mailbox-action-group"><h4>状态维护</h4><p>修改邮箱业务状态或暂停 API。</p><div class="toolbar"><button onclick="batchMailboxStatus('available')">设为可用</button><button onclick="batchMailboxStatus('used')">设为已使用</button><button onclick="batchMailboxStatus('disabled')">停用 API</button></div></section>
+                <section class="mailbox-action-group"><h4>导出数据</h4><p>选择 JSON、可视化或邮件内容取码地址。</p><div class="toolbar"><select id="batchMailboxAPIExportType" title="邮箱 API 导出方式"><option value="json">JSON取码地址</option><option value="visual">邮件可视化取码地址</option><option value="content">邮件内容取码地址</option></select><button onclick="batchExportMailboxes('api')">导出所选 API</button><button onclick="batchExportMailboxes('email')">只导出邮箱</button></div></section>
+                <section class="mailbox-action-group"><h4>加入兑换池</h4><p>全新邮箱和导出满 7 天的二手邮箱分开进入对应池。</p><div class="toolbar"><button onclick="addSelectedToRedemptionPool()">加入全新兑换池</button><button onclick="addSelectedToSecondhandPool()">加入二手兑换池</button></div></section>
+              </div>
+              <details class="mailbox-danger-zone"><summary>API 地址维护与删除（高风险操作）</summary><div><p class="muted">重置后旧取码地址会立即失效；删除邮箱前请确认已经备份。</p><div class="toolbar"><button onclick="batchRotateMailboxAPIs(false)">重置所选取码 API</button><button class="danger" onclick="batchRotateMailboxAPIs(true)">一键重置全部取码 API</button><button onclick="openRefreshAPIImport()">导入旧地址并更新导出</button><input id="refreshAPIImportFile" type="file" accept=".txt,text/plain" hidden onchange="refreshImportedMailboxAPIs(this)"><button class="danger" onclick="batchDeleteMailboxes()">删除选中邮箱</button></div></div></details>
+            </div>
+          </section>
+          <section class="workspace-block"><div class="workspace-block-head"><div><h3>3. 账号范围</h3><p>点击账号标签只查看该 Apple 登录态下的隐私邮箱。</p></div></div><div id="mailboxAccountTabs" class="account-tabs workspace-block-body"></div></section>
+          <section class="workspace-block"><div class="workspace-block-head"><div><h3>4. 邮箱数据列表</h3><p>每行操作只影响当前邮箱；“查看邮箱”显示已同步的可视化邮件。</p></div></div><div class="table-wrap">
             <table>
               <thead><tr><th><input type="checkbox" id="mailboxSelectAll" onchange="toggleAllVisibleMailboxes(this.checked)" title="全选当前页"></th><th>标签 / ID</th><th>邮箱与所属账号</th><th>服务状态</th><th>导出状态</th><th>收件</th><th>最近同步</th><th>验证码</th><th>操作</th></tr></thead>
               <tbody id="mailboxes"></tbody>
             </table>
-          </div>
+          </div></section>
         </section>
 
         <section class="view-section panel" data-view="redemption">
@@ -1776,6 +1822,7 @@
       session: ['登录态', '保存和检测 Apple 登录态。'],
       proxy: ['代理管理', '管理用户可信固定代理和账号代理池。'],
       create: ['创建邮箱', '按已保存账号创建 Hide My Email 地址。'],
+      alias: ['生成别名邮箱', '选择一个 Apple 账号和数量，一键批量创建别名邮箱。'],
       mailboxes: ['邮箱池', '搜索、复制 API、取码和维护邮箱状态。'],
       redemption: ['兑换隐私邮箱', '管理专属兑换池、一次性兑换码和已兑换批次。'],
       'data-overview': ['账号数据 · 仪表盘', '集中查看平台账号、邮箱和运行数据。'],
@@ -1795,6 +1842,7 @@
 	  session:'管理多个 Apple 登录态；按状态和接口筛选账号，展开查看每个登录态所属的子邮箱。',
 	  proxy:'配置当前用户的可信固定代理，导入和测速代理池节点，并查看节点绑定的账号。',
 	  create:'选择一个或多个可用 Apple 账号，配置新旧接口策略，手动或定时创建隐私邮箱。',
+	  alias:'独立生成别名邮箱；无需指定父邮箱，系统自动记录所选账号最近普通隐私邮箱的归属关系。',
 	  mailboxes:'组合搜索全部隐私邮箱；按账号、邮箱状态、API、iCloud 和收件数量筛选并执行取码、同步、导出与状态维护。',
 	  redemption:'将未导出且可正常接码的邮箱加入专属兑换池，生成定量一次性兑换码，并管理已兑换批次的取码地址。',
       'data-overview':'账号数据功能已经整合到当前工作台，使用左侧分类即可切换，不需要离开创建邮箱页面。',
@@ -1829,6 +1877,11 @@
         title:'创建隐私邮箱教学', summary:'使用已保存且状态正常的新接口或旧接口，为一个或多个 Apple 账号创建隐私邮箱。',
         steps:['先检测登录态，确保参与创建的账号对应接口正常。','填写邮箱标签和备注，选择新接口、旧接口或组合策略。','勾选参与本轮创建的 Apple 账号；未勾选账号不会执行。','点击开始创建并等待加载提示完成，在结果和日志中查看每个账号的成功或失败原因。','使用定时创建时设置合理间隔；不再需要时点击停止定时创建。'],
         tips:['达到 750 个子邮箱上限的账号会被跳过。','Apple 返回临时异常时系统会退避，请避免短时间高频创建。']
+      },
+      alias: {
+        title:'生成别名邮箱教学', summary:'别名创建已经从普通邮箱高级设置中独立出来，只需选择一个账号和数量即可提交。',
+        steps:['选择一个已经保存新接口或旧接口登录态的 Apple 账号。','填写生成数量，可选填写标签和备注。','选择创建接口；通常保留“新接口优先，失败用旧接口”。','点击“一键生成别名邮箱”，完成后进入邮箱池查看别名及归属关系。'],
+        tips:['所选账号必须先有至少一个普通隐私邮箱。','系统自动关联该账号最近创建的普通隐私邮箱，不需要手工指定。']
       },
       mailboxes: {
         title:'隐私邮箱池教学', summary:'在这里搜索、筛选、同步、取码、查看邮件、导出和批量维护隐私邮箱。',
@@ -2581,9 +2634,17 @@
 
     function renderCreateAccountSelector() {
       const box = $('protoAccountSelector');
-      if (!box) return;
       const sessions = selectableCreateSessions();
       syncCreateAccountSelection(sessions);
+      const aliasSelect = $('aliasAccountSelect');
+      if (aliasSelect) {
+        const current = aliasSelect.value;
+        aliasSelect.innerHTML = sessions.length
+          ? '<option value="">请选择一个 Apple 账号</option>' + sessions.map(session => `<option value="${esc(session.account_id)}">${esc(createAccountDisplayName(session))} · ${esc(sessionCheckText(session))}</option>`).join('')
+          : '<option value="">没有可用于创建的 Apple 登录态</option>';
+        if (sessions.some(session => session.account_id === current)) aliasSelect.value = current;
+      }
+      if (!box) return;
       if (sessions.length === 0) {
         box.className = 'create-account-selector muted';
         box.textContent = '未保存可用于创建的 Apple 登录；请先点“新接口登录”或“旧接口登录”。';
@@ -3724,10 +3785,6 @@
       renderICloudSessions(lastICloudSessions);
     }
 
-    function toggleAliasCreateFields(){
-      const alias=(($('createMode')||{}).value||'privacy')==='alias';
-      for(const id of ['aliasCountField','aliasCreateHint'])if($(id))$(id).hidden=!alias;
-    }
     function clearSessionFilters() { sessionSearchQuery=''; sessionSearchIntentUntil=0; if ($('sessionSearch')) $('sessionSearch').value=''; if ($('sessionHealthFilter')) $('sessionHealthFilter').value=''; if ($('sessionKindFilter')) $('sessionKindFilter').value=''; renderICloudSessions(lastICloudSessions); }
 
     function showSessionAccountModal(title) {
@@ -4274,10 +4331,6 @@
       const baseLabel = $('protoLabel').value.trim();
       const note = $('protoNote').value.trim();
       const createChannel = createChannelPayloadValue('createChannelSelect');
-      const createMode = (($('createMode')||{}).value||'privacy');
-      const aliasCount = boundedInt('aliasCount', 1, 1, 100);
-      if(createMode==='alias'&&accountIDs.length!==1){progress.textContent='一键生成别名邮箱时请选择一个 Apple 账号';return}
-
       button.disabled = true;
       progress.textContent = `创建中：${createChannelLabel(createChannel)}，参与账号=${accountNames}`;
       setCreateLog(`创建中：${createChannelLabel(createChannel)}，参与账号=${accountNames}`);
@@ -4289,9 +4342,9 @@
           label: baseLabel,
           note,
           create_channel: createChannel,
-          create_mode: createMode,
+          create_mode: 'privacy',
           alias_parent: '',
-          alias_count: aliasCount
+          alias_count: 1
         })});
         if (data.queued) {
           progress.textContent = data.message || '批量别名邮箱已加入后台任务；完成后请刷新邮箱列表。';
@@ -4317,6 +4370,44 @@
       } finally {
         button.disabled = false;
         await refresh();
+      }
+    }
+
+    async function createAliasMailboxes() {
+      const button = $('createAliasButton');
+      const status = $('aliasCreateStatus');
+      const accountID = String(($('aliasAccountSelect') || {}).value || '').trim();
+      if (!accountID) { status.textContent = '请先选择一个 Apple 账号'; return; }
+      const count = boundedInt('aliasCount', 1, 1, 100);
+      const session = selectableCreateSessions().find(item => item.account_id === accountID);
+      if (!session) { status.textContent = '所选账号当前没有可用的创建登录态，请刷新后重试'; return; }
+      button.disabled = true;
+      status.textContent = `正在为 ${createAccountDisplayName(session)} 生成 ${count} 个别名邮箱...`;
+      try {
+        const data = await api('/api/icloud/mailboxes/create', {method:'POST', body:JSON.stringify({
+          account_id:accountID,
+          account_ids:[accountID],
+          label:String(($('aliasLabel') || {}).value || '').trim(),
+          note:String(($('aliasNote') || {}).value || '').trim(),
+          create_channel:createChannelPayloadValue('aliasCreateChannel'),
+          create_mode:'alias',
+          alias_parent:'',
+          alias_count:count
+        })});
+        if (data.queued) {
+          status.textContent = data.message || `已提交 ${count} 个别名邮箱后台创建任务`;
+          log(status.textContent);
+        } else {
+          const mailboxes = data.mailboxes && data.mailboxes.length ? data.mailboxes : (data.mailbox && data.mailbox.id ? [data.mailbox] : []);
+          status.textContent = `别名邮箱创建完成：成功 ${mailboxes.length} 个`;
+          log(status.textContent);
+        }
+        await refresh();
+      } catch (err) {
+        status.textContent = '别名邮箱生成失败：' + err.message;
+        log(status.textContent);
+      } finally {
+        button.disabled = false;
       }
     }
 
