@@ -20,7 +20,13 @@ import (
 )
 
 var autoLoginLocks sync.Map
-var smsCodePattern = regexp.MustCompile(`(?:^|\D)(\d{4,8})(?:\D|$)`)
+var appleSixDigitCodePattern = regexp.MustCompile(`(?:^|\D)(\d{6})(?:\D|$)`)
+var appleSplitSixDigitCodePattern = regexp.MustCompile(`(?:^|\D)(\d{3})[\s-]+(\d{3})(?:\D|$)`)
+var appleCodeKeywordPattern = regexp.MustCompile(`(?i)(?:验证码|驗證碼|校验码|校驗碼|动态码|動態碼|verification\s*code|security\s*code|passcode|one[ -]?time\s*(?:code|password)|otp)[^0-9]{0,40}(\d{6})(?:\D|$)`)
+var appleCodeJSONKeys = map[string]bool{
+	"code": true, "smscode": true, "verificationcode": true, "securitycode": true,
+	"passcode": true, "otp": true, "verifycode": true, "captcha": true,
+}
 var autoLoginLogURLPattern = regexp.MustCompile(`https?://[^\s\"']+`)
 
 const maxAutoLoginAttemptsPerAccount = 10
@@ -122,19 +128,121 @@ func fetchAutoCode(ctx context.Context, rawURL string) (string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("接码地址 HTTP %d", resp.StatusCode)
 	}
-	var object map[string]any
-	if json.Unmarshal(data, &object) == nil {
-		if value, ok := object["code"]; ok {
-			code := strings.TrimSpace(fmt.Sprint(value))
-			if regexp.MustCompile(`^\d{4,8}$`).MatchString(code) {
-				return code, nil
-			}
+	return extractAppleVerificationCode(data)
+}
+
+func normalizeVerificationText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= '０' && r <= '９' {
+			return '0' + (r - '０')
+		}
+		return r
+	}, value)
+}
+
+func normalizedCodeKey(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		case r >= 'a' && r <= 'z':
+			return r
+		default:
+			return -1
+		}
+	}, value)
+}
+
+func exactAppleCode(value any) (string, bool) {
+	text := strings.TrimSpace(normalizeVerificationText(fmt.Sprint(value)))
+	if len(text) != 6 {
+		return "", false
+	}
+	for _, r := range text {
+		if r < '0' || r > '9' {
+			return "", false
 		}
 	}
-	if match := smsCodePattern.FindSubmatch(data); len(match) > 1 {
-		return string(match[1]), nil
+	return text, true
+}
+
+func codeFromJSON(value any) (string, bool) {
+	switch current := value.(type) {
+	case map[string]any:
+		for key, child := range current {
+			if !appleCodeJSONKeys[normalizedCodeKey(key)] {
+				continue
+			}
+			if code, ok := exactAppleCode(child); ok {
+				return code, true
+			}
+			if text, ok := child.(string); ok {
+				if code, ok := codeNearKeyword(normalizeVerificationText(text)); ok {
+					return code, true
+				}
+			}
+		}
+		for _, child := range current {
+			if code, ok := codeFromJSON(child); ok {
+				return code, true
+			}
+		}
+	case []any:
+		for i := len(current) - 1; i >= 0; i-- {
+			if code, ok := codeFromJSON(current[i]); ok {
+				return code, true
+			}
+		}
+	case string:
+		return codeNearKeyword(normalizeVerificationText(current))
 	}
-	return "", fmt.Errorf("响应中未找到 4 至 8 位验证码")
+	return "", false
+}
+
+func codeNearKeyword(text string) (string, bool) {
+	if match := appleCodeKeywordPattern.FindStringSubmatch(text); len(match) > 1 {
+		return match[1], true
+	}
+	return "", false
+}
+
+func uniqueAppleCode(text string) (string, int) {
+	candidates := map[string]struct{}{}
+	for _, match := range appleSixDigitCodePattern.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			candidates[match[1]] = struct{}{}
+		}
+	}
+	for _, match := range appleSplitSixDigitCodePattern.FindAllStringSubmatch(text, -1) {
+		if len(match) > 2 {
+			candidates[match[1]+match[2]] = struct{}{}
+		}
+	}
+	if len(candidates) == 1 {
+		for code := range candidates {
+			return code, 1
+		}
+	}
+	return "", len(candidates)
+}
+
+func extractAppleVerificationCode(data []byte) (string, error) {
+	text := normalizeVerificationText(string(data))
+	var payload any
+	if json.Unmarshal(data, &payload) == nil {
+		if code, ok := codeFromJSON(payload); ok {
+			return code, nil
+		}
+	}
+	if code, ok := codeNearKeyword(text); ok {
+		return code, nil
+	}
+	if code, count := uniqueAppleCode(text); count == 1 {
+		return code, nil
+	} else if count > 1 {
+		return "", fmt.Errorf("接码响应中有 %d 个六位数候选，无法安全确定 Apple 验证码", count)
+	}
+	return "", fmt.Errorf("接码响应中未找到六位 Apple 验证码")
 }
 
 func maskPhone(value string) string {
@@ -443,12 +551,9 @@ func (s *Server) appendAutoLoginLogStep(binding *AutoLoginBinding, attemptID, st
 		}
 		step := AutoLoginLogStep{At: time.Now(), Stage: strings.TrimSpace(stage), Level: firstNonEmpty(strings.TrimSpace(level), "info"), Message: safeAutoLoginLogMessage(message)}
 		if code = strings.TrimSpace(code); code != "" {
+			// 明文验证码按当前产品要求保留在账号独立日志中；日志接口仍严格校验账号归属。
+			step.Code = code
 			step.CodeMasked = maskAutoLoginCode(code)
-			if cipher, err := encryptAutoSecret(s.cfg.AutoLoginSecret, code); err == nil {
-				step.CodeCipher = cipher
-			} else {
-				step.Message += "；验证码加密保存失败，仅保留脱敏记录"
-			}
 		}
 		binding.Logs[i].Steps = append(binding.Logs[i].Steps, step)
 		if len(binding.Logs[i].Steps) > maxAutoLoginStepsPerAttempt {
@@ -488,6 +593,7 @@ func (s *Server) handleAutoLoginLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store, private")
 	ownerID := requestOwnerID(r, s.store)
 	if _, ok := s.sessionForOwnerAccount(ownerID, payload.AccountID); !ok {
 		writeError(w, http.StatusNotFound, errCode("account_not_found", "账号不存在", false))
@@ -503,11 +609,15 @@ func (s *Server) handleAutoLoginLogs(w http.ResponseWriter, r *http.Request) {
 		steps := make([]map[string]any, 0, len(attempt.Steps))
 		for _, step := range attempt.Steps {
 			item := map[string]any{"at": formatTime(step.At), "stage": step.Stage, "level": step.Level, "message": step.Message}
-			if step.CodeMasked != "" {
+			if step.Code != "" {
+				item["code"] = step.Code
+				item["code_revealed"] = true
+			} else if step.CodeMasked != "" {
 				item["code"] = step.CodeMasked
 				item["code_revealed"] = false
 			}
-			if payload.RevealCodes && step.CodeCipher != "" {
+			// 兼容已写入的旧加密日志；新日志按产品要求直接保存 Code。
+			if step.Code == "" && payload.RevealCodes && step.CodeCipher != "" {
 				if code, err := decryptAutoSecret(s.cfg.AutoLoginSecret, step.CodeCipher); err == nil {
 					item["code"] = code
 					item["code_revealed"] = true

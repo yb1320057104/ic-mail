@@ -31,8 +31,44 @@ func TestValidateAutoCodeURLRejectsUnsafeTargets(t *testing.T) {
 }
 
 func TestSMSCodePattern(t *testing.T) {
-	match := smsCodePattern.FindStringSubmatch("【Apple】验证码为 691288，请勿泄露")
-	if len(match) < 2 || match[1] != "691288" {
-		t.Fatalf("code match = %#v", match)
+	code, err := extractAppleVerificationCode([]byte("【Apple】验证码为 691288，请勿泄露"))
+	if err != nil || code != "691288" {
+		t.Fatalf("code=%q err=%v", code, err)
+	}
+}
+
+func TestAppleCodeExtractionIgnoresEarlierFourDigitNumber(t *testing.T) {
+	code, err := extractAppleVerificationCode([]byte("短信编号 2026；【Apple】您的验证码是 691288，请勿泄露"))
+	if err != nil || code != "691288" {
+		t.Fatalf("code=%q err=%v", code, err)
+	}
+}
+
+func TestAppleCodeExtractionSupportsNestedJSONAndFullWidthDigits(t *testing.T) {
+	for _, test := range []struct {
+		body string
+		want string
+	}{
+		{`{"status":200,"data":{"verification_code":"042817"}}`, "042817"},
+		{`{"code":200,"message":"Apple verification code: 817204"}`, "817204"},
+		{`{"data":[{"message":"old"},{"message":"验证码：６９１２８８"}]}`, "691288"},
+		{"【Apple】Your verification code is 123-456.", "123456"},
+	} {
+		code, err := extractAppleVerificationCode([]byte(test.body))
+		if err != nil || code != test.want {
+			t.Errorf("body=%q code=%q err=%v want=%q", test.body, code, err, test.want)
+		}
+	}
+}
+
+func TestAppleCodeExtractionRejectsFourDigitAndAmbiguousResponses(t *testing.T) {
+	for _, body := range []string{
+		`【Apple】验证码是 1234`,
+		`{"code":"1234"}`,
+		`候选记录 123456，另一条 654321`,
+	} {
+		if code, err := extractAppleVerificationCode([]byte(body)); err == nil {
+			t.Errorf("body=%q unexpectedly returned %q", body, code)
+		}
 	}
 }

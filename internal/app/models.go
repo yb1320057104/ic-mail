@@ -252,6 +252,7 @@ type AutoLoginLogStep struct {
 	Stage      string    `json:"stage"`
 	Level      string    `json:"level"`
 	Message    string    `json:"message"`
+	Code       string    `json:"code,omitempty"`
 	CodeMasked string    `json:"code_masked,omitempty"`
 	CodeCipher string    `json:"code_cipher,omitempty"`
 }

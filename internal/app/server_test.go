@@ -382,6 +382,24 @@ func TestAppleHTTP503IsTemporaryAndDoesNotTriggerAutoLogin(t *testing.T) {
 	}
 }
 
+func TestICloudWebTemporaryErrorsDoNotTriggerAutoLogin(t *testing.T) {
+	for _, status := range []string{"423", "429", "502", "503", "504"} {
+		err := errCode("icloud_validate_failed", "iCloud 登录态校验失败，HTTP "+status, true)
+		if shouldTriggerICloudWebAutoLogin(err) {
+			t.Fatalf("HTTP %s must not trigger automatic login", status)
+		}
+	}
+	for _, err := range []error{
+		errCode("icloud_validate_failed", "iCloud 登录态校验失败，HTTP 401", true),
+		errCode("icloud_validate_failed", "iCloud 登录态校验失败，HTTP 403", true),
+		errCode("icloud_session_missing", "missing", true),
+	} {
+		if !shouldTriggerICloudWebAutoLogin(err) {
+			t.Fatalf("explicit session failure should trigger automatic login: %v", err)
+		}
+	}
+}
+
 func TestExplicitAppleAuthFailureTriggersAutoLogin(t *testing.T) {
 	if !shouldTriggerAppleAutoLogin(errCode("apple_account_auth_failed", "session expired", true)) {
 		t.Fatal("explicit auth failure should trigger automatic login")

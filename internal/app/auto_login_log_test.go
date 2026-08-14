@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestAutoLoginLogsAreAccountScopedEncryptedAndLimited(t *testing.T) {
+func TestAutoLoginLogsAreAccountScopedPlaintextAndLimited(t *testing.T) {
 	store := newTestStore(t)
 	secret := "auto-login-log-test-secret"
 	handler := NewServer(Config{PublicBaseURL: "https://mail.example", AutoLoginSecret: secret}, store, discardLogger())
@@ -58,15 +58,10 @@ func TestAutoLoginLogsAreAccountScopedEncryptedAndLimited(t *testing.T) {
 		return rr
 	}
 
-	masked := requestLogs(ownerCookie, false)
-	if masked.Code != http.StatusOK || !strings.Contains(masked.Body.String(), "69****") ||
-		strings.Contains(masked.Body.String(), "691288") || strings.Contains(masked.Body.String(), codeCipher) {
-		t.Fatalf("masked logs=%d body=%s", masked.Code, masked.Body.String())
-	}
-	revealed := requestLogs(ownerCookie, true)
-	if revealed.Code != http.StatusOK || !strings.Contains(revealed.Body.String(), "691288") ||
-		strings.Contains(revealed.Body.String(), codeCipher) {
-		t.Fatalf("revealed logs=%d body=%s", revealed.Code, revealed.Body.String())
+	logs := requestLogs(ownerCookie, true)
+	if logs.Code != http.StatusOK || !strings.Contains(logs.Body.String(), "691288") ||
+		strings.Contains(logs.Body.String(), codeCipher) || logs.Header().Get("Cache-Control") != "no-store, private" {
+		t.Fatalf("logs=%d body=%s cache=%s", logs.Code, logs.Body.String(), logs.Header().Get("Cache-Control"))
 	}
 	denied := requestLogs(otherCookie, true)
 	if denied.Code != http.StatusNotFound {
@@ -86,6 +81,19 @@ func TestAutoLoginLogRedactsURLs(t *testing.T) {
 	message := safeAutoLoginLogError(assertLogError(`Get "https://codes.example/path?token=secret": timeout`))
 	if strings.Contains(message, "secret") || strings.Contains(message, "codes.example") {
 		t.Fatalf("URL not redacted: %s", message)
+	}
+}
+
+func TestAutoLoginLogStoresPlaintextCodePerAccount(t *testing.T) {
+	store := newTestStore(t)
+	server := NewServer(Config{AutoLoginSecret: "log-secret"}, store, discardLogger()).(*Server)
+	binding := AutoLoginBinding{OwnerID: "owner-plain", AccountID: "account-plain", AppleID: "plain@example.com", Enabled: true}
+	attemptID := server.startAutoLoginAttemptLog(&binding, "登录态失效")
+	server.appendAutoLoginLogStep(&binding, attemptID, "收到验证码", "success", "已收到", "691288")
+	server.finishAutoLoginAttemptLog(&binding, attemptID, "success", "")
+	stored, ok := store.AutoLoginBinding(binding.OwnerID, binding.AccountID)
+	if !ok || len(stored.Logs) != 1 || len(stored.Logs[0].Steps) < 2 || stored.Logs[0].Steps[1].Code != "691288" {
+		t.Fatalf("plaintext code was not stored: %+v", stored)
 	}
 }
 

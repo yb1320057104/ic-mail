@@ -4614,7 +4614,9 @@ func (s *Server) keepAliveICloudWebRoundWithForce(ctx context.Context, force boo
 				state.KeepAliveStatus = "保活失败，等待自动重试"
 				state.KeepAliveNextTry = checkedAt.Add(delays[index])
 				s.saveICloudWebKeepAliveState(session, state)
-				go s.tryAutoLogin(withICloudWebLoginState(session, state))
+				if shouldTriggerICloudWebAutoLogin(err) {
+					go s.tryAutoLogin(withICloudWebLoginState(session, state))
+				}
 				if s.logger != nil {
 					s.logger.Warn("icloud web keepalive failed", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "err", err)
 				}

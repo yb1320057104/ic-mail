@@ -1428,7 +1428,7 @@
             <label class="full">手机号----接码地址<input id="autoLoginBinding" autocomplete="off" placeholder="13800138000----https://example.com/code?token=xxx"></label>
             <label>Apple ID 密码<input id="autoLoginPassword" type="password" autocomplete="new-password" placeholder="首次绑定必填；留空保留已保存密码"></label>
             <label>启用状态<select id="autoLoginEnabled"><option value="true">启用自动接码登录</option><option value="false">暂停自动接码登录</option></select></label>
-            <div class="full toolbar"><button id="autoLoginSaveButton" type="button" onclick="saveAutoLoginBinding()">保存自动接码登录</button><button type="button" onclick="loadAutoLoginLogs(false)">查看自动登录日志</button><button type="button" onclick="loadAutoLoginLogs(true)">显示完整验证码</button><span id="autoLoginStatus" class="muted">尚未绑定</span></div>
+            <div class="full toolbar"><button id="autoLoginSaveButton" type="button" onclick="saveAutoLoginBinding()">保存自动接码登录</button><button type="button" onclick="loadAutoLoginLogs(true)">查看自动登录日志（含验证码）</button><span id="autoLoginStatus" class="muted">尚未绑定</span></div>
             <div id="autoLoginLogs" class="full notice" hidden></div>
           </div>
           </div>
@@ -3800,7 +3800,7 @@
         const data=await api('/api/icloud/auto-login/logs',{method:'POST',loadingText:'正在读取自动登录日志...',body:JSON.stringify({account_id:session.account_id,reveal_codes:!!revealCodes})});
         const logs=data.logs||[];
         if(!logs.length){container.innerHTML='<strong>自动登录日志</strong><p class="muted">该账号还没有触发过自动接码登录。只有系统明确检测到新接口或旧接口登录态失效时才会自动执行。</p>';return;}
-        const warning=revealCodes?'<div class="guide-warning">当前已显示完整短信验证码，请勿截图或转发；关闭账号弹窗后会立即从页面移除。</div>':'';
+        const warning=revealCodes?'<div class="guide-warning">日志按产品设置显示短信验证码，请勿截图或转发；关闭账号弹窗后会立即从页面移除。</div>':'';
         container.innerHTML=`<div class="selector-label-row"><strong>最近 ${logs.length} 次自动登录日志（每账号最多 10 次）</strong><span class="muted">账号：${esc(data.apple_id||session.apple_id||'-')}</span></div>${warning}`+logs.map((entry,index)=>{
           const steps=(entry.steps||[]).map(step=>`<div class="submailbox-item"><strong>${esc(step.stage||'流程')}</strong><span>${esc(step.at||'-')} · ${esc(step.message||'')}${step.code?` · 验证码：<span class="mono">${esc(step.code)}</span>`:''}</span></div>`).join('');
           const summary=`${autoLoginLogStatusText(entry.status)} · ${entry.started_at||'-'}${entry.finished_at?' 至 '+entry.finished_at:''}`;

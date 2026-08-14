@@ -1182,6 +1182,18 @@ func shouldTriggerAppleAutoLogin(err error) bool {
 	return isCodedError(err, "apple_account_auth_failed") || isCodedError(err, "apple_account_session_missing") || isCodedError(err, "icloud_session_expired")
 }
 
+func shouldTriggerICloudWebAutoLogin(err error) bool {
+	if isCodedError(err, "icloud_session_missing") || isCodedError(err, "icloud_session_expired") {
+		return true
+	}
+	var coded codedError
+	if !errors.As(err, &coded) || coded.code != "icloud_validate_failed" {
+		return false
+	}
+	message := strings.ToLower(coded.message)
+	return strings.Contains(message, "http 401") || strings.Contains(message, "http 403")
+}
+
 func (s *appleAuthSession) extract(resp *http.Response) {
 	s.mergeCookies(resp.Request.URL, resp.Cookies())
 	if v := resp.Header.Get("X-Apple-ID-Account-Country"); v != "" {
