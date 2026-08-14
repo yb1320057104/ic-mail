@@ -5614,7 +5614,10 @@ func (s *Server) syncMailboxCodeBatchForOwnerWithLimit(ctx context.Context, owne
 			latestMessageAt := mailbox.LastSyncAt
 			mailboxChanged := false
 			for _, msg := range messagesByMailbox[mailbox.ID] {
-				if extractOTP(msg.Subject+"\n"+msg.Body) == "" {
+				// Visual/content synchronization passes an empty keyword and stores
+				// ordinary mail as well. Code polling keeps storing only messages
+				// containing a valid OTP, so normal numbers cannot become codes.
+				if strings.TrimSpace(keyword) != "" && extractOTP(msg.Subject+"\n"+msg.Body) == "" {
 					continue
 				}
 				remoteID := strings.TrimSpace(msg.RemoteID)

@@ -829,9 +829,7 @@ func SyncICloudIMAPMessagesWithCursor(ctx context.Context, state LoginState, mai
 	if maxMessages > 200 {
 		maxMessages = 200
 	}
-	if keyword = strings.TrimSpace(keyword); keyword == "" {
-		keyword = "OpenAI"
-	}
+	keyword = strings.TrimSpace(keyword)
 	if len(mailboxes) == 0 {
 		return iCloudIMAPSyncResult{MessagesByMailbox: map[string][]ICloudSyncedMessage{}}, nil
 	}
@@ -1055,7 +1053,10 @@ func iCloudIMAPMessagesByMailbox(fetched []iCloudIMAPFetchedMessage, mailboxes [
 		if !ok {
 			continue
 		}
-		if !looksLikeVerificationText(message.Subject+"\n"+message.Body, keyword) {
+		// An empty keyword is used by the visual/content mailbox endpoints: they
+		// must retain every message addressed to the privacy alias. Code polling
+		// supplies a keyword and keeps the stricter verification-mail filter.
+		if strings.TrimSpace(keyword) != "" && !looksLikeVerificationText(message.Subject+"\n"+message.Body, keyword) {
 			continue
 		}
 		matchedMailboxIDs := matchingMailboxIDs(recipients, aliases)

@@ -4806,6 +4806,36 @@ func TestSyncMailboxCodeBatchDeduplicatesSharedIMAPLogin(t *testing.T) {
 	}
 }
 
+func TestVisualMailboxSyncStoresOrdinaryMail(t *testing.T) {
+	oldInterval := mailboxMailSyncMinInterval
+	mailboxMailSyncMinInterval = 0
+	t.Cleanup(func() { mailboxMailSyncMinInterval = oldInterval })
+
+	store := newTestStore(t)
+	ownerID := "owner-visual-mail"
+	session := testIMAPSession(ownerID, "acc-visual", "receiver@qq.com")
+	if err := store.SaveICloudSessionForOwner(ownerID, session); err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := store.AddMailboxForOwner(ownerID, "acc-visual", "visual", "37cutouts-tepee@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	server.syncCodeMailboxBatchWithCursor = func(context.Context, LoginState, []Mailbox, time.Time, string, int) (iCloudIMAPSyncResult, error) {
+		return iCloudIMAPSyncResult{LastUID: "3140", MessagesByMailbox: map[string][]ICloudSyncedMessage{
+			mailbox.ID: {{RemoteID: "imap:3140", UID: "3140", Subject: "测试", From: "sender@example.com", Body: "测试\n13313", ReceivedAt: time.Now()}},
+		}}, nil
+	}
+	synced, err := server.syncMailboxCodeBatchForOwnerWithLimit(context.Background(), ownerID, []Mailbox{mailbox}, time.Time{}, "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if synced != 1 || len(store.MessagesForMailbox(mailbox.ID)) != 1 {
+		t.Fatalf("ordinary visual mail was not stored: synced=%d messages=%+v", synced, store.MessagesForMailbox(mailbox.ID))
+	}
+}
+
 func TestMailWatcherQQLoginBackoffAndFallbackInterval(t *testing.T) {
 	if got := nextMailWatcherIdleBackoff(errors.New("A001 NO Login fail: login frequency limited"), time.Second); got != 5*time.Minute {
 		t.Fatalf("QQ frequency-limit backoff = %s, want 5m", got)

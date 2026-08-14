@@ -126,6 +126,25 @@ func TestICloudIMAPMessagePreservesHTMLAndPlainText(t *testing.T) {
 	}
 }
 
+func TestICloudIMAPVisualSyncKeepsOrdinaryAliasMail(t *testing.T) {
+	mailboxes := []Mailbox{{ID: "mbx_visual", Email: "37cutouts-tepee@icloud.com"}}
+	raw := "From: Tester <sender@example.com>\r\n" +
+		"To: Hide My Email <37cutouts-tepee@icloud.com>\r\n" +
+		"X-ICLOUD-HME: p=37cutouts-tepee@icloud.com; f=receiver@qq.com; r=to\r\n" +
+		"Subject: 测试\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"13313\r\n"
+	fetched := []iCloudIMAPFetchedMessage{{UID: "3140", Raw: []byte(raw)}}
+	visual := iCloudIMAPMessagesByMailbox(fetched, mailboxes, time.Time{}, "")
+	if len(visual["mbx_visual"]) != 1 {
+		t.Fatalf("visual sync dropped ordinary alias mail: %+v", visual)
+	}
+	codeOnly := iCloudIMAPMessagesByMailbox(fetched, mailboxes, time.Time{}, "OpenAI")
+	if len(codeOnly["mbx_visual"]) != 0 {
+		t.Fatalf("code sync accepted ordinary non-code mail: %+v", codeOnly)
+	}
+}
+
 func TestICloudIMAPMessagesByMailboxMatchesMultipleRecipientAliases(t *testing.T) {
 	firstAt := time.Date(2026, 7, 1, 5, 2, 50, 0, time.UTC)
 	secondAt := firstAt.Add(20 * time.Second)
