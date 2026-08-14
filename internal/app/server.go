@@ -29,6 +29,7 @@ import (
 var webFS embed.FS
 
 const mailboxCodeFreshWindow = 5 * time.Minute
+const mailboxCodeRequestFetchLimit = 20
 const mailboxCreateMinInterval = 3 * time.Second
 const mailboxCreateLimitCooldown = 2 * time.Minute
 const mailboxListDefaultPageSize = 10
@@ -40,6 +41,7 @@ var mailboxCodePollDebounce = 100 * time.Millisecond
 var mailboxCodeLocalPollInterval = 100 * time.Millisecond
 var mailboxCodeBatchSyncTimeout = 120 * time.Second
 var mailboxCodeMaxClientWait = 30 * time.Second
+var mailboxContentSyncTimeout = 20 * time.Second
 var iCloudMailboxListAccountTimeout = 25 * time.Second
 var mailWatcherPollInterval = 3 * time.Second
 var mailWatcherFallbackSyncMinInterval = time.Minute
@@ -72,6 +74,8 @@ type Server struct {
 	mailboxCodeFastWait            time.Duration
 	mailboxCodeMu                  sync.Mutex
 	mailboxCodePollers             map[string]*mailboxCodePoller
+	mailboxContentSyncMu           sync.Mutex
+	mailboxContentSyncs            map[string]chan error
 	mailWatcherMu                  sync.Mutex
 	mailWatcherCancel              context.CancelFunc
 	mailWatcherWake                chan struct{}
@@ -261,6 +265,7 @@ func NewServer(cfg Config, store *FileStore, logger *slog.Logger) http.Handler {
 		mailboxSyncMinInterval:        mailboxMailSyncMinInterval,
 		mailboxCodeFastWait:           mailboxCodeFastWait,
 		mailboxCodePollers:            make(map[string]*mailboxCodePoller),
+		mailboxContentSyncs:           make(map[string]chan error),
 		mailWatcherWake:               make(chan struct{}, 1),
 		mailWatcherEnabled:            cfg.MailWatcherEnabled,
 		mailWatcherInterval:           mailWatcherPollInterval,
@@ -4292,21 +4297,114 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	_, _ = s.syncMailbox(ctx, mailbox, time.Now().Add(-24*time.Hour), "")
-	messages := s.store.MessagesForMailbox(mailbox.ID)
-	if len(messages) == 0 {
-		writeError(w, http.StatusOK, errCode("no_message", "暂未收到邮件", true))
+	s.markMailWatcherActive(mailbox.ID)
+	after, err := parseAfter(r.URL.Query().Get("after"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	sort.SliceStable(messages, func(i, j int) bool {
-		return firstNonZeroTime(messages[i].ReceivedAt, messages[i].CreatedAt).After(firstNonZeroTime(messages[j].ReceivedAt, messages[j].CreatedAt))
-	})
-	msg := messages[0]
+	cutoff := mailboxCodeAfter(after, time.Now())
+	if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+		s.writeMailboxContent(w, mailbox, msg)
+		return
+	}
+	if truthy(r.URL.Query().Get("cache")) {
+		writeError(w, http.StatusOK, errCode("no_recent_message", "最近5分钟本地缓存中暂无邮件", true))
+		return
+	}
+
+	done := s.startMailboxContentSync(mailbox, cutoff)
+	waitDuration := s.mailboxCodeWaitDuration(r)
+	if waitDuration <= 0 {
+		waitDuration = mailboxCodeFastWait
+	}
+	timer := time.NewTimer(waitDuration)
+	defer timer.Stop()
+	pollInterval := mailboxCodeLocalPollInterval
+	if pollInterval <= 0 {
+		pollInterval = 100 * time.Millisecond
+	}
+	if pollInterval > waitDuration {
+		pollInterval = waitDuration
+	}
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case syncErr := <-done:
+			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+				s.writeMailboxContent(w, mailbox, msg)
+				return
+			}
+			if syncErr != nil {
+				writeError(w, http.StatusBadGateway, errCode("mail_sync_failed", "同步最近邮件失败，请检查取码登录或稍后重试", true))
+				return
+			}
+			writeError(w, http.StatusOK, errCode("no_recent_message", "最近5分钟暂未收到邮件", true))
+			return
+		case <-ticker.C:
+			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+				s.writeMailboxContent(w, mailbox, msg)
+				return
+			}
+		case <-timer.C:
+			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+				s.writeMailboxContent(w, mailbox, msg)
+				return
+			}
+			writeError(w, http.StatusOK, errCode("no_recent_message", "最近5分钟暂未收到邮件，后台仍在同步", true))
+			return
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func (s *Server) writeMailboxContent(w http.ResponseWriter, mailbox Mailbox, msg Message) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Mail-Received-At", firstNonZeroTime(msg.ReceivedAt, msg.CreatedAt).UTC().Format(time.RFC3339))
 	_, _ = fmt.Fprintf(w, "邮箱：%s\n主题：%s\n发件人：%s\n时间：%s\n\n%s", mailbox.Email, msg.Subject, msg.From, formatTime(msg.ReceivedAt), msg.Body)
+}
+
+func latestRecentMailboxMessage(messages []Message, after time.Time) (Message, bool) {
+	var latest Message
+	var latestAt time.Time
+	for _, msg := range messages {
+		msgAt := firstNonZeroTime(msg.ReceivedAt, msg.CreatedAt)
+		if msgAt.IsZero() || msgAt.Before(after) || (!latestAt.IsZero() && !msgAt.After(latestAt)) {
+			continue
+		}
+		latest, latestAt = msg, msgAt
+	}
+	return latest, !latestAt.IsZero()
+}
+
+func (s *Server) startMailboxContentSync(mailbox Mailbox, after time.Time) <-chan error {
+	s.mailboxContentSyncMu.Lock()
+	if s.mailboxContentSyncs == nil {
+		s.mailboxContentSyncs = make(map[string]chan error)
+	}
+	if current := s.mailboxContentSyncs[mailbox.ID]; current != nil {
+		s.mailboxContentSyncMu.Unlock()
+		return current
+	}
+	done := make(chan error, 1)
+	s.mailboxContentSyncs[mailbox.ID] = done
+	s.mailboxContentSyncMu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), mailboxContentSyncTimeout)
+		_, err := s.syncMailbox(ctx, mailbox, after, "")
+		cancel()
+		done <- err
+		close(done)
+		s.mailboxContentSyncMu.Lock()
+		if s.mailboxContentSyncs[mailbox.ID] == done {
+			delete(s.mailboxContentSyncs, mailbox.ID)
+		}
+		s.mailboxContentSyncMu.Unlock()
+	}()
+	return done
 }
 
 func (s *Server) handleMailboxVisualByEmail(w http.ResponseWriter, r *http.Request) {
@@ -4571,11 +4669,9 @@ func latestMailboxCodeSkipping(messages []Message, after time.Time, keyword stri
 	}
 	skipMessageID = strings.TrimSpace(skipMessageID)
 	after = mailboxCodeAfter(after, now)
-	sort.SliceStable(messages, func(i, j int) bool {
-		left := firstNonZeroTime(messages[i].ReceivedAt, messages[i].CreatedAt)
-		right := firstNonZeroTime(messages[j].ReceivedAt, messages[j].CreatedAt)
-		return left.After(right)
-	})
+	var latest Message
+	var latestCode string
+	var latestAt time.Time
 	for _, msg := range messages {
 		if skipMessageID != "" && msg.ID == skipMessageID {
 			continue
@@ -4592,9 +4688,11 @@ func latestMailboxCodeSkipping(messages []Message, after time.Time, keyword stri
 		if code == "" {
 			continue
 		}
-		return msg, code, true
+		if latestAt.IsZero() || msgTime.After(latestAt) {
+			latest, latestCode, latestAt = msg, code, msgTime
+		}
 	}
-	return Message{}, "", false
+	return latest, latestCode, !latestAt.IsZero()
 }
 
 func truthy(value string) bool {
@@ -4820,7 +4918,7 @@ func (s *Server) syncMailboxesForCodeWaiters(ctx context.Context, ownerID string
 		sort.Slice(mailboxes, func(i, j int) bool {
 			return mailboxes[i].Email < mailboxes[j].Email
 		})
-		_, err := s.syncMailboxCodeBatchForOwnerWithLimit(ctx, ownerID, mailboxes, group.minAfter, group.keyword, 0)
+		_, err := s.syncMailboxCodeBatchForOwnerWithLimit(ctx, ownerID, mailboxes, group.minAfter, group.keyword, mailboxCodeRequestFetchLimit)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}

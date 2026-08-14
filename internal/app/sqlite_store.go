@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -227,6 +229,74 @@ func (s *FileStore) saveMailboxLocked(mailbox Mailbox) error {
 		mailbox.ID, mailbox.OwnerID, raw, normalizedNow())
 	if err != nil {
 		return fmt.Errorf("save mailbox: %w", err)
+	}
+	return nil
+}
+
+func (s *FileStore) saveMailboxMessageLocked(mailbox Mailbox, message Message) error {
+	mailboxRaw, err := json.Marshal(mailbox)
+	if err != nil {
+		return err
+	}
+	messageRaw, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	db, err := s.sqliteConnection()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	now := normalizedNow()
+	if _, err = tx.Exec(`INSERT INTO mailboxes(id,owner_id,payload,updated_at) VALUES(?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET owner_id=excluded.owner_id,payload=excluded.payload,updated_at=excluded.updated_at`,
+		mailbox.ID, mailbox.OwnerID, mailboxRaw, now); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("save message mailbox: %w", err)
+	}
+	if _, err = tx.Exec(`INSERT INTO messages(id,payload,updated_at) VALUES(?,?,?)
+		ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at`, message.ID, messageRaw, now); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("save message: %w", err)
+	}
+	if _, err = tx.Exec(`INSERT INTO state_meta(key,value) VALUES('next_id',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.Itoa(s.state.NextID)); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("save next id: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if s.persistedMessages == nil {
+		s.persistedMessages = make(map[string]string)
+	}
+	s.persistedMessages[message.ID] = string(messageRaw)
+	return nil
+}
+
+func (s *FileStore) saveICloudSessionRowLocked(session ICloudSession) error {
+	ownerID, accountID := strings.TrimSpace(session.OwnerID), strings.TrimSpace(session.AccountID)
+	if ownerID == "" || accountID == "" {
+		return s.saveLocked()
+	}
+	raw, err := json.Marshal(session)
+	if err != nil {
+		return err
+	}
+	db, err := s.sqliteConnection()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = db.Exec(`INSERT INTO icloud_sessions(id,owner_id,payload,updated_at) VALUES(?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET owner_id=excluded.owner_id,payload=excluded.payload,updated_at=excluded.updated_at`,
+		ownerID+":"+accountID, ownerID, raw, normalizedNow())
+	if err != nil {
+		return fmt.Errorf("save icloud session: %w", err)
 	}
 	return nil
 }

@@ -1631,8 +1631,13 @@ func (s *FileStore) UpsertMessageContent(mailboxID, remoteID, source, subject, f
 	}
 	remoteID = strings.TrimSpace(remoteID)
 	if remoteID != "" {
-		for i, msg := range s.state.Messages {
+		// IMAP overlap scans usually revisit recently stored UIDs. Searching from
+		// newest to oldest avoids walking the full historical message collection.
+		for i := len(s.state.Messages) - 1; i >= 0; i-- {
+			msg := s.state.Messages[i]
 			if msg.MailboxID == mailboxID && msg.RemoteID == remoteID {
+				originalMessage := s.state.Messages[i]
+				originalMailbox := s.state.Mailboxes[idx]
 				s.state.Messages[i].OwnerID = s.state.Mailboxes[idx].OwnerID
 				s.state.Messages[i].Source = strings.TrimSpace(source)
 				s.state.Messages[i].Subject = strings.TrimSpace(subject)
@@ -1644,13 +1649,20 @@ func (s *FileStore) UpsertMessageContent(mailboxID, remoteID, source, subject, f
 				}
 				s.state.Messages[i].CreatedAt = firstNonZeroTime(s.state.Messages[i].CreatedAt, time.Now())
 				s.state.Mailboxes[idx].UpdatedAt = time.Now()
-				return s.state.Messages[i], false, s.saveLocked()
+				if err := s.saveMailboxMessageLocked(s.state.Mailboxes[idx], s.state.Messages[i]); err != nil {
+					s.state.Messages[i] = originalMessage
+					s.state.Mailboxes[idx] = originalMailbox
+					return Message{}, false, err
+				}
+				return s.state.Messages[i], false, nil
 			}
 		}
 	}
 	if receivedAt.IsZero() {
 		receivedAt = time.Now()
 	}
+	originalNextID := s.state.NextID
+	originalMailbox := s.state.Mailboxes[idx]
 	msg := Message{
 		ID:         s.nextIDLocked("msg"),
 		OwnerID:    s.state.Mailboxes[idx].OwnerID,
@@ -1667,7 +1679,13 @@ func (s *FileStore) UpsertMessageContent(mailboxID, remoteID, source, subject, f
 	s.state.Messages = append(s.state.Messages, msg)
 	s.state.Mailboxes[idx].ReceiveCount++
 	s.state.Mailboxes[idx].UpdatedAt = time.Now()
-	return msg, true, s.saveLocked()
+	if err := s.saveMailboxMessageLocked(s.state.Mailboxes[idx], msg); err != nil {
+		s.state.Messages = s.state.Messages[:len(s.state.Messages)-1]
+		s.state.Mailboxes[idx] = originalMailbox
+		s.state.NextID = originalNextID
+		return Message{}, false, err
+	}
+	return msg, true, nil
 }
 
 func (s *FileStore) SetMailboxStatus(id string, apiActive *bool, icloudActive *bool, status, note string) (Mailbox, error) {
@@ -1826,12 +1844,18 @@ func (s *FileStore) SetMailboxSyncCursor(id string, syncedAt time.Time, lastUID 
 	if syncedAt.IsZero() {
 		syncedAt = time.Now()
 	}
+	original := s.state.Mailboxes[idx]
 	s.state.Mailboxes[idx].LastSyncAt = syncedAt
 	if strings.TrimSpace(lastUID) != "" {
 		s.state.Mailboxes[idx].LastSyncUID = strings.TrimSpace(lastUID)
 	}
 	s.state.Mailboxes[idx].UpdatedAt = time.Now()
-	return s.state.Mailboxes[idx], s.saveLocked()
+	updated := s.state.Mailboxes[idx]
+	if err := s.saveMailboxLocked(updated); err != nil {
+		s.state.Mailboxes[idx] = original
+		return Mailbox{}, err
+	}
+	return updated, nil
 }
 
 func (s *FileStore) SetICloudIMAPSyncCursor(ownerID, accountID, stateKey string, syncedAt time.Time, lastUID string) (ICloudSession, error) {
@@ -1873,9 +1897,14 @@ func (s *FileStore) SetICloudIMAPSyncCursor(ownerID, accountID, stateKey string,
 		return cloneICloudSession(*s.state.ICloudSession), s.saveLocked()
 	}
 	for i := range s.state.ICloudSessions {
+		original := cloneICloudSession(s.state.ICloudSessions[i])
 		if updateSession(&s.state.ICloudSessions[i]) {
 			updated := cloneICloudSession(s.state.ICloudSessions[i])
-			return updated, s.saveLocked()
+			if err := s.saveICloudSessionRowLocked(updated); err != nil {
+				s.state.ICloudSessions[i] = original
+				return ICloudSession{}, err
+			}
+			return updated, nil
 		}
 	}
 	return ICloudSession{}, errCode("imap_session_missing", "未找到取码登录态，无法保存 IMAP 同步游标", true)

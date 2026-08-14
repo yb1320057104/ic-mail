@@ -3824,6 +3824,69 @@ func TestMailboxCodeQueryReturnsLocalCachedCodeBeforeSync(t *testing.T) {
 	}
 }
 
+func TestMailboxContentReturnsRecentCacheWithoutSync(t *testing.T) {
+	store := newTestStore(t)
+	ownerID := "owner-content-cache"
+	mailbox, err := store.AddMailboxForOwner(ownerID, "", "内容邮箱", "content-cache@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.AddMessage(mailbox.ID, "旧邮件", "old@example.com", "expired body", time.Now().Add(-10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.AddMessage(mailbox.ID, "最新邮件", "new@example.com", "fresh body", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(Config{}, store, discardLogger())
+	server := handler.(*Server)
+	var syncCalls int64
+	server.syncCodeMailboxBatch = func(context.Context, LoginState, []Mailbox, time.Time, string, int) (map[string][]ICloudSyncedMessage, error) {
+		atomic.AddInt64(&syncCalls, 1)
+		return nil, nil
+	}
+	rr := httptest.NewRecorder()
+	path := "/api/v1/access/" + url.PathEscape(mailbox.APIToken) + "/mailboxes/" + url.PathEscape(mailbox.Email) + "/content"
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "fresh body") || strings.Contains(rr.Body.String(), "expired body") {
+		t.Fatalf("content status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("X-Mail-Received-At") == "" {
+		t.Fatal("recent content response missing X-Mail-Received-At")
+	}
+	if calls := atomic.LoadInt64(&syncCalls); calls != 0 {
+		t.Fatalf("sync calls = %d, want cache hit without sync", calls)
+	}
+}
+
+func TestMailboxContentDoesNotReturnExpiredMessage(t *testing.T) {
+	oldInterval := mailboxMailSyncMinInterval
+	mailboxMailSyncMinInterval = 0
+	t.Cleanup(func() { mailboxMailSyncMinInterval = oldInterval })
+	store := newTestStore(t)
+	ownerID := "owner-content-expired"
+	if err := store.SaveICloudSessionForOwner(ownerID, testIMAPSession(ownerID, "acc-content", "content-owner@icloud.com")); err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := store.AddMailboxForOwner(ownerID, "acc-content", "内容邮箱", "content-expired@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.AddMessage(mailbox.ID, "历史验证码", "old@example.com", "old code 123456", time.Now().Add(-10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(Config{PublicFastSyncWaitMS: 50, PublicSyncMinIntervalMS: 1}, store, discardLogger())
+	server := handler.(*Server)
+	server.syncCodeMailboxBatch = func(context.Context, LoginState, []Mailbox, time.Time, string, int) (map[string][]ICloudSyncedMessage, error) {
+		return map[string][]ICloudSyncedMessage{}, nil
+	}
+	rr := httptest.NewRecorder()
+	path := "/api/v1/access/" + url.PathEscape(mailbox.APIToken) + "/mailboxes/" + url.PathEscape(mailbox.Email) + "/content"
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+	if rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), "old code") || !strings.Contains(rr.Body.String(), `"code":"no_recent_message"`) {
+		t.Fatalf("content status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestMailWatcherPreloadsCodeMessages(t *testing.T) {
 	oldInterval := mailboxMailSyncMinInterval
 	mailboxMailSyncMinInterval = 0
@@ -4536,7 +4599,9 @@ func TestMailboxCodeWaiterSyncUsesRequestKeyword(t *testing.T) {
 
 	handler := NewServer(Config{}, store, discardLogger())
 	server := handler.(*Server)
+	gotMaxMessages := 0
 	server.syncCodeMailboxBatch = func(ctx context.Context, state LoginState, mailboxes []Mailbox, after time.Time, keyword string, maxMessages int) (map[string][]ICloudSyncedMessage, error) {
+		gotMaxMessages = maxMessages
 		if keyword != "ChatGPT" {
 			return map[string][]ICloudSyncedMessage{}, nil
 		}
@@ -4566,6 +4631,9 @@ func TestMailboxCodeWaiterSyncUsesRequestKeyword(t *testing.T) {
 	}
 	if !body.Success || body.Code != "864209" {
 		t.Fatalf("code body = %+v, want ChatGPT code 864209", body)
+	}
+	if gotMaxMessages != mailboxCodeRequestFetchLimit {
+		t.Fatalf("max messages = %d, want fast request limit %d", gotMaxMessages, mailboxCodeRequestFetchLimit)
 	}
 }
 
@@ -5981,6 +6049,72 @@ func TestSetMailboxLastCodeRollsBackOnPersistenceFailure(t *testing.T) {
 	got, ok := store.FindMailboxByID(mailbox.ID)
 	if !ok || got.LastCodeMessageID != "" || !got.LastCodeAt.IsZero() {
 		t.Fatalf("mailbox marker was not rolled back: %+v, ok=%v", got, ok)
+	}
+}
+
+func TestHighFrequencyMailboxWritesPersistWithoutFullStateSave(t *testing.T) {
+	store := newTestStore(t)
+	ownerID, accountID := "owner-row-writes", "acc-row-writes"
+	if err := store.SaveICloudSessionForOwner(ownerID, testIMAPSession(ownerID, accountID, "row-writes@icloud.com")); err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := store.AddMailboxForOwner(ownerID, accountID, "行级写入", "row-write-alias@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receivedAt := time.Now().UTC().Truncate(time.Millisecond)
+	message, created, err := store.UpsertMessageContent(mailbox.ID, "imap:9001", "imap", "验证码", "sender@example.com", "code 654321", "", receivedAt)
+	if err != nil || !created {
+		t.Fatalf("upsert message=%+v created=%v err=%v", message, created, err)
+	}
+	if _, err = store.SetMailboxSyncCursor(mailbox.ID, receivedAt, "9001"); err != nil {
+		t.Fatal(err)
+	}
+	session := store.ICloudSessionsForOwner(ownerID)[0]
+	state, ok := iCloudIMAPLoginState(session)
+	if !ok {
+		t.Fatal("imap login state missing")
+	}
+	if _, err = store.SetICloudIMAPSyncCursor(ownerID, accountID, imapStateKey(state), receivedAt, "9001"); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewFileStore(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotMailbox, ok := reopened.FindMailboxByID(mailbox.ID)
+	if !ok || gotMailbox.LastSyncUID != "9001" || !gotMailbox.LastSyncAt.Equal(receivedAt) {
+		t.Fatalf("persisted mailbox cursor = %+v, ok=%v", gotMailbox, ok)
+	}
+	messages := reopened.MessagesForMailbox(mailbox.ID)
+	if len(messages) != 1 || messages[0].ID != message.ID || messages[0].Body != "code 654321" {
+		t.Fatalf("persisted messages = %+v", messages)
+	}
+	gotSession := reopened.ICloudSessionsForOwner(ownerID)[0]
+	gotState, ok := iCloudIMAPLoginState(gotSession)
+	if !ok || gotState.IMAPLastSyncUID != "9001" || !gotState.IMAPLastSyncAt.Equal(receivedAt) {
+		t.Fatalf("persisted imap cursor = %+v, ok=%v", gotState, ok)
+	}
+}
+
+func TestUpsertMessageContentRollsBackOnPersistenceFailure(t *testing.T) {
+	store := newTestStore(t)
+	mailbox, err := store.AddMailboxForOwner("owner-message-rollback", "", "回滚邮箱", "message-rollback@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalNextID := store.Snapshot().NextID
+	originalDBPath := store.dbPath
+	store.dbPath = filepath.Join(t.TempDir(), "missing", "state.db")
+	_, _, err = store.UpsertMessageContent(mailbox.ID, "imap:failed", "imap", "验证码", "sender@example.com", "code 112233", "", time.Now())
+	store.dbPath = originalDBPath
+	if err == nil {
+		t.Fatal("UpsertMessageContent should fail when the database path cannot be opened")
+	}
+	got, ok := store.FindMailboxByID(mailbox.ID)
+	if !ok || got.ReceiveCount != mailbox.ReceiveCount || len(store.MessagesForMailbox(mailbox.ID)) != 0 || store.Snapshot().NextID != originalNextID {
+		t.Fatalf("failed message write was not rolled back: mailbox=%+v messages=%+v next_id=%d", got, store.MessagesForMailbox(mailbox.ID), store.Snapshot().NextID)
 	}
 }
 
