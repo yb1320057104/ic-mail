@@ -7511,16 +7511,18 @@ func parseAfter(value string) (time.Time, error) {
 }
 
 var (
-	otpKeywordRegex   = regexp.MustCompile(`(?i)(?:openai|chatgpt|otp|verification\s*code|security\s*code|login\s*code|one[ -]?time\s*(?:code|password)|passcode|pin\s*code|code|验证码|驗證碼|校验码|校驗碼|动态码|動態碼|安全码|安全碼|登录码|登錄碼|代码|代碼)`)
+	otpKeywordRegex   = regexp.MustCompile(`(?i)(?:openai|chatgpt|otp|verification\s*code|security\s*code|login\s*code|one[ -]?time\s*(?:code|password)|passcode|pin\s*code|code|验证码|驗證碼|校验码|校驗碼|动态码|動態碼|安全码|安全碼|登录码|登錄碼|代码|代碼|認証コード|確認コード|検証コード|ワンタイムパスワード|인증\s*코드|확인\s*코드|보안\s*코드|일회용\s*비밀번호|mã\s*(?:xác\s*minh|xác\s*thực|đăng\s*nhập|bảo\s*mật)|सत्यापन\s*कोड|पुष्टि\s*कोड|सुरक्षा\s*कोड|ओटीपी|código\s*(?:de\s*)?(?:verificación|seguridad|acesso)|code\s*(?:de\s*)?(?:vérification|sécurité|connexion)|bestätigungscode|sicherheitscode|verifizierungscode|código\s*(?:de\s*)?(?:verificação|segurança)|код\s*(?:подтверждения|проверки|безопасности)|одноразовый\s*пароль|رمز\s*(?:التحقق|التأكيد|الأمان)|كلمة\s*المرور\s*لمرة\s*واحدة|รหัส(?:ยืนยัน|ตรวจสอบ|ความปลอดภัย)|รหัสผ่านใช้ครั้งเดียว|kode\s*(?:verifikasi|keamanan|masuk)|codice\s*(?:di\s*)?(?:verifica|sicurezza|accesso)|doğrulama\s*kodu|güvenlik\s*kodu)`)
 	otpCandidateRegex = regexp.MustCompile(`[A-Za-z0-9]{2,10}(?:-[A-Za-z0-9]{2,10}){1,2}|[A-Za-z0-9]{4,10}`)
 	plainOTPRegex     = regexp.MustCompile(`\b(\d{6})\b`)
 	otpDateRegex      = regexp.MustCompile(`^\d{4}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?$`)
 	otpYearRegex      = regexp.MustCompile(`^(?:19|20)\d{2}$`)
 	directOTPPrefix   = regexp.MustCompile(`(?i)^\s*(?:is|为|是)?\s*[:：=：-]?\s*$`)
 	yearDateSuffix    = regexp.MustCompile(`^\s*(?:年|[-/.]\s*\d{1,2}(?:\s*[-/.月]\s*\d{1,2})?)`)
+	otpMetadataPrefix = regexp.MustCompile(`(?i)(?:order|invoice|phone|telephone|mobile|reference|ticket|date|time|year|订单|訂單|手机号|手機號|电话|電話|日期|时间|時間|注文番号|電話番号|日付|đơn\s*hàng|hóa\s*đơn|điện\s*thoại|ngày|ऑर्डर|फ़ोन|फोन|तारीख|pedido|factura|teléfono|commande|téléphone|bestellung|rechnung|телефон|заказ|رقم\s*الطلب|الهاتف|วันที่)\s*(?:number|no\.?|id|号|號|番号|số|संख्या|número|numéro|nummer|номер|رقم)?\s*[:：=#-]?\s*$`)
 )
 
 func extractOTP(text string) string {
+	text = normalizeOTPText(text)
 	keywords := otpKeywordRegex.FindAllStringIndex(text, -1)
 	// Numeric codes are much more common. Resolve them before mixed/letter
 	// formats so an uppercase CSS/template token such as HEADER-TITLE cannot
@@ -7535,10 +7537,8 @@ func extractOTP(text string) string {
 	}
 	// A standalone six-digit token remains a safe compatibility fallback for
 	// terse messages that omit labels entirely.
-	for _, matches := range plainOTPRegex.FindAllStringSubmatch(text, -1) {
-		if len(matches) == 2 && validContextualOTP(matches[1]) {
-			return matches[1]
-		}
+	if code := unambiguousStandaloneOTP(text); code != "" {
+		return code
 	}
 	// Only after no numeric code exists do we accept provider-specific mixed
 	// or explicitly segmented uppercase formats such as A7B-9K2/MMM-MMM.
@@ -7558,34 +7558,89 @@ func contextualOTPInRange(text string, start, end int, preferLast, numericOnly b
 		return ""
 	}
 	matches := otpCandidateRegex.FindAllStringIndex(text[start:end], -1)
-	if preferLast {
-		for i := len(matches) - 1; i >= 0; i-- {
-			matchStart, matchEnd := start+matches[i][0], start+matches[i][1]
-			if looksLikeContextualDate(text, start, matchStart, matchEnd) {
-				continue
-			}
-			if code := normalizedContextualOTP(text[matchStart:matchEnd]); code != "" {
-				if numericOnly && strings.IndexFunc(code, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
-					continue
-				}
-				return code
-			}
-		}
-		return ""
-	}
+	bestCode, bestScore := "", -1
 	for _, match := range matches {
 		matchStart, matchEnd := start+match[0], start+match[1]
-		if looksLikeContextualDate(text, start, matchStart, matchEnd) {
+		if looksLikeContextualDate(text, start, matchStart, matchEnd) || looksLikeOTPMetadata(text, matchStart) {
 			continue
 		}
 		if code := normalizedContextualOTP(text[matchStart:matchEnd]); code != "" {
-			if numericOnly && strings.IndexFunc(code, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			isNumeric := strings.IndexFunc(code, func(r rune) bool { return r < '0' || r > '9' }) < 0
+			if numericOnly && !isNumeric {
 				continue
 			}
-			return code
+			score := contextualOTPScore(code)
+			distance := matchStart - start
+			if preferLast {
+				distance = end - matchEnd
+			}
+			score -= min(max(distance, 0), 160)
+			if score > bestScore {
+				bestCode, bestScore = code, score
+			}
 		}
 	}
+	return bestCode
+}
+
+func contextualOTPScore(code string) int {
+	compact := strings.ReplaceAll(code, "-", "")
+	isNumeric := strings.IndexFunc(compact, func(r rune) bool { return r < '0' || r > '9' }) < 0
+	switch {
+	case isNumeric && len(compact) == 6:
+		return 500
+	case isNumeric:
+		return 380
+	case strings.IndexFunc(compact, func(r rune) bool { return r >= '0' && r <= '9' }) >= 0:
+		return 300
+	default:
+		return 220
+	}
+}
+
+func unambiguousStandaloneOTP(text string) string {
+	matches := plainOTPRegex.FindAllStringSubmatchIndex(text, -1)
+	candidates := make([]string, 0, len(matches))
+	seen := make(map[string]bool)
+	for _, match := range matches {
+		if len(match) < 4 || looksLikeOTPMetadata(text, match[2]) {
+			continue
+		}
+		code := text[match[2]:match[3]]
+		if validContextualOTP(code) && !seen[code] {
+			seen[code] = true
+			candidates = append(candidates, code)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
 	return ""
+}
+
+func looksLikeOTPMetadata(text string, candidateStart int) bool {
+	if candidateStart <= 0 || candidateStart > len(text) {
+		return false
+	}
+	prefix := text[max(0, candidateStart-96):candidateStart]
+	return otpMetadataPrefix.MatchString(prefix)
+}
+
+func normalizeOTPText(text string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= '０' && r <= '９':
+			return '0' + (r - '０')
+		case r >= 'Ａ' && r <= 'Ｚ':
+			return 'A' + (r - 'Ａ')
+		case r >= 'ａ' && r <= 'ｚ':
+			return 'a' + (r - 'ａ')
+		case r == '－' || r == '—' || r == '–' || r == '‑':
+			return '-'
+		default:
+			return r
+		}
+	}, text)
 }
 
 func looksLikeContextualDate(text string, rangeStart, candidateStart, candidateEnd int) bool {
