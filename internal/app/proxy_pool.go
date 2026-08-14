@@ -597,11 +597,12 @@ func (s *Server) handleBindAccountProxyPool(w http.ResponseWriter, r *http.Reque
 }
 
 type proxyPoolNodeTestResult struct {
-	Available bool   `json:"available"`
-	LatencyMS int64  `json:"latency_ms"`
-	ExitIP    string `json:"exit_ip,omitempty"`
-	TLSOK     bool   `json:"tls_ok"`
-	LastError string `json:"last_error,omitempty"`
+	Available    bool      `json:"available"`
+	LatencyMS    int64     `json:"latency_ms"`
+	ExitIP       string    `json:"exit_ip,omitempty"`
+	TLSOK        bool      `json:"tls_ok"`
+	LastError    string    `json:"last_error,omitempty"`
+	LastTestedAt time.Time `json:"last_tested_at,omitempty"`
 }
 
 type proxyPoolTestJob struct {
@@ -694,6 +695,12 @@ func (s *Server) runProxyPoolTestJob(jobID, owner string, nodes []ProxyPoolNode)
 			if err != nil {
 				result.LastError = err.Error()
 			}
+			result.LastTestedAt = time.Now()
+			_ = s.store.SaveProxyPoolNodeResult(owner, node.Name, ProxyPoolNode{
+				Name: node.Name, Available: result.Available, LatencyMS: result.LatencyMS,
+				ExitIP: result.ExitIP, TLSOK: result.TLSOK, LastError: result.LastError,
+				LastTestedAt: result.LastTestedAt,
+			})
 			results <- completedResult{name: node.Name, result: result}
 		}()
 	}

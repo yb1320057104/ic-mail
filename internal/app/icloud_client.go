@@ -440,7 +440,20 @@ func (c *ICloudClient) refreshAppleAccountManageStateUnlocked(ctx context.Contex
 		TimeOutInterval int `json:"timeOutInterval"`
 	}
 	if err := c.callAppleAccount(ctx, &loginState, "", http.MethodGet, "/account/manage/gs/ws/token", nil, &token); err != nil {
-		return loginState, err
+		if !isCodedError(err, "apple_account_auth_failed") {
+			return loginState, err
+		}
+		// A stale SCNT can be repaired by warming the management portal once.
+		// Do not do this for 429/503; those remain in exponential backoff.
+		if warmErr := c.warmAppleAccountPortal(ctx, &loginState); warmErr != nil {
+			return loginState, err
+		}
+		withoutScnt := loginState
+		withoutScnt.Scnt = ""
+		if retryErr := c.callAppleAccount(ctx, &withoutScnt, "", http.MethodGet, "/account/manage/gs/ws/token", nil, &token); retryErr != nil {
+			return loginState, err
+		}
+		loginState = withoutScnt
 	}
 	markAppleAccountManageTokenTTL(&loginState, token.TimeOutInterval, time.Now())
 	if token.TimeOutInterval <= 0 {
@@ -1097,7 +1110,11 @@ func appleAccountAPIError(status int, data []byte, stage string) error {
 	if strings.Contains(lower, "limit") || strings.Contains(lower, "too many") || strings.Contains(lower, "rate") {
 		return errCode("apple_account_hme_limit", "Apple Account 已达到当前隐私邮箱创建上限，请稍后再试；"+detail, true)
 	}
-	if status == appleAccountHTTPStatusSessionTimeout || ((status == http.StatusUnauthorized || status == http.StatusForbidden) && appleAccountBodyLooksAuthExpired(lower)) {
+	// Apple frequently returns an empty 401/403 page when the management
+	// cookie/scnt pair is stale. Treat it as an explicit session failure so the
+	// keep-alive path can perform one portal warm-up and the auto-login policy
+	// can distinguish it from temporary 429/503 service failures.
+	if status == appleAccountHTTPStatusSessionTimeout || ((status == http.StatusUnauthorized || status == http.StatusForbidden) && (msg == "空响应" || appleAccountBodyLooksAuthExpired(lower))) {
 		return errCode("apple_account_auth_failed", "Apple Account 管理态已失效，请重新协议登录；"+detail, true)
 	}
 	return errCode("apple_account_api_failed", "Apple Account 接口失败；"+detail, true)

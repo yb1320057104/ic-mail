@@ -1701,6 +1701,7 @@
     let unreadAnnouncements = [];
     let mailboxHistorySyncRunning = false;
     let sessionMailboxRows = [];
+    const sessionMailboxRowsByAccount = new Map();
     const expandedSessionAccounts = new Set();
     let mailboxPage = 1;
     let mailboxPageSize = 10;
@@ -2859,7 +2860,9 @@
           `权限：${status.current_user && status.current_user.is_admin ? '管理员' : '普通账号'}；` +
           `Base URL：${status.base_url || '-'}`;
       }
-      sessionMailboxRows = await loadSessionMailboxRows(lastICloudSessions);
+      // Do not fetch up to 500 mailboxes for every Apple account on each
+      // refresh. Child mailboxes are loaded only when the user expands a row.
+      sessionMailboxRows = [];
       renderICloudSessions(lastICloudSessions);
       updateNavCounts(status);
       await loadMailboxPage({silent: true});
@@ -3568,7 +3571,7 @@
       const health = (($('sessionHealthFilter') || {}).value || '');
       const kind = (($('sessionKindFilter') || {}).value || '');
       const filtered = displaySessions.filter(session => {
-        const children = sessionMailboxRows.filter(m => m.account_id === session.account_id);
+        const children = sessionMailboxRowsByAccount.get(session.account_id) || [];
         const haystack = [session.apple_id, session.account_id, session.icloud_imap_email, ...children.map(m => m.email)].join(' ').toLowerCase();
         if (keyword && !haystack.includes(keyword)) return false;
         const overall = overallLoginStateText(session);
@@ -3583,12 +3586,13 @@
       });
       $('icloudSessionInfo').textContent = `登录态用于创建邮箱和收取验证码。共 ${displaySessions.length} 个账号，当前条件显示 ${filtered.length} 个；子邮箱数量按服务器完整数据统计，展开区最多展示最近载入的 500 条。`;
       $('sessionRows').innerHTML = filtered.length ? filtered.map((session, index) => {
-        const key = sessionKey(session), children = sessionMailboxRows.filter(m => m.account_id === session.account_id);
+        const key = sessionKey(session), children = sessionMailboxRowsByAccount.get(session.account_id) || [];
         const childCount = Number(session.mailbox_count || children.length || 0);
         const expanded = expandedSessionAccounts.has(key);
         const childHTML = children.length ? children.map(m => `<div class="submailbox-item"><strong>${esc(m.email)}</strong><span>${esc(m.label || '无标签')} · ${esc(statusText(m.status))} · 收件 ${m.receive_count || 0}</span></div>`).join('') : '<span class="muted">该登录态下暂无同步到的子邮箱</span>';
         const autoLoginText = session.auto_login_enabled ? (session.auto_login_status || '自动接码登录已启用') : '自动接码登录未启用';
-        return `<tr class="${activeICloudSessionKey === key ? 'selected-session-row' : ''}"><td><div class="session-account">${esc(session.apple_id || `账号 ${index+1}`)}</div><span class="mono muted">${esc(session.account_id || '-')}</span><br><span class="login-chip ${session.auto_login_enabled ? 'on' : 'off'}">${esc(autoLoginText)}</span>${session.auto_login_error ? sessionLoginError(session.auto_login_error) : ''}</td>
+        const proxyText = session.proxy_node_tag ? `代理：${session.proxy_node_name || session.proxy_node_tag}${Number(session.proxy_latency_ms) > 0 ? ` · ${session.proxy_latency_ms}ms` : ''}` : (session.proxy_status ? `${session.proxy_status}${Number(session.proxy_latency_ms) > 0 ? ` · ${session.proxy_latency_ms}ms` : ''}` : '代理：直连');
+        return `<tr class="${activeICloudSessionKey === key ? 'selected-session-row' : ''}"><td><div class="session-account">${esc(session.apple_id || `账号 ${index+1}`)}</div><span class="mono muted">${esc(session.account_id || '-')}</span><br><span class="login-chip ${session.proxy_status === '代理异常' ? 'off' : (session.proxy_node_tag || session.proxy_status ? 'on' : 'off')}">${esc(proxyText)}</span><br><span class="login-chip ${session.auto_login_enabled ? 'on' : 'off'}">${esc(autoLoginText)}</span>${session.auto_login_error ? sessionLoginError(session.auto_login_error) : ''}</td>
           <td>${loginChip('新接口', session.apple_account_login_status || (appleAccountLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(appleAccountLoginSaved(session),session.apple_account_login_checked,session.apple_account_login_ok))}${sessionLoginError(session.apple_account_login_error)}<br>${sessionManageRefreshBadge(session)}</td>
           <td>${loginChip('旧接口', session.icloud_web_login_status || (iCloudWebLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudWebLoginSaved(session),session.icloud_web_login_checked,session.icloud_web_login_ok))}${sessionLoginError(session.icloud_web_login_error)}${sessionOldKeepAliveBadge(session)}</td>
           <td>${loginChip('IMAP', session.icloud_imap_login_status || (iCloudIMAPLoginSaved(session)?'已保存':'未保存'), loginStateChipMode(iCloudIMAPLoginSaved(session),session.icloud_imap_login_checked,session.icloud_imap_login_ok))}${sessionLoginError(session.icloud_imap_login_error)}<br><span class="muted">${esc(session.icloud_imap_email || '-')}</span></td>
@@ -3600,7 +3604,28 @@
       updateManageRefreshClocks();
     }
 
-    function toggleSessionChildren(key) { if (expandedSessionAccounts.has(key)) expandedSessionAccounts.delete(key); else expandedSessionAccounts.add(key); renderICloudSessions(lastICloudSessions); }
+    async function toggleSessionChildren(key) {
+      if (expandedSessionAccounts.has(key)) {
+        expandedSessionAccounts.delete(key);
+        renderICloudSessions(lastICloudSessions);
+        return;
+      }
+      expandedSessionAccounts.add(key);
+      const session = (lastICloudSessions || []).find(item => sessionKey(item) === key);
+      if (session && session.account_id && !sessionMailboxRowsByAccount.has(session.account_id)) {
+        sessionMailboxRowsByAccount.set(session.account_id, []);
+        renderICloudSessions(lastICloudSessions);
+        try {
+          const params = new URLSearchParams({page:'1', page_size:'500', account_id:session.account_id});
+          const data = await api('/api/mailboxes?' + params.toString(), {showLoading:false});
+          sessionMailboxRowsByAccount.set(session.account_id, data.mailboxes || []);
+        } catch (err) {
+          sessionMailboxRowsByAccount.delete(session.account_id);
+          log('加载账号子邮箱失败：' + err.message);
+        }
+      }
+      renderICloudSessions(lastICloudSessions);
+    }
     function clearSessionFilters() { sessionSearchQuery=''; sessionSearchIntentUntil=0; if ($('sessionSearch')) $('sessionSearch').value=''; if ($('sessionHealthFilter')) $('sessionHealthFilter').value=''; if ($('sessionKindFilter')) $('sessionKindFilter').value=''; renderICloudSessions(lastICloudSessions); }
 
     function showSessionAccountModal(title) {

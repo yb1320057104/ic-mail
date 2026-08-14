@@ -47,17 +47,17 @@ type State struct {
 }
 
 type UserProxyConfig struct {
-	OwnerID      string    `json:"owner_id"`
-	URLCipher    string    `json:"url_cipher"`
-	URLMasked    string    `json:"url_masked"`
-	Enabled      bool      `json:"enabled"`
-	Status       string    `json:"status,omitempty"`
-	ExitIP       string    `json:"exit_ip,omitempty"`
-	LatencyMS    int64     `json:"latency_ms,omitempty"`
-	TLSOK        bool      `json:"tls_ok,omitempty"`
-	LastError    string    `json:"last_error,omitempty"`
-	LastTestedAt time.Time `json:"last_tested_at,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	OwnerID          string          `json:"owner_id"`
+	URLCipher        string          `json:"url_cipher"`
+	URLMasked        string          `json:"url_masked"`
+	Enabled          bool            `json:"enabled"`
+	Status           string          `json:"status,omitempty"`
+	ExitIP           string          `json:"exit_ip,omitempty"`
+	LatencyMS        int64           `json:"latency_ms,omitempty"`
+	TLSOK            bool            `json:"tls_ok,omitempty"`
+	LastError        string          `json:"last_error,omitempty"`
+	LastTestedAt     time.Time       `json:"last_tested_at,omitempty"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 	PoolEnabled      bool            `json:"pool_enabled,omitempty"`
 	PoolSourceType   string          `json:"pool_source_type,omitempty"`
 	PoolSourceCipher string          `json:"pool_source_cipher,omitempty"`
@@ -70,9 +70,15 @@ type UserProxyConfig struct {
 }
 
 type ProxyPoolNode struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	DialerProxy string `json:"dialer_proxy,omitempty"`
+	Name         string    `json:"name"`
+	Type         string    `json:"type"`
+	DialerProxy  string    `json:"dialer_proxy,omitempty"`
+	Available    bool      `json:"available,omitempty"`
+	LatencyMS    int64     `json:"latency_ms,omitempty"`
+	ExitIP       string    `json:"exit_ip,omitempty"`
+	TLSOK        bool      `json:"tls_ok,omitempty"`
+	LastError    string    `json:"last_error,omitempty"`
+	LastTestedAt time.Time `json:"last_tested_at,omitempty"`
 }
 
 type RedemptionPool struct {
@@ -154,20 +160,20 @@ type WebSession struct {
 }
 
 type Account struct {
-	ID           string    `json:"id"`
-	OwnerID      string    `json:"owner_id,omitempty"`
-	Label        string    `json:"label"`
-	AppleID      string    `json:"apple_id"`
-	Status       string    `json:"status"`
-	ICloudStatus string    `json:"icloud_status"`
-	Note         string    `json:"note"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	Category     string    `json:"category,omitempty"`
-	Tags         []string  `json:"tags,omitempty"`
-	CreatedBy    string    `json:"created_by,omitempty"`
-	AssignedBy   string    `json:"assigned_by,omitempty"`
-	ProxyPoolNode string   `json:"proxy_pool_node,omitempty"`
+	ID            string    `json:"id"`
+	OwnerID       string    `json:"owner_id,omitempty"`
+	Label         string    `json:"label"`
+	AppleID       string    `json:"apple_id"`
+	Status        string    `json:"status"`
+	ICloudStatus  string    `json:"icloud_status"`
+	Note          string    `json:"note"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	Category      string    `json:"category,omitempty"`
+	Tags          []string  `json:"tags,omitempty"`
+	CreatedBy     string    `json:"created_by,omitempty"`
+	AssignedBy    string    `json:"assigned_by,omitempty"`
+	ProxyPoolNode string    `json:"proxy_pool_node,omitempty"`
 }
 
 type InviteCode struct {
@@ -650,6 +656,11 @@ type publicICloudSession struct {
 	AutoLoginLastSuccessAt       string `json:"auto_login_last_success_at,omitempty"`
 	ProxyNodeTag                 string `json:"proxy_node_tag,omitempty"`
 	ProxyNodeName                string `json:"proxy_node_name,omitempty"`
+	ProxyStatus                  string `json:"proxy_status,omitempty"`
+	ProxyLatencyMS               int64  `json:"proxy_latency_ms,omitempty"`
+	ProxyExitIP                  string `json:"proxy_exit_ip,omitempty"`
+	ProxyTLSOK                   bool   `json:"proxy_tls_ok,omitempty"`
+	ProxyError                   string `json:"proxy_error,omitempty"`
 }
 
 type apiError struct {

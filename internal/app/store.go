@@ -92,6 +92,71 @@ func (s *FileStore) SnapshotForOwner(ownerID string) State {
 	return filterStateByOwnerLocked(s.state, strings.TrimSpace(ownerID))
 }
 
+// SnapshotForManage avoids cloning full message bodies for the compact admin
+// dashboard. The dashboard needs counts and metadata, not the potentially
+// very large HTML/plaintext payloads.
+func (s *FileStore) SnapshotForManage() State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	in := s.state
+	out := State{
+		Users: append([]User(nil), in.Users...), Accounts: append([]Account(nil), in.Accounts...),
+		Mailboxes: append([]Mailbox(nil), in.Mailboxes...), ICloudSessions: make([]ICloudSession, len(in.ICloudSessions)),
+		Invites: append([]InviteCode(nil), in.Invites...), InviteUses: append([]InviteUse(nil), in.InviteUses...),
+		Announcements: append([]Announcement(nil), in.Announcements...), AuditEvents: append([]AuditEvent(nil), in.AuditEvents...),
+		RecycleBin: append([]RecycleBinItem(nil), in.RecycleBin...),
+	}
+	if in.ICloudSession != nil {
+		copy := cloneICloudSession(*in.ICloudSession)
+		out.ICloudSession = &copy
+	}
+	for i := range in.ICloudSessions {
+		out.ICloudSessions[i] = cloneICloudSession(in.ICloudSessions[i])
+	}
+	// Keep only message metadata for per-user message counts.
+	out.Messages = make([]Message, len(in.Messages))
+	for i, message := range in.Messages {
+		out.Messages[i] = Message{ID: message.ID, OwnerID: message.OwnerID, MailboxID: message.MailboxID}
+	}
+	return out
+}
+
+func (s *FileStore) MailboxCountForAccount(ownerID, accountID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, mailbox := range s.state.Mailboxes {
+		if constantTimeEqual(mailbox.OwnerID, ownerID) && constantTimeEqual(mailbox.AccountID, accountID) {
+			count++
+		}
+	}
+	return count
+}
+
+// CountsForOwner returns lightweight dashboard counters without cloning the
+// full state (message bodies can be large and /api/status is polled often).
+func (s *FileStore) CountsForOwner(ownerID string) (accounts, mailboxes, messages int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID = strings.TrimSpace(ownerID)
+	for _, account := range s.state.Accounts {
+		if ownerID == "" || constantTimeEqual(account.OwnerID, ownerID) {
+			accounts++
+		}
+	}
+	for _, mailbox := range s.state.Mailboxes {
+		if ownerID == "" || constantTimeEqual(mailbox.OwnerID, ownerID) {
+			mailboxes++
+		}
+	}
+	for _, message := range s.state.Messages {
+		if ownerID == "" || constantTimeEqual(message.OwnerID, ownerID) {
+			messages++
+		}
+	}
+	return accounts, mailboxes, messages
+}
+
 func (s *FileStore) CreateSettingsForOwner(ownerID string) CreateSettings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -397,6 +462,31 @@ func (s *FileStore) ProxyPoolNodeForAccount(ownerID, accountID, appleID string) 
 		}
 	}
 	return ""
+}
+
+func (s *FileStore) SaveProxyPoolNodeResult(ownerID, nodeName string, result ProxyPoolNode) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID, nodeName = strings.TrimSpace(ownerID), strings.TrimSpace(nodeName)
+	for i := range s.state.UserProxyConfigs {
+		config := &s.state.UserProxyConfigs[i]
+		if !constantTimeEqual(config.OwnerID, ownerID) {
+			continue
+		}
+		for j := range config.PoolNodes {
+			if config.PoolNodes[j].Name == nodeName {
+				config.PoolNodes[j].Available = result.Available
+				config.PoolNodes[j].LatencyMS = result.LatencyMS
+				config.PoolNodes[j].ExitIP = result.ExitIP
+				config.PoolNodes[j].TLSOK = result.TLSOK
+				config.PoolNodes[j].LastError = result.LastError
+				config.PoolNodes[j].LastTestedAt = result.LastTestedAt
+				return s.saveLocked()
+			}
+		}
+		return errCode("proxy_pool_node_missing", "代理池节点不存在", false)
+	}
+	return errCode("proxy_pool_missing", "代理池配置不存在", false)
 }
 
 func (s *FileStore) CreateUser(username, password string) (User, error) {

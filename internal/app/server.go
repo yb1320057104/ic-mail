@@ -1711,7 +1711,8 @@ func (s *Server) cleanupInactiveUsers(now time.Time) int {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	state := s.scopedState(r)
+	ownerID := scopedOwnerID(r, s.store)
+	accountCount, mailboxCount, messageCount := s.store.CountsForOwner(ownerID)
 	currentUser := publicUser{}
 	authenticated := false
 	if session, user, ok := s.currentWebSession(r); ok {
@@ -1727,9 +1728,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"account_scoped":     scopedOwnerID(r, s.store) != "",
 		"authenticated":      authenticated,
 		"current_user":       currentUser,
-		"accounts":           len(state.Accounts),
-		"mailboxes":          len(state.Mailboxes),
-		"messages":           len(state.Messages),
+		"accounts":           accountCount,
+		"mailboxes":          mailboxCount,
+		"messages":           messageCount,
 		"icloud_session":     s.publicSessionForRequest(r),
 		"icloud_sessions":    s.publicSessionsForRequest(r),
 		"version":            currentVersionInfo(),
@@ -1737,8 +1738,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleManageData(w http.ResponseWriter, r *http.Request) {
-	state := s.scopedState(r)
 	compact := s.isAdminRequest(r) && truthy(r.URL.Query().Get("compact"))
+	state := s.scopedState(r)
+	if compact {
+		state = s.store.SnapshotForManage()
+	}
 	users := state.Users
 	if s.isAdminRequest(r) {
 		users = s.store.Users()
@@ -4907,14 +4911,21 @@ func (s *Server) keepAliveAppleAccountSession(ctx context.Context, session IClou
 	defer release()
 	callCtx, cancel := context.WithTimeout(ctx, appleAccountKeepAliveTimeout)
 	metricStarted := time.Now()
-	next, err := keepAliveFn(callCtx, state)
 	fixedProxy, fixedProxyConfigured := s.store.UserProxyConfig(session.OwnerID)
-	if session.ProxyNodeTag != "" || (fixedProxyConfigured && fixedProxy.Enabled) {
+	boundNode := s.store.ProxyPoolNodeForAccount(session.OwnerID, session.AccountID, session.AppleID)
+	var next LoginState
+	var err error
+	if boundNode != "" || (fixedProxyConfigured && fixedProxy.Enabled) {
 		if client, clientErr := s.iCloudClientForAccount(callCtx, session.OwnerID, session.AccountID); clientErr != nil {
 			next, err = state, clientErr
 		} else {
 			next, err = client.keepAliveAppleAccountManageStateUnlocked(callCtx, state)
 		}
+	} else {
+		// Keep the injected/default path for direct accounts and tests. A bound
+		// proxy must never perform an unproxied request first: that caused a
+		// duplicate Apple call and made the new-interface success rate look low.
+		next, err = keepAliveFn(callCtx, state)
 	}
 	cancel()
 	metricMessage := "新接口保活正常"
@@ -6752,12 +6763,40 @@ func (s *Server) publicSession(session *ICloudSession) publicICloudSession {
 		out.ProxyNodeTag = session.ProxyNodeTag
 		out.ProxyNodeName = session.ProxyNodeName
 		out.OwnerID = strings.TrimSpace(session.OwnerID)
-		out.Owner = s.ownerName(session.OwnerID)
-		state := s.store.SnapshotForOwner(session.OwnerID)
-		for _, mailbox := range state.Mailboxes {
-			if strings.TrimSpace(session.AccountID) != "" && constantTimeEqual(mailbox.AccountID, session.AccountID) {
-				out.MailboxCount++
+		// The account record is authoritative for older sessions whose login
+		// state predates proxy binding. Expose the last node test in the list.
+		if node := s.store.ProxyPoolNodeForAccount(session.OwnerID, session.AccountID, session.AppleID); node != "" {
+			out.ProxyNodeTag = node
+			if config, ok := s.store.UserProxyConfig(session.OwnerID); ok {
+				for _, poolNode := range config.PoolNodes {
+					if poolNode.Name != node {
+						continue
+					}
+					out.ProxyNodeName = poolNode.Name
+					out.ProxyLatencyMS = poolNode.LatencyMS
+					out.ProxyExitIP = poolNode.ExitIP
+					out.ProxyTLSOK = poolNode.TLSOK
+					out.ProxyError = poolNode.LastError
+					if poolNode.Available {
+						out.ProxyStatus = "代理正常"
+					} else if poolNode.LastError != "" {
+						out.ProxyStatus = "代理异常"
+					} else {
+						out.ProxyStatus = "未测速"
+					}
+					break
+				}
 			}
+		} else if fixed, ok := s.store.UserProxyConfig(session.OwnerID); ok && fixed.Enabled {
+			out.ProxyStatus = firstNonEmpty(fixed.Status, "固定代理已启用")
+			out.ProxyLatencyMS = fixed.LatencyMS
+			out.ProxyExitIP = fixed.ExitIP
+			out.ProxyTLSOK = fixed.TLSOK
+			out.ProxyError = fixed.LastError
+		}
+		out.Owner = s.ownerName(session.OwnerID)
+		if strings.TrimSpace(session.AccountID) != "" {
+			out.MailboxCount = s.store.MailboxCountForAccount(session.OwnerID, session.AccountID)
 		}
 		if binding, ok := s.store.AutoLoginBinding(session.OwnerID, session.AccountID); ok {
 			out.AutoLoginEnabled = binding.Enabled
