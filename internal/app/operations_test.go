@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -99,5 +100,60 @@ func TestRuntimeMetricsPersistRatesAndLatency(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Total != 2 || rows[0].Success != 1 || rows[0].Failure != 1 || rows[0].SuccessRate != 50 || rows[0].FailureRate != 50 || rows[0].AverageMS != 250 || rows[0].MaxMS != 380 || rows[0].LastOK {
 		t.Fatalf("metric=%+v", rows)
+	}
+}
+
+func TestStartPlusAliasCreateJobRunsInBackground(t *testing.T) {
+	store := newTestStore(t)
+	owner := "owner-alias-job"
+	parent, err := store.AddMailboxForOwner(owner, "acc-job", "主邮箱", "hake_tellers6w@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	job, err := server.startPlusAliasCreateJob(owner, "acc-job", []Mailbox{parent}, 2, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Target != 2 {
+		t.Fatalf("target=%d", job.Target)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		server.aliasJobMu.Lock()
+		status, created := job.Status, job.Created
+		server.aliasJobMu.Unlock()
+		if status == "success" && created == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	server.aliasJobMu.Lock()
+	defer server.aliasJobMu.Unlock()
+	if job.Status != "success" || job.Created != 2 {
+		t.Fatalf("job=%+v", job)
+	}
+}
+
+func TestCreatePlusAliasMailboxesSkipsParentsAlreadyAtTarget(t *testing.T) {
+	store := newTestStore(t)
+	owner := "owner-skip-alias"
+	parent, err := store.AddMailboxForOwner(owner, "acc-skip", "主邮箱", "hake_tellers6w@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlusAliasMailbox(owner, parent.ID, "hake_tellers6w+awds@icloud.com", "已有别名", ""); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	created, _, _, err := server.createPlusAliasMailboxes(context.Background(), owner, []Mailbox{parent}, 1, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 0 {
+		t.Fatalf("expected skip, created=%d", len(created))
+	}
+	if store.MailboxCountForAccount(owner, "acc-skip") != 1 {
+		t.Fatalf("privacy mailbox count should ignore aliases, got %d", store.MailboxCountForAccount(owner, "acc-skip"))
 	}
 }

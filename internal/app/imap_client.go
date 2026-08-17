@@ -859,49 +859,33 @@ func SyncICloudIMAPMessagesWithCursor(ctx context.Context, state LoginState, mai
 	if !imapTaggedOK(loginLines, "A001") {
 		return iCloudIMAPSyncResult{}, errCode("imap_login_failed", "iCloud IMAP 登录失败，请确认 iCloud 邮箱账号和 App 专用密码："+imapResponseSummary(loginLines), false)
 	}
-	selectLines, err := imapCommand(conn, reader, "A002", "SELECT INBOX")
-	if err != nil {
-		return iCloudIMAPSyncResult{}, errCode("imap_select_failed", "打开 iCloud 收件箱失败："+err.Error(), true)
-	}
-	if !imapTaggedOK(selectLines, "A002") {
-		return iCloudIMAPSyncResult{}, errCode("imap_select_failed", "打开 iCloud 收件箱失败："+imapResponseSummary(selectLines), true)
-	}
-	searchLines, err := imapCommand(conn, reader, "A003", imapSearchCommand(state, mailboxes, after))
-	if err != nil {
-		return iCloudIMAPSyncResult{}, errCode("imap_search_failed", "搜索 iCloud IMAP 邮件失败："+err.Error(), true)
-	}
-	if !imapTaggedOK(searchLines, "A003") {
-		return iCloudIMAPSyncResult{}, errCode("imap_search_failed", "搜索 iCloud IMAP 邮件失败："+imapResponseSummary(searchLines), true)
-	}
-	uids := imapSearchUIDs(searchLines)
-	if len(uids) == 0 {
-		_, _ = imapCommand(conn, reader, "A004", "LOGOUT")
-		return iCloudIMAPSyncResult{MessagesByMailbox: map[string][]ICloudSyncedMessage{}}, nil
-	}
-	sortInts(uids)
-	uids, lastUID := imapUIDsForSync(uids, imapUIDNumber(state.IMAPLastSyncUID), maxMessages)
-
-	fetched := make([]iCloudIMAPFetchedMessage, 0, len(uids))
-	tag := 4
-	for _, chunk := range chunkInts(uids, 20) {
-		tag++
-		lines, literals, err := imapCommandWithLiterals(conn, reader, fmt.Sprintf("A%03d", tag), "UID FETCH "+imapUIDSet(chunk)+" (UID BODY.PEEK[]<0.200000>)")
+	tag := 2
+	// Single-mailbox visual/content refreshes must recover filtered mail even
+	// when a shared IMAP inbox is too busy to finish a full INBOX scan.
+	scanJunkFirst := len(mailboxes) <= 3
+	var inboxFetched, junkFetched []iCloudIMAPFetchedMessage
+	var lastUID string
+	if scanJunkFirst {
+		junkFetched, err = imapFetchJunkFolders(conn, reader, &tag, junkLimitFor(maxMessages))
 		if err != nil {
-			return iCloudIMAPSyncResult{}, errCode("imap_fetch_failed", "读取 iCloud IMAP 邮件失败："+err.Error(), true)
+			return iCloudIMAPSyncResult{}, err
 		}
-		if !imapTaggedOK(lines, fmt.Sprintf("A%03d", tag)) {
-			return iCloudIMAPSyncResult{}, errCode("imap_fetch_failed", "读取 iCloud IMAP 邮件失败："+imapResponseSummary(lines), true)
+		inboxFetched, lastUID, err = imapFetchSelectedFolder(conn, reader, &tag, "INBOX", imapSearchCommand(state, mailboxes, after), imapUIDNumber(state.IMAPLastSyncUID), maxMessages)
+		if err != nil {
+			return iCloudIMAPSyncResult{}, err
 		}
-		fetchUIDs := imapFetchUIDs(lines)
-		for i, raw := range literals {
-			uid := ""
-			if i < len(fetchUIDs) {
-				uid = strconv.Itoa(fetchUIDs[i])
-			}
-			fetched = append(fetched, iCloudIMAPFetchedMessage{UID: uid, Raw: raw})
+	} else {
+		inboxFetched, lastUID, err = imapFetchSelectedFolder(conn, reader, &tag, "INBOX", imapSearchCommand(state, mailboxes, after), imapUIDNumber(state.IMAPLastSyncUID), maxMessages)
+		if err != nil {
+			return iCloudIMAPSyncResult{}, err
+		}
+		junkFetched, err = imapFetchJunkFolders(conn, reader, &tag, junkLimitFor(maxMessages))
+		if err != nil {
+			return iCloudIMAPSyncResult{}, err
 		}
 	}
-	_, _ = imapCommand(conn, reader, fmt.Sprintf("A%03d", tag+1), "LOGOUT")
+	_, _ = imapCommand(conn, reader, fmt.Sprintf("A%03d", tag), "LOGOUT")
+	fetched := append(inboxFetched, junkFetched...)
 	return iCloudIMAPSyncResult{
 		MessagesByMailbox: iCloudIMAPMessagesByMailbox(fetched, mailboxes, after, keyword, state.IMAPEmail, state.IMAPUsername),
 		LastUID:           lastUID,
@@ -913,6 +897,225 @@ func SyncICloudIMAPMessagesWithCursor(ctx context.Context, state LoginState, mai
 // oldest to newest and the cursor advances only through messages actually
 // fetched. Once caught up, the remaining budget re-reads a recent UID window
 // so providers that rewrite forwarding headers can be recovered.
+func junkLimitFor(maxMessages int) int {
+	if maxMessages < 20 {
+		return 20
+	}
+	if maxMessages > 40 {
+		return 40
+	}
+	return maxMessages
+}
+
+func imapNextTag(tag *int) string {
+	*tag++
+	return fmt.Sprintf("A%03d", *tag)
+}
+
+func imapFetchSelectedFolder(conn net.Conn, reader *bufio.Reader, tag *int, mailbox, searchCommand string, cursor, limit int) ([]iCloudIMAPFetchedMessage, string, error) {
+	selectTag := imapNextTag(tag)
+	selectLines, err := imapCommand(conn, reader, selectTag, "SELECT "+imapMailboxSpec(mailbox))
+	if err != nil {
+		return nil, "", errCode("imap_select_failed", "打开 IMAP 文件夹失败（"+mailbox+"）："+err.Error(), true)
+	}
+	if !imapTaggedOK(selectLines, selectTag) {
+		return nil, "", errCode("imap_select_failed", "打开 IMAP 文件夹失败（"+mailbox+"）："+imapResponseSummary(selectLines), true)
+	}
+	searchTag := imapNextTag(tag)
+	searchLines, err := imapCommand(conn, reader, searchTag, searchCommand)
+	if err != nil {
+		return nil, "", errCode("imap_search_failed", "搜索 IMAP 邮件失败（"+mailbox+"）："+err.Error(), true)
+	}
+	if !imapTaggedOK(searchLines, searchTag) {
+		return nil, "", errCode("imap_search_failed", "搜索 IMAP 邮件失败（"+mailbox+"）："+imapResponseSummary(searchLines), true)
+	}
+	uids := imapSearchUIDs(searchLines)
+	if len(uids) == 0 {
+		if cursor > 0 {
+			return nil, strconv.Itoa(cursor), nil
+		}
+		return nil, "", nil
+	}
+	sortInts(uids)
+	uids, lastUID := imapUIDsForSync(uids, cursor, limit)
+	fetched := make([]iCloudIMAPFetchedMessage, 0, len(uids))
+	for _, chunk := range chunkInts(uids, 20) {
+		fetchTag := imapNextTag(tag)
+		lines, literals, err := imapCommandWithLiterals(conn, reader, fetchTag, "UID FETCH "+imapUIDSet(chunk)+" (UID BODY.PEEK[]<0.200000>)")
+		if err != nil {
+			return nil, "", errCode("imap_fetch_failed", "读取 IMAP 邮件失败（"+mailbox+"）："+err.Error(), true)
+		}
+		if !imapTaggedOK(lines, fetchTag) {
+			return nil, "", errCode("imap_fetch_failed", "读取 IMAP 邮件失败（"+mailbox+"）："+imapResponseSummary(lines), true)
+		}
+		fetchUIDs := imapFetchUIDs(lines)
+		for i, raw := range literals {
+			uid := ""
+			if i < len(fetchUIDs) {
+				uid = strconv.Itoa(fetchUIDs[i])
+			}
+			fetched = append(fetched, iCloudIMAPFetchedMessage{UID: uid, Raw: raw, Folder: mailbox})
+		}
+	}
+	return fetched, lastUID, nil
+}
+
+func imapFetchJunkFolders(conn net.Conn, reader *bufio.Reader, tag *int, limit int) ([]iCloudIMAPFetchedMessage, error) {
+	listTag := imapNextTag(tag)
+	listLines, err := imapCommand(conn, reader, listTag, `LIST "" "*"`)
+	if err != nil {
+		return nil, errCode("imap_list_failed", "列出 IMAP 文件夹失败："+err.Error(), true)
+	}
+	if !imapTaggedOK(listLines, listTag) {
+		return nil, errCode("imap_list_failed", "列出 IMAP 文件夹失败："+imapResponseSummary(listLines), true)
+	}
+	// Junk folders are small and do not share INBOX UIDs. Always look back a
+	// few calendar days and take the newest messages so a visual/content
+	// after=now-24h cutoff cannot hide today's filtered mail.
+	searchCommand := "UID SEARCH SINCE " + time.Now().Add(-72*time.Hour).Format("2-Jan-2006")
+	var fetched []iCloudIMAPFetchedMessage
+	seen := map[string]bool{}
+	for _, mailbox := range imapListedJunkMailboxes(listLines) {
+		key := strings.ToLower(mailbox)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		messages, _, err := imapFetchSelectedFolderNewest(conn, reader, tag, mailbox, searchCommand, limit)
+		if err != nil {
+			// Missing or unselectable junk folders should not fail inbox sync.
+			if strings.Contains(err.Error(), "imap_select_failed") {
+				continue
+			}
+			return nil, err
+		}
+		fetched = append(fetched, messages...)
+	}
+	return fetched, nil
+}
+
+func imapFetchSelectedFolderNewest(conn net.Conn, reader *bufio.Reader, tag *int, mailbox, searchCommand string, limit int) ([]iCloudIMAPFetchedMessage, string, error) {
+	selectTag := imapNextTag(tag)
+	selectLines, err := imapCommand(conn, reader, selectTag, "SELECT "+imapMailboxSpec(mailbox))
+	if err != nil {
+		return nil, "", errCode("imap_select_failed", "打开 IMAP 文件夹失败（"+mailbox+"）："+err.Error(), true)
+	}
+	if !imapTaggedOK(selectLines, selectTag) {
+		return nil, "", errCode("imap_select_failed", "打开 IMAP 文件夹失败（"+mailbox+"）："+imapResponseSummary(selectLines), true)
+	}
+	searchTag := imapNextTag(tag)
+	searchLines, err := imapCommand(conn, reader, searchTag, searchCommand)
+	if err != nil {
+		return nil, "", errCode("imap_search_failed", "搜索 IMAP 邮件失败（"+mailbox+"）："+err.Error(), true)
+	}
+	if !imapTaggedOK(searchLines, searchTag) {
+		return nil, "", errCode("imap_search_failed", "搜索 IMAP 邮件失败（"+mailbox+"）："+imapResponseSummary(searchLines), true)
+	}
+	uids := imapSearchUIDs(searchLines)
+	if len(uids) == 0 {
+		return nil, "", nil
+	}
+	sortInts(uids)
+	if limit > 0 && len(uids) > limit {
+		uids = uids[len(uids)-limit:]
+	}
+	fetched := make([]iCloudIMAPFetchedMessage, 0, len(uids))
+	for _, chunk := range chunkInts(uids, 20) {
+		fetchTag := imapNextTag(tag)
+		lines, literals, err := imapCommandWithLiterals(conn, reader, fetchTag, "UID FETCH "+imapUIDSet(chunk)+" (UID BODY.PEEK[]<0.200000>)")
+		if err != nil {
+			return nil, "", errCode("imap_fetch_failed", "读取 IMAP 邮件失败（"+mailbox+"）："+err.Error(), true)
+		}
+		if !imapTaggedOK(lines, fetchTag) {
+			return nil, "", errCode("imap_fetch_failed", "读取 IMAP 邮件失败（"+mailbox+"）："+imapResponseSummary(lines), true)
+		}
+		fetchUIDs := imapFetchUIDs(lines)
+		for i, raw := range literals {
+			uid := ""
+			if i < len(fetchUIDs) {
+				uid = strconv.Itoa(fetchUIDs[i])
+			}
+			fetched = append(fetched, iCloudIMAPFetchedMessage{UID: uid, Raw: raw, Folder: mailbox})
+		}
+	}
+	lastUID := ""
+	if len(uids) > 0 {
+		lastUID = strconv.Itoa(uids[len(uids)-1])
+	}
+	return fetched, lastUID, nil
+}
+
+func imapListedJunkMailboxes(lines []string) []string {
+	out := make([]string, 0, 4)
+	seen := map[string]bool{}
+	for _, line := range lines {
+		name, ok := imapListMailboxName(line)
+		if !ok || !imapLooksLikeJunkMailbox(name) {
+			continue
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+func imapListMailboxName(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	upper := strings.ToUpper(trimmed)
+	if !strings.HasPrefix(upper, "* LIST ") {
+		return "", false
+	}
+	rest := strings.TrimSpace(trimmed[len("* LIST "):])
+	if strings.HasPrefix(rest, "(") {
+		if end := strings.Index(rest, ")"); end >= 0 {
+			rest = strings.TrimSpace(rest[end+1:])
+		}
+	}
+	name := ""
+	if idx := strings.LastIndex(rest, `"`); idx > 0 {
+		start := strings.LastIndex(rest[:idx], `"`)
+		if start >= 0 && start < idx && (start == 0 || rest[start-1] == ' ') {
+			quoted := rest[start : idx+1]
+			if strings.Count(quoted, `"`) >= 2 && !strings.EqualFold(strings.Trim(quoted, `"`), "/") {
+				name = strings.ReplaceAll(rest[start+1:idx], `\"`, `"`)
+			}
+		}
+	}
+	if name == "" {
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return "", false
+		}
+		name = fields[len(fields)-1]
+	}
+	name = strings.Trim(strings.TrimSpace(name), "\"")
+	if name == "" || strings.EqualFold(name, "INBOX") {
+		return "", false
+	}
+	return name, true
+}
+
+func imapLooksLikeJunkMailbox(name string) bool {
+	compact := strings.ToLower(strings.NewReplacer(" ", "", "-", "", "_", "", "/", "").Replace(strings.TrimSpace(name)))
+	for _, needle := range []string{"junk", "spam", "bulk", "junkemail", "junkbox", "bulkmail", "垃圾邮件", "垃圾箱", "垃圾郵件"} {
+		if strings.Contains(compact, needle) || strings.Contains(name, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func imapMailboxSpec(name string) string {
+	if strings.EqualFold(strings.TrimSpace(name), "INBOX") {
+		return "INBOX"
+	}
+	return imapQuote(name)
+}
+
 func imapUIDsForSync(uids []int, cursor, limit int) ([]int, string) {
 	if limit <= 0 || len(uids) == 0 {
 		if cursor > 0 {
@@ -1009,6 +1212,9 @@ func imapSelectLastUID(lines []string) int {
 func imapUIDNumber(value string) int {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "imap:")
+	if strings.Contains(value, ":") {
+		return 0
+	}
 	uid, err := strconv.Atoi(value)
 	if err != nil || uid <= 0 {
 		return 0
@@ -1022,8 +1228,9 @@ func imapLineHasExistsEvent(line string) bool {
 }
 
 type iCloudIMAPFetchedMessage struct {
-	UID string
-	Raw []byte
+	UID    string
+	Raw    []byte
+	Folder string
 }
 
 func iCloudIMAPMessagesByMailbox(fetched []iCloudIMAPFetchedMessage, mailboxes []Mailbox, after time.Time, keyword string, ignoredEmails ...string) map[string][]ICloudSyncedMessage {
@@ -1046,6 +1253,16 @@ func iCloudIMAPMessagesByMailbox(fetched []iCloudIMAPFetchedMessage, mailboxes [
 			continue
 		}
 		aliases[id] = email
+		if firstNonEmpty(mailbox.MailboxType, "privacy") == "alias" {
+			if parent, ok := lookupMailboxByID(mailboxes, mailbox.ParentMailboxID); ok {
+				parentEmail := normalizeICloudIMAPEmail(parent.Email)
+				if parentEmail != "" {
+					if _, skip := ignored[parentEmail]; !skip {
+						aliases[id] = parentEmail
+					}
+				}
+			}
+		}
 		// Visual/content synchronization must be able to recover a message that
 		// an older recognizer skipped. The bounded UID rescan already limits the
 		// work, so do not let LastSyncAt permanently hide an older missed UID.
@@ -1084,6 +1301,19 @@ func iCloudIMAPMessagesByMailbox(fetched []iCloudIMAPFetchedMessage, mailboxes [
 	return out
 }
 
+func lookupMailboxByID(mailboxes []Mailbox, id string) (Mailbox, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Mailbox{}, false
+	}
+	for _, mailbox := range mailboxes {
+		if mailbox.ID == id {
+			return mailbox, true
+		}
+	}
+	return Mailbox{}, false
+}
+
 func parseICloudIMAPMessage(item iCloudIMAPFetchedMessage) (ICloudSyncedMessage, string, bool) {
 	msg, err := mail.ReadMessage(bytes.NewReader(item.Raw))
 	if err != nil {
@@ -1100,8 +1330,15 @@ func parseICloudIMAPMessage(item iCloudIMAPFetchedMessage) (ICloudSyncedMessage,
 	}
 	uid := strings.TrimSpace(item.UID)
 	remoteID := "imap"
+	folder := strings.TrimSpace(item.Folder)
+	if folder != "" && !strings.EqualFold(folder, "INBOX") {
+		remoteID += ":" + folder
+	}
 	if uid != "" {
 		remoteID += ":" + uid
+	}
+	if folder != "" && !strings.EqualFold(folder, "INBOX") {
+		uid = ""
 	}
 	recipientBody := strings.Join([]string{content.Text, normalizeMailBodyWithLines(content.HTML)}, "\n")
 	recipients := imapRecipientEvidence(msg.Header, recipientBody)

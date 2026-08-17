@@ -260,7 +260,7 @@ func TestMailboxCodeSuccessIncludesRecognitionMetadata(t *testing.T) {
 	server := &Server{store: newTestStore(t), logger: discardLogger()}
 	recorder := httptest.NewRecorder()
 	message := Message{ID: "msg-1", Subject: "Your verification code", Body: "Code: 482193", ReceivedAt: time.Now()}
-	if !server.writeMailboxCodeSuccess(recorder, Mailbox{Email: "alias@icloud.com"}, message, "482193", "", false) {
+	if !server.writeMailboxCodeSuccess(recorder, httptest.NewRequest(http.MethodGet, "/code", nil), Mailbox{Email: "alias@icloud.com"}, message, "482193", "", false) {
 		t.Fatal("writeMailboxCodeSuccess returned false")
 	}
 	var response map[string]any
@@ -675,6 +675,67 @@ func TestICloudClientMoveRemoteMessagesToTrashAndEmptyTrash(t *testing.T) {
 	}
 	if destroyed != 1 || !sawDestroy {
 		t.Fatalf("destroyed=%d sawDestroy=%v, want 1", destroyed, sawDestroy)
+	}
+}
+
+func TestFormatTimeUsesBeijingTime(t *testing.T) {
+	got := formatTime(time.Date(2026, 8, 16, 22, 49, 7, 0, time.UTC))
+	if got != "2026-08-17 06:49" {
+		t.Fatalf("formatTime() = %q, want 2026-08-17 06:49", got)
+	}
+}
+
+func TestPlusAliasLocalPartUsesParentPlusTag(t *testing.T) {
+	email, tag, err := plusAliasLocalPart("Hake_Tellers6w@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag == "" || !strings.HasPrefix(email, "hake_tellers6w+") || !strings.HasSuffix(email, "@icloud.com") || strings.Contains(email, "++") {
+		t.Fatalf("plus alias = %q tag=%q", email, tag)
+	}
+}
+
+func TestCreatePlusAliasMailboxesForAllParents(t *testing.T) {
+	store := newTestStore(t)
+	first, err := store.AddMailboxForOwner("owner-alias", "acc-alias", "主1", "hake_tellers6w@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.AddMailboxForOwner("owner-alias", "acc-alias", "主2", "burnout58elixir@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	created, _, failures, err := server.createPlusAliasMailboxes(context.Background(), "owner-alias", []Mailbox{first, second}, 1, "批次", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 || len(created) != 2 {
+		t.Fatalf("created=%d failures=%v", len(created), failures)
+	}
+	if created[0].MailboxType != "alias" || created[0].ParentMailboxID != first.ID || !strings.HasPrefix(created[0].Email, "hake_tellers6w+") {
+		t.Fatalf("first alias = %+v", created[0])
+	}
+	if created[1].ParentMailboxID != second.ID || !strings.HasPrefix(created[1].Email, "burnout58elixir+") {
+		t.Fatalf("second alias = %+v", created[1])
+	}
+	privacy := filterMailboxesForList(append([]Mailbox{first, second}, created...), nil, url.Values{"mailbox_type": []string{"privacy"}})
+	aliases := filterMailboxesForList(append([]Mailbox{first, second}, created...), nil, url.Values{"mailbox_type": []string{"alias"}})
+	if len(privacy) != 2 || len(aliases) != 2 {
+		t.Fatalf("privacy=%d aliases=%d", len(privacy), len(aliases))
+	}
+}
+
+func TestMailboxRecipientMatchesPlusAliasAndParent(t *testing.T) {
+	recipients := "To: Hide My Email <hake_tellers6w+awds@icloud.com>\nX-ICLOUD-HME: p=hake_tellers6w+awds@icloud.com"
+	if !mailboxRecipientMatches(recipients, "hake_tellers6w@icloud.com") {
+		t.Fatal("parent should match plus-tag recipient")
+	}
+	if !mailboxRecipientMatches(recipients, "hake_tellers6w+awds@icloud.com") {
+		t.Fatal("exact plus alias should match")
+	}
+	if mailboxRecipientMatches(recipients, "burnout58elixir@icloud.com") {
+		t.Fatal("other mailbox should not match")
 	}
 }
 
@@ -3762,6 +3823,62 @@ func TestMailboxPublicAPIRateLimit(t *testing.T) {
 			t.Fatalf("request %d = %d body=%s, want %d", i+1, rr.Code, rr.Body.String(), want)
 		}
 	}
+	browser := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Accept", "text/html")
+	handler.ServeHTTP(browser, req)
+	if browser.Code != http.StatusOK || !strings.Contains(browser.Body.String(), "246810") {
+		t.Fatalf("browser refresh should skip rate limit: %d %s", browser.Code, browser.Body.String())
+	}
+}
+
+func TestMailboxBrowserCodeAndContentAutoRefresh(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveICloudSessionForOwner("owner-refresh", testIMAPSession("owner-refresh", "", "receiver-refresh@icloud.com")); err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := store.AddMailboxForOwner("owner-refresh", "", "Alias", "refresh@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(Config{}, store, discardLogger())
+	codePath := "/api/v1/access/" + url.PathEscape(mailbox.APIToken) + "/mailboxes/" + url.PathEscape(mailbox.Email) + "/code"
+	contentPath := "/api/v1/access/" + url.PathEscape(mailbox.APIToken) + "/mailboxes/" + url.PathEscape(mailbox.Email) + "/content"
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, codePath, nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "location.reload") || !strings.Contains(rr.Body.String(), "no_code") {
+		t.Fatalf("browser no-code refresh = %d %s", rr.Code, rr.Body.String())
+	}
+
+	if _, err = store.AddMessage(mailbox.ID, "Your code is 246810", "sender@example.com", "246810", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, codePath, nil)
+	req.Header.Set("Accept", "text/html")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "246810") || !strings.Contains(rr.Body.String(), "已停止自动刷新") || strings.Contains(rr.Body.String(), "location.reload") {
+		t.Fatalf("browser code success should stop refresh: %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, codePath, nil)
+	req.Header.Set("Accept", "application/json")
+	handler.ServeHTTP(rr, req)
+	if rr.Header().Get("Content-Type") != "application/json; charset=utf-8" || strings.Contains(rr.Body.String(), "<!doctype html>") {
+		t.Fatalf("script code request should stay JSON: %s %s", rr.Header().Get("Content-Type"), rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, contentPath, nil)
+	req.Header.Set("Accept", "text/html")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "Your code is 246810") || strings.Contains(rr.Body.String(), "location.reload") {
+		t.Fatalf("browser content success should stop refresh: %s", rr.Body.String())
+	}
 }
 
 func TestMailboxCodeQuerySyncsBeforeReturningCachedOldCode(t *testing.T) {
@@ -3885,7 +4002,7 @@ func TestMailboxContentReturnsRecentCacheWithoutSync(t *testing.T) {
 	if _, err = store.AddMessage(mailbox.ID, "旧邮件", "old@example.com", "expired body", time.Now().Add(-10*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.AddMessage(mailbox.ID, "最新邮件", "new@example.com", "fresh body", time.Now().Add(-time.Minute)); err != nil {
+	if _, err = store.AddMessage(mailbox.ID, "最新邮件", "new@example.com", "fresh body", time.Now().Add(-20*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer(Config{}, store, discardLogger())
@@ -4466,11 +4583,11 @@ func TestLatestMailboxCodeUsesIMAPUIDWhenTimesMatch(t *testing.T) {
 	}
 }
 
-func TestLatestMailboxCodeOnlyUsesTenSecondWindow(t *testing.T) {
+func TestLatestMailboxCodeOnlyUsesSixtySecondWindow(t *testing.T) {
 	now := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
 	messages := []Message{
-		{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-11 * time.Second)},
-		{ID: "older", Subject: "ChatGPT code", Body: "code 222222", ReceivedAt: now.Add(-9 * time.Second)},
+		{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-61 * time.Second)},
+		{ID: "older", Subject: "ChatGPT code", Body: "code 222222", ReceivedAt: now.Add(-59 * time.Second)},
 		{ID: "newest", Subject: "ChatGPT code", Body: "code 333333", ReceivedAt: now.Add(-time.Second)},
 	}
 
@@ -4479,7 +4596,7 @@ func TestLatestMailboxCodeOnlyUsesTenSecondWindow(t *testing.T) {
 		t.Fatalf("latestMailboxCode() msg=%s code=%q ok=%v, want newest 333333 true", msg.ID, code, ok)
 	}
 
-	tooOld := Message{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-11 * time.Second)}
+	tooOld := Message{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-61 * time.Second)}
 	_, _, ok = latestMailboxCode([]Message{tooOld}, time.Time{}, "ChatGPT", now)
 	if ok {
 		t.Fatalf("latestMailboxCode(old only) ok=true, want false")
@@ -4489,7 +4606,7 @@ func TestLatestMailboxCodeOnlyUsesTenSecondWindow(t *testing.T) {
 func TestLatestMailboxCodeUsesCreatedAtWhenReceivedAtMissing(t *testing.T) {
 	now := time.Date(2026, 6, 21, 20, 6, 0, 0, time.UTC)
 	messages := []Message{
-		{ID: "old", Subject: "ChatGPT code", Body: "code 111111", CreatedAt: now.Add(-11 * time.Second)},
+		{ID: "old", Subject: "ChatGPT code", Body: "code 111111", CreatedAt: now.Add(-61 * time.Second)},
 		{ID: "new", Subject: "ChatGPT code", Body: "code 222222", CreatedAt: now.Add(-time.Second)},
 	}
 
@@ -6866,6 +6983,75 @@ func createTestMailboxWithCookie(t *testing.T, handler http.Handler, cookie *htt
 		t.Fatal(err)
 	}
 	return body.Mailbox
+}
+
+func TestNormalUserCanAccessWebLoginCheckAndAutoLoginLogs(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{RegistrationEnabled: true}, store, discardLogger())
+	adminCookie, _ := registerTestUser(t, handler, "admin-allowlist", "password123")
+	userCookie, user := registerTestUser(t, handler, "member-allowlist", "password123")
+	_ = adminCookie
+	if user.IsAdmin {
+		t.Fatal("second registered user should not be admin")
+	}
+	if _, err := store.AddAccountForOwner(user.ID, "allowlist", "member@example.com", ""); err != nil {
+		t.Fatal(err)
+	}
+	accounts := store.SnapshotForOwner(user.ID).Accounts
+	if len(accounts) == 0 {
+		t.Fatal("expected created account")
+	}
+	accountID := accounts[0].ID
+	if err := store.SaveICloudSessionForOwner(user.ID, ICloudSession{
+		OwnerID:   user.ID,
+		AccountID: accountID,
+		AppleID:   "member@example.com",
+		SavedAt:   time.Now(),
+		LoginStates: []LoginState{{
+			Kind: LoginStateICloudWeb,
+			Host: "www.icloud.com.cn",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/icloud/web-login/check", strings.NewReader(`{"account_id":"`+accountID+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(userCookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatalf("web-login/check rejected normal user: %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/icloud/auto-login/logs?account_id="+accountID, nil)
+	req.AddCookie(userCookie)
+	handler.ServeHTTP(rr, req)
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatalf("auto-login/logs rejected normal user: %s", rr.Body.String())
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("auto-login/logs = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicMailboxAPIsDoNotRevealMissingMailbox(t *testing.T) {
+	handler := NewServer(Config{}, newTestStore(t), discardLogger())
+	for _, path := range []string{
+		"/api/v1/access/dummy-token/mailboxes/missing%40icloud.com/code",
+		"/api/v1/access/dummy-token/mailboxes/missing%40icloud.com/content",
+		"/api/v1/access/dummy-token/mailboxes/missing%40icloud.com/view",
+	} {
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s = %d body=%s, want 401", path, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "mailbox_not_found") {
+			t.Fatalf("%s leaked mailbox existence: %s", path, rr.Body.String())
+		}
+	}
 }
 
 func discardLogger() *slog.Logger {

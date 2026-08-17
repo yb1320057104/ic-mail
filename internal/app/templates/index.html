@@ -1335,20 +1335,18 @@
         <button class="nav-item" data-view="create" onclick="setActiveView('create')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg></span><span>创建邮箱</span></button>
         <button class="nav-item" data-view="alias" onclick="setActiveView('alias')"><span class="nav-ico">↳</span><span>生成别名邮箱</span></button>
         <button class="nav-item" data-view="mailboxes" onclick="setActiveView('mailboxes')"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.4 6.3 6.7A2 2 0 0 1 8.2 5.4h7.6a2 2 0 0 1 1.9 1.3L20 13.4"/><path d="M4 13.4h4.2l1.3 2.2h5l1.3-2.2H20v3.7A1.9 1.9 0 0 1 18.1 19.2H5.9A1.9 1.9 0 0 1 4 17.1z"/></svg></span><span>邮箱池</span><span class="count-dot" id="navMailboxCount">0</span></button>
+        <button class="nav-item" data-view="alias-pool" onclick="setActiveView('alias-pool')"><span class="nav-ico">⊕</span><span>别名邮箱池</span><span class="count-dot" id="navAliasCount">0</span></button>
         <button class="nav-item" data-view="redemption" onclick="setActiveView('redemption')"><span class="nav-ico">⇄</span><span>兑换隐私邮箱</span><span class="count-dot" id="navRedemptionCount">0</span></button>
-        <div class="nav-group-label">账号数据</div>
-        <button class="nav-item" data-view="data-overview" onclick="setActiveView('data-overview')"><span class="nav-ico">⌂</span><span>数据仪表盘</span></button>
+        <div class="nav-group-label admin-data-nav" hidden>平台管理</div>
         <button class="nav-item admin-data-nav" data-view="data-accountManage" onclick="setActiveView('data-accountManage')" hidden><span class="nav-ico">▣</span><span>账号归属</span></button>
         <button class="nav-item admin-data-nav" data-view="data-users" onclick="setActiveView('data-users')" hidden><span class="nav-ico">◉</span><span>用户列表</span></button>
-        <button class="nav-item" data-view="data-mailboxes" onclick="setActiveView('data-mailboxes')"><span class="nav-ico">✉</span><span>邮箱数据</span></button>
-        <button class="nav-item" data-view="data-accounts" onclick="setActiveView('data-accounts')"><span class="nav-ico">◎</span><span>登录账号数据</span></button>
+        <button class="nav-item admin-data-nav" data-view="data-mailboxes" onclick="setActiveView('data-mailboxes')" hidden><span class="nav-ico">✉</span><span>邮箱数据</span></button>
+        <button class="nav-item admin-data-nav" data-view="data-accounts" onclick="setActiveView('data-accounts')" hidden><span class="nav-ico">◎</span><span>登录账号数据</span></button>
         <button class="nav-item admin-data-nav" data-view="data-sessions" onclick="setActiveView('data-sessions')" hidden><span class="nav-ico">◫</span><span>用户登录态</span></button>
-        <div class="nav-group-label admin-data-nav" hidden>平台管理</div>
         <button class="nav-item admin-data-nav" data-view="data-invites" onclick="setActiveView('data-invites')" hidden><span class="nav-ico">✦</span><span>注册邀请</span></button>
         <button class="nav-item admin-data-nav" data-view="data-announcements" onclick="setActiveView('data-announcements')" hidden><span class="nav-ico">▤</span><span>平台公告</span></button>
         <button class="nav-item admin-data-nav" data-view="data-audit" onclick="setActiveView('data-audit')" hidden><span class="nav-ico">◉</span><span>安全审计</span></button>
         <button class="nav-item admin-data-nav" data-view="data-operations" onclick="setActiveView('data-operations')" hidden><span class="nav-ico">⚙</span><span>运维中心</span></button>
-        <button class="nav-item" data-view="data-logs" onclick="setActiveView('data-logs')"><span class="nav-ico">☰</span><span>运行日志</span></button>
       </nav>
     </aside>
 
@@ -1401,8 +1399,13 @@
           <section class="grid">
             <div class="card"><strong id="accountCount">0</strong><span>登录账号</span></div>
             <div class="card"><strong id="mailboxCount">0</strong><span>隐私邮箱</span></div>
+            <div class="card"><strong id="aliasMailboxCount">0</strong><span>别名邮箱</span></div>
             <div class="card"><strong id="messageCount">0</strong><span>验证码邮件</span></div>
             <div class="card"><strong id="apiStatus">-</strong><span>API 状态</span></div>
+          </section>
+          <section class="panel" style="margin:0 0 16px;padding:16px 18px">
+            <div class="panel-head" style="padding:0 0 10px"><div><h3>运行数据</h3><p>原数据仪表盘已合并到这里，可直接查看账号、邮箱和运行概况。</p></div><button type="button" onclick="openMergedOverviewDashboard()">打开详细数据</button></div>
+            <div id="overviewDashboardHint" class="muted">登录后会显示当前账号范围内的统计。</div>
           </section>
           <section class="quick-grid" aria-label="快捷组件">
             <button class="quick-card" onclick="setActiveView('session')">
@@ -1557,24 +1560,22 @@
         </section>
 
         <section class="view-section panel" data-view="alias">
-          <div class="panel-head"><div><h2>一键生成别名邮箱</h2><p>独立创建别名邮箱，无需指定某个父邮箱；系统自动关联所选账号最近创建的普通隐私邮箱。</p></div></div>
+          <div class="panel-head"><div><h2>一键生成别名邮箱</h2><p>选择一个 Apple 账号后，系统会对该账号下所有普通隐私邮箱批量生成 <code>主邮箱+随机字符@icloud.com</code> 别名。别名邮件仍会进入主邮箱，可在“别名邮箱池”里单独管理。</p></div></div>
           <div class="alias-create-layout">
             <section class="alias-create-card">
-              <h3>生成配置</h3><p>选择一个 Apple 账号并设置数量，点击一次即可提交。别名会在邮箱池中标明所属隐私邮箱。</p>
+              <h3>生成配置</h3><p>例如主邮箱 <code>hake_tellers6w@icloud.com</code>，生成后类似 <code>hake_tellers6w+awds@icloud.com</code>。数量是每个主邮箱各生成多少个。</p>
               <div class="field-grid" style="padding:0">
                 <label class="full">Apple 账号<select id="aliasAccountSelect"><option value="">请先保存可用于创建的登录态</option></select></label>
-                <label>生成数量<input id="aliasCount" type="number" min="1" max="100" value="1"></label>
-                <label>创建接口<select id="aliasCreateChannel"><option value="auto">新接口优先，失败用旧接口</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select></label>
+                <label>每个主邮箱生成数量<input id="aliasCount" type="number" min="1" max="200" value="1"></label>
                 <label>标签<input id="aliasLabel" placeholder="例如：别名批次-01"></label>
-                <label>备注<input id="aliasNote" placeholder="选填"></label>
+                <label class="full">备注<input id="aliasNote" placeholder="选填"></label>
               </div>
-              <div class="toolbar" style="padding:14px 0 0"><button id="createAliasButton" class="primary" onclick="createAliasMailboxes()">一键生成别名邮箱</button><span id="aliasCreateStatus" class="muted">尚未提交</span></div>
+              <div class="toolbar" style="padding:14px 0 0"><button id="createAliasButton" class="primary" onclick="createAliasMailboxes()">一键生成别名邮箱</button><button type="button" onclick="setActiveView('alias-pool')">查看别名邮箱池</button><span id="aliasCreateStatus" class="muted">尚未提交</span></div>
             </section>
             <aside class="alias-create-card">
-              <h3>归属规则</h3>
-              <p>系统会从所选 Apple 账号中找到最近创建的普通隐私邮箱作为归属记录，不需要手工输入邮箱地址。</p>
-              <div class="notice" style="margin:0">如果该账号还没有普通隐私邮箱，请先进入“创建邮箱”生成至少一个普通隐私邮箱。</div>
-              <div class="toolbar" style="padding:14px 0 0"><button type="button" onclick="setActiveView('create')">前往创建普通邮箱</button><button type="button" onclick="setActiveView('mailboxes')">查看邮箱池</button></div>
+              <h3>当前账号主邮箱</h3>
+              <p>只会给下面这些普通隐私邮箱生成别名，不会再向 Apple 申请新的 Hide My Email。</p>
+              <div id="aliasParentPreview" class="notice" style="margin:0">请先选择一个 Apple 账号。</div>
             </aside>
           </div>
         </section>
@@ -1642,9 +1643,62 @@
           </div></section>
         </section>
 
+        <section class="view-section panel" data-view="alias-pool">
+          <div class="panel-head">
+            <div><h2>别名邮箱池</h2><p>专门管理 <code>主邮箱+随机字符@icloud.com</code> 别名。别名邮件仍会进入对应主邮箱，这里可以单独查询、导出、取码和维护状态。</p></div>
+          </div>
+          <div class="mailbox-workflow"><div><strong>1. 查询</strong><span>按主邮箱、账号和状态筛选别名。</span></div><div><strong>2. 批量处理</strong><span>导出、改状态或重置 API。</span></div><div><strong>3. 账号范围</strong><span>按 Apple 账号快速切换。</span></div><div><strong>4. 别名列表</strong><span>查看归属主邮箱并复制取码地址。</span></div></div>
+          <section class="workspace-block">
+          <div class="workspace-block-head"><div><h3>1. 查询</h3><p>筛选只影响当前别名列表，不会改主邮箱。</p></div><span class="pill">别名专用</span></div>
+          <div class="toolbar list-toolbar workspace-block-body">
+            <label class="search-field">搜索别名或主邮箱
+              <input id="aliasMailboxSearch" placeholder="输入别名、主邮箱或账号" onkeydown="if(event.key==='Enter'){event.preventDefault();applyAliasMailboxFilters()}">
+            </label>
+            <div class="mailbox-filter-row">
+              <label class="mailbox-filter-field">邮箱状态<select id="aliasMailboxStatusFilter"><option value="">全部状态</option><option value="available">可用</option><option value="used">已使用</option><option value="failed">失败</option><option value="disabled">停用</option></select></label>
+              <label class="mailbox-filter-field">API 状态<select id="aliasMailboxAPIFilter"><option value="">全部</option><option value="active">API启用</option><option value="disabled">API停用</option></select></label>
+              <label class="mailbox-filter-field">导出状态<select id="aliasMailboxExportStatusFilter"><option value="">全部导出状态</option><option value="exported">已导出</option><option value="unexported">未导出</option></select></label>
+            </div>
+            <div class="mailbox-control-stack">
+              <div class="mailbox-action-row">
+                <button class="primary" onclick="applyAliasMailboxFilters()">搜索 / 应用筛选</button>
+                <button onclick="clearAliasMailboxSearch()">清空全部条件</button>
+                <button type="button" onclick="setActiveView('alias')">返回生成别名</button>
+              </div>
+              <div class="pager">
+                <label class="page-size-control">每页
+                  <input id="aliasMailboxPageSize" type="number" min="1" max="500" value="10" onchange="setAliasMailboxPageSize()">
+                </label>
+                <button id="aliasMailboxPrevPage" onclick="changeAliasMailboxPage(-1)">上一页</button>
+                <span id="aliasMailboxPageInfo">第 1/1 页</span>
+                <button id="aliasMailboxNextPage" onclick="changeAliasMailboxPage(1)">下一页</button>
+              </div>
+            </div>
+          </div>
+          </section>
+          <section class="workspace-block">
+            <div class="workspace-block-head"><div><h3>2. 批量处理</h3><p>以下功能默认只作用于已经勾选的别名邮箱。</p></div><strong id="aliasMailboxSelectedCount" class="muted">已选择 0 个</strong></div>
+            <div class="workspace-block-body">
+              <div class="mailbox-action-groups">
+                <section class="mailbox-action-group"><h4>状态维护</h4><div class="toolbar"><button onclick="batchAliasMailboxStatus('available')">设为可用</button><button onclick="batchAliasMailboxStatus('used')">设为已使用</button><button onclick="batchAliasMailboxStatus('disabled')">停用 API</button></div></section>
+                <section class="mailbox-action-group"><h4>导出数据</h4><div class="toolbar"><select id="batchAliasMailboxAPIExportType"><option value="json">JSON取码地址</option><option value="visual">邮件可视化取码地址</option><option value="content">邮件内容取码地址</option></select><button onclick="batchExportAliasMailboxes('api')">导出所选 API</button><button onclick="batchExportAliasMailboxes('email')">只导出邮箱</button></div></section>
+                <section class="mailbox-action-group"><h4>加入兑换池</h4><p>把符合条件的邮箱加入兑换库存。</p><div class="toolbar"><button onclick="addSelectedAliasToRedemptionPool()">加入兑换池</button></div></section>
+              </div>
+              <details class="mailbox-danger-zone"><summary>API 地址维护与删除（高风险操作）</summary><div><p class="muted">重置后旧取码地址会立即失效。</p><div class="toolbar"><button onclick="batchRotateAliasMailboxAPIs()">重置所选取码 API</button><button class="danger" onclick="batchDeleteAliasMailboxes()">删除选中别名</button></div></div></details>
+            </div>
+          </section>
+          <section class="workspace-block"><div class="workspace-block-head"><div><h3>3. 账号范围</h3><p>点击账号标签只查看该 Apple 登录态下的别名邮箱。</p></div></div><div id="aliasMailboxAccountTabs" class="account-tabs workspace-block-body"></div></section>
+          <section class="workspace-block"><div class="workspace-block-head"><div><h3>4. 别名数据列表</h3><p>每行都会标明归属主邮箱；取码和查看邮件走该别名自己的 API 地址。</p></div></div><div class="table-wrap">
+            <table>
+              <thead><tr><th><input type="checkbox" id="aliasMailboxSelectAll" onchange="toggleAllVisibleAliasMailboxes(this.checked)" title="全选当前页"></th><th>标签 / ID</th><th>别名与主邮箱</th><th>服务状态</th><th>导出状态</th><th>收件</th><th>最近同步</th><th>验证码</th><th>操作</th></tr></thead>
+              <tbody id="aliasMailboxes"></tbody>
+            </table>
+          </div></section>
+        </section>
+
         <section class="view-section panel" data-view="redemption">
           <div class="panel-head"><div><h2>兑换隐私邮箱</h2><p>把未导出、状态可用且可正常接码的邮箱加入专属兑换池，并生成一次性兑换码。</p></div><button class="primary" onclick="loadRedemptionPool()">刷新兑换池</button></div>
-          <div class="toolbar"><label>兑换池类型<select id="redemptionPoolType" onchange="loadRedemptionPool()"><option value="primary">全新邮箱兑换池</option><option value="secondhand">二手邮箱兑换池（导出满7天）</option></select></label><span class="muted">二手邮箱必须接码正常；兑换后满7天可以再次放入，循环使用。</span></div>
+          <div class="toolbar"><label>兑换池类型<select id="redemptionPoolType" onchange="loadRedemptionPool()"><option value="primary">全新邮箱兑换池</option><option value="secondhand">二手邮箱兑换池（导出满7天）</option><option value="alias">邮箱兑换池</option></select></label><span class="muted">二手邮箱必须接码正常；兑换后满7天可以再次放入，循环使用。</span></div>
           <section class="grid"><div class="card"><strong id="redemptionStock">0</strong><span>当前可兑换</span></div><div class="card"><strong id="redemptionRedeemed">0</strong><span>累计已兑换</span></div><div class="card"><strong id="redemptionEligible">0</strong><span>可加入邮箱</span></div></section>
           <div class="field-grid"><label class="full">专属兑换链接<div class="toolbar"><input id="redemptionPoolURL" readonly style="flex:1"><button onclick="copyRedemptionPoolURL()">复制链接</button><button onclick="openRedemptionPool()">打开页面</button></div></label><label>批次名称<input id="redemptionBatchName" placeholder="例如：8月活动"></label><label>生成兑换码数量<input id="redemptionCodeCount" type="number" min="1" max="1000" value="1"></label><label>每个兑换码发放数量<input id="redemptionQuantity" type="number" min="1" max="500" value="1"></label><label>有效期类型<select id="redemptionValidityType" onchange="toggleRedemptionValidity()"><option value="days">按天数过期</option><option value="permanent">永久有效</option></select></label><label id="redemptionValidDaysField">有效天数<input id="redemptionValidDays" type="number" min="1" max="3650" value="30"></label><label>导出批次<select id="redemptionExportBatch"><option value="">全部未使用批次</option></select></label><div class="toolbar"><button class="primary" onclick="createRedemptionCode()">批量生成兑换码</button><button onclick="exportRedemptionCodes()">按所选批次导出 TXT</button><button onclick="addAllEligibleToRedemptionPool()">全部符合条件的邮箱加入池</button></div></div>
           <div class="notice">兑换成功会把邮箱标记为“已导出”并移出库存；撤销该批兑换并重置地址后，旧链接和原兑换码立即失效，邮箱恢复到兑换池。</div>
@@ -1822,8 +1876,9 @@
       session: ['登录态', '保存和检测 Apple 登录态。'],
       proxy: ['代理管理', '管理用户可信固定代理和账号代理池。'],
       create: ['创建邮箱', '按已保存账号创建 Hide My Email 地址。'],
-      alias: ['生成别名邮箱', '选择一个 Apple 账号和数量，一键批量创建别名邮箱。'],
-      mailboxes: ['邮箱池', '搜索、复制 API、取码和维护邮箱状态。'],
+      alias: ['生成别名邮箱', '按 Apple 账号下全部主隐私邮箱批量生成 +随机字符 别名。'],
+      mailboxes: ['邮箱池', '搜索、复制 API、取码和维护普通隐私邮箱。'],
+      'alias-pool': ['别名邮箱池', '管理主邮箱+随机字符生成的别名邮箱。'],
       redemption: ['兑换隐私邮箱', '管理专属兑换池、一次性兑换码和已兑换批次。'],
       'data-overview': ['账号数据 · 仪表盘', '集中查看平台账号、邮箱和运行数据。'],
       'data-accountManage': ['账号数据 · 账号归属', '按平台用户核对账号、邮箱和邮件归属。'],
@@ -1842,8 +1897,9 @@
 	  session:'管理多个 Apple 登录态；按状态和接口筛选账号，展开查看每个登录态所属的子邮箱。',
 	  proxy:'配置当前用户的可信固定代理，导入和测速代理池节点，并查看节点绑定的账号。',
 	  create:'选择一个或多个可用 Apple 账号，配置新旧接口策略，手动或定时创建隐私邮箱。',
-	  alias:'独立生成别名邮箱；无需指定父邮箱，系统自动记录所选账号最近普通隐私邮箱的归属关系。',
-	  mailboxes:'组合搜索全部隐私邮箱；按账号、邮箱状态、API、iCloud 和收件数量筛选并执行取码、同步、导出与状态维护。',
+	  alias:'选择一个 Apple 账号后，对该账号下所有普通隐私邮箱批量生成 主邮箱+随机字符@icloud.com 别名。',
+	  mailboxes:'组合搜索全部普通隐私邮箱；按账号、邮箱状态、API、iCloud 和收件数量筛选并执行取码、同步、导出与状态维护。',
+		  'alias-pool':'专门管理别名邮箱；按主邮箱、账号和状态筛选，并复用邮箱池的导出、取码和状态维护能力。',
 	  redemption:'将未导出且可正常接码的邮箱加入专属兑换池，生成定量一次性兑换码，并管理已兑换批次的取码地址。',
       'data-overview':'账号数据功能已经整合到当前工作台，使用左侧分类即可切换，不需要离开创建邮箱页面。',
       'data-accountManage':'按用户查看账号、邮箱和邮件归属，避免多人数据混淆。',
@@ -1879,14 +1935,19 @@
         tips:['达到 750 个子邮箱上限的账号会被跳过。','Apple 返回临时异常时系统会退避，请避免短时间高频创建。']
       },
       alias: {
-        title:'生成别名邮箱教学', summary:'别名创建已经从普通邮箱高级设置中独立出来，只需选择一个账号和数量即可提交。',
-        steps:['选择一个已经保存新接口或旧接口登录态的 Apple 账号。','填写生成数量，可选填写标签和备注。','选择创建接口；通常保留“新接口优先，失败用旧接口”。','点击“一键生成别名邮箱”，完成后进入邮箱池查看别名及归属关系。'],
-        tips:['所选账号必须先有至少一个普通隐私邮箱。','系统自动关联该账号最近创建的普通隐私邮箱，不需要手工指定。']
+        title:'生成别名邮箱教学', summary:'别名不再向 Apple 申请新的 Hide My Email，而是给现有主邮箱生成 plus 地址。',
+        steps:['选择一个已经保存登录态的 Apple 账号。','系统会列出该账号下全部普通隐私邮箱作为主邮箱。','填写每个主邮箱要生成的数量，可选填写标签和备注。','点击“一键生成别名邮箱”，完成后到“别名邮箱池”查看、导出和取码。'],
+        tips:['别名格式是 主邮箱名+随机字符@icloud.com。','别名邮件仍会进入主邮箱，所以取码会归到对应主邮箱。','所选账号必须先有至少一个普通隐私邮箱。']
       },
       mailboxes: {
         title:'隐私邮箱池教学', summary:'在这里搜索、筛选、同步、取码、查看邮件、导出和批量维护隐私邮箱。',
         steps:['填写邮箱、所属账号或标签等条件，选择状态、接码、导出和收件数条件后点击“搜索”。','勾选邮箱后使用顶部批量操作；跨页操作前核对选中数量和筛选范围。','点击“验证码”同步最新邮件并取码；点击“查看邮箱”查看已同步的可视化邮件。','同步旧 Apple 账号历史邮箱时先选择登录态，再点击“同步该登录态全部历史隐私邮箱”。','导出时选择 JSON、可视化或邮件内容地址；需要换新地址时使用批量重置或导入旧地址更新。'],
         tips:['已加入兑换池的邮箱，普通用户只能通过兑换码发放，不能再次从邮箱池导出。','批量删除和邮件删除可能无法恢复，执行前先核对筛选条件。','显示“当前不可接码”时，应先修复所属账号的 IMAP 取码状态。']
+      },
+      'alias-pool': {
+        title:'别名邮箱池教学', summary:'别名邮箱池复刻普通邮箱池的查询、导出、取码和状态维护，但只显示 plus 别名。',
+        steps:['按别名、主邮箱或账号搜索。','勾选后可批量改状态、导出 API 或只导出邮箱。','点击验证码或查看邮箱时，邮件仍按主邮箱同步。','重置 API 只会作废该别名自己的取码地址。'],
+        tips:['删除别名不会删除主隐私邮箱。','别名和主邮箱共用 IMAP 收件，主邮箱接码异常时别名也不能取码。']
       },
       redemption: {
         title:'兑换隐私邮箱教学', summary:'把符合条件的邮箱加入个人兑换池，生成兑换码供客户一次性领取，并按批次管理。',
@@ -1915,10 +1976,17 @@
       $('featureGuideModal').classList.remove('show');
     }
 
-    const ADMIN_DATA_VIEWS = new Set(['data-accountManage','data-users','data-sessions','data-invites','data-announcements','data-audit','data-operations']);
+    function openMergedOverviewDashboard() {
+      if (currentUser && currentUser.is_admin) {
+        setActiveView('data-operations');
+        return;
+      }
+      setActiveView('mailboxes');
+    }
     function setActiveView(view) {
       let normalized = viewMeta[view] ? view : 'overview';
-      if (currentUser && !currentUser.is_admin && ADMIN_DATA_VIEWS.has(normalized)) normalized = 'data-overview';
+      if (normalized === 'data-overview') normalized = 'overview';
+      if (currentUser && !currentUser.is_admin && ADMIN_DATA_VIEWS.has(normalized)) normalized = 'overview';
       if ($('pageGuide')) $('pageGuide').innerHTML = `<strong>${esc(viewMeta[normalized][0])}</strong><span>${esc(viewDescriptions[normalized] || '')}</span><button type="button" onclick="openFeatureGuide('${normalized}')">查看本页教学</button>`;
       const meta = viewMeta[normalized];
       for (const button of document.querySelectorAll('.nav-item[data-view]')) {
@@ -1935,6 +2003,8 @@
         localStorage.setItem(viewStorageKey, normalized);
       } catch (_) {}
       activeView = normalized;
+      if (normalized === 'alias') updateAliasParentPreview();
+      if (normalized === 'alias-pool') loadAliasMailboxPage({silent:true}).catch(err => log('加载别名邮箱池失败：' + err.message));
       if (accountDataView) {
         const frame = $('accountDataFrame');
         const nextURL = `/manage?embedded=1&view=${encodeURIComponent(accountDataView)}`;
@@ -2018,6 +2088,7 @@
       set('navOverviewCount', accountTotal);
       set('navSessionCount', visibleSessionTotal);
       set('navMailboxCount', mailboxTotal);
+      set('navAliasCount', Number(lastAliasMailboxPagination.total_all || lastAliasMailboxes.length || 0));
     }
 
     async function api(path, options = {}) {
@@ -2103,7 +2174,7 @@
 	  }
 	  if ($('renewInviteTopButton')) $('renewInviteTopButton').hidden = !!currentUser.is_admin;
 	  for (const item of document.querySelectorAll('.admin-data-nav')) item.hidden = !currentUser.is_admin;
-	  if (!currentUser.is_admin && ADMIN_DATA_VIEWS.has(activeView)) setActiveView('data-overview');
+	  if (!currentUser.is_admin && ADMIN_DATA_VIEWS.has(activeView)) setActiveView('overview');
 	  if (currentUser.expired) openRenewInviteModal(false);
       return currentUser;
     }
@@ -2464,6 +2535,10 @@
       return (sessions || []).filter(session => session && session.saved);
     }
 
+    function selectableAliasSessions() {
+      return (lastICloudSessions || []).filter(session => session && session.account_id);
+    }
+
     function selectableCreateSessions() {
       return (lastICloudSessions || []).filter(session => session && session.saved && session.account_id && createLoginSaved(session) && Number(session.mailbox_count || 0) < 750);
     }
@@ -2497,8 +2572,13 @@
     function exactTimeText(value) {
       const date = parseTimeValue(value);
       if (!date) return value || '';
-      const pad = number => String(number).padStart(2, '0');
-      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+      const parts = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false
+      }).formatToParts(date);
+      const pick = type => (parts.find(part => part.type === type) || {}).value || '';
+      return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}`;
     }
 
     function manageRefreshText(value) {
@@ -2639,10 +2719,13 @@
       const aliasSelect = $('aliasAccountSelect');
       if (aliasSelect) {
         const current = aliasSelect.value;
-        aliasSelect.innerHTML = sessions.length
-          ? '<option value="">请选择一个 Apple 账号</option>' + sessions.map(session => `<option value="${esc(session.account_id)}">${esc(createAccountDisplayName(session))} · ${esc(sessionCheckText(session))}</option>`).join('')
-          : '<option value="">没有可用于创建的 Apple 登录态</option>';
-        if (sessions.some(session => session.account_id === current)) aliasSelect.value = current;
+        const aliasSessions = selectableAliasSessions();
+        aliasSelect.innerHTML = aliasSessions.length
+          ? '<option value="">请选择一个 Apple 账号</option>' + aliasSessions.map(session => `<option value="${esc(session.account_id)}">${esc(createAccountDisplayName(session))} · 主邮箱 ${Number(session.mailbox_count || 0)} 个</option>`).join('')
+          : '<option value="">当前没有可生成别名的 Apple 账号</option>';
+        if (aliasSessions.some(session => session.account_id === current)) aliasSelect.value = current;
+        aliasSelect.onchange = updateAliasParentPreview;
+        updateAliasParentPreview();
       }
       if (!box) return;
       if (sessions.length === 0) {
@@ -3005,7 +3088,11 @@
       lastICloudSessions = status.icloud_sessions || (status.icloud_session && status.icloud_session.saved ? [status.icloud_session] : []);
       const sessionSaved = lastICloudSessions.length > 0;
       $('accountCount').textContent = Math.max(Number(status.accounts || 0), lastICloudSessions.length);
-      $('mailboxCount').textContent = status.mailboxes;
+      $('mailboxCount').textContent = lastMailboxPagination.total_all || status.mailboxes || 0;
+      if ($('aliasMailboxCount')) $('aliasMailboxCount').textContent = lastAliasMailboxPagination.total_all || 0;
+      if ($('overviewDashboardHint')) {
+        $('overviewDashboardHint').textContent = `当前范围：登录账号 ${Math.max(Number(status.accounts || 0), lastICloudSessions.length)}，主邮箱 ${lastMailboxPagination.total_all || status.mailboxes || 0}，别名邮箱 ${lastAliasMailboxPagination.total_all || 0}，验证码邮件 ${status.messages || 0}。`;
+      }
       $('messageCount').textContent = status.messages;
       $('apiStatus').textContent = status.current_user && status.current_user.is_admin ? '管理员' : '普通账号';
       if ($('serviceInfo')) {
@@ -3021,6 +3108,8 @@
       renderICloudSessions(lastICloudSessions);
       updateNavCounts(status);
       await loadMailboxPage({silent: true});
+      await loadAliasMailboxPage({silent: true});
+      if (activeView === 'alias') updateAliasParentPreview();
       if (activeView === 'redemption') await loadRedemptionPool();
     }
 
@@ -3036,6 +3125,7 @@
       $('redemptionItemRows').innerHTML=(data.items||[]).map(i=>`<tr><td>${esc(i.mailbox.email)}</td><td>${i.mailbox.can_receive_code?'<span class="badge ok">正常</span>':`<span class="badge danger" title="${esc(i.mailbox.receive_code_error||'')}">异常</span>`}</td><td>${i.redeemed_at?'<span class="badge warn">已兑换</span>':i.available?'<span class="badge ok">库存中</span>':'<span class="badge danger">暂不可兑换</span>'}</td><td>${esc(i.added_at||'-')}<br>${esc(i.redeemed_at||'-')}</td><td>${i.redeemed_at?'-':`<button onclick="removeRedemptionItem('${esc(i.mailbox.id)}')">移出</button>`}</td></tr>`).join('')||'<tr><td colspan="5">兑换池暂无邮箱</td></tr>';
     }
     async function addSelectedToRedemptionPool(){const ids=[...selectedMailboxIDs];if(!ids.length){alert('请先在邮箱池勾选邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids})});selectedMailboxIDs.clear();log('所选符合条件的邮箱已加入兑换池');await loadMailboxPage();}
+    async function addSelectedAliasToRedemptionPool(){const ids=selectedVisibleAliasMailboxIDs();if(!ids.length){alert('请先勾选邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids,pool_type:'alias'})});selectedAliasMailboxIDs.clear();log('所选符合条件的邮箱已加入兑换池');await loadAliasMailboxPage({silent:true});}
     async function addSelectedToSecondhandPool(){const ids=[...selectedMailboxIDs];if(!ids.length){alert('请先勾选已导出超过7天且接码正常的邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids,pool_type:'secondhand'})});selectedMailboxIDs.clear();log('符合条件的邮箱已加入二手兑换池');await loadMailboxPage();}
     async function addAllEligibleToRedemptionPool(){const pool_type=selectedRedemptionPoolType(),d=await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({add_all_eligible:true,pool_type})});log(`已加入 ${d.added} 个邮箱`);await loadRedemptionPool()}
     async function removeRedemptionItem(id){await api('/api/redemption-pool/items',{method:'DELETE',body:JSON.stringify({mailbox_ids:[id]})});await loadRedemptionPool()}
@@ -3332,6 +3422,7 @@
       if (exportStatus) params.set('export_status', exportStatus);
       if (minReceive) params.set('min_receive', minReceive);
       if (maxReceive) params.set('max_receive', maxReceive);
+      params.set('mailbox_type', 'privacy');
       return params;
     }
 
@@ -4387,36 +4478,75 @@
       const status = $('aliasCreateStatus');
       const accountID = String(($('aliasAccountSelect') || {}).value || '').trim();
       if (!accountID) { status.textContent = '请先选择一个 Apple 账号'; return; }
-      const count = boundedInt('aliasCount', 1, 1, 100);
-      const session = selectableCreateSessions().find(item => item.account_id === accountID);
-      if (!session) { status.textContent = '所选账号当前没有可用的创建登录态，请刷新后重试'; return; }
+      const count = boundedInt('aliasCount', 1, 1, 200);
+      const session = (lastICloudSessions || []).find(item => item.account_id === accountID);
+      if (!session) { status.textContent = '所选账号不存在，请刷新后重试'; return; }
       button.disabled = true;
-      status.textContent = `正在为 ${createAccountDisplayName(session)} 生成 ${count} 个别名邮箱...`;
+      status.textContent = `已提交后台任务：将为 ${createAccountDisplayName(session)} 下全部主邮箱各生成 ${count} 个别名`;
       try {
         const data = await api('/api/icloud/mailboxes/create', {method:'POST', body:JSON.stringify({
           account_id:accountID,
           account_ids:[accountID],
           label:String(($('aliasLabel') || {}).value || '').trim(),
           note:String(($('aliasNote') || {}).value || '').trim(),
-          create_channel:createChannelPayloadValue('aliasCreateChannel'),
           create_mode:'alias',
-          alias_parent:'',
           alias_count:count
         })});
-        if (data.queued) {
-          status.textContent = data.message || `已提交 ${count} 个别名邮箱后台创建任务`;
+        if (data.async || data.job) {
+          status.textContent = (data.job && data.job.message) || '后台任务已启动';
           log(status.textContent);
-        } else {
-          const mailboxes = data.mailboxes && data.mailboxes.length ? data.mailboxes : (data.mailbox && data.mailbox.id ? [data.mailbox] : []);
-          status.textContent = `别名邮箱创建完成：成功 ${mailboxes.length} 个`;
-          log(status.textContent);
+          await pollAliasCreateJob(accountID, status);
+          return;
         }
+        const mailboxes = data.mailboxes && data.mailboxes.length ? data.mailboxes : (data.mailbox && data.mailbox.id ? [data.mailbox] : []);
+        const failures = data.failures || [];
+        status.textContent = `别名邮箱生成完成：成功 ${mailboxes.length} 个，失败 ${failures.length} 个`;
+        log(status.textContent);
         await refresh();
+        await loadAliasMailboxPage({silent:true});
       } catch (err) {
         status.textContent = '别名邮箱生成失败：' + err.message;
         log(status.textContent);
       } finally {
         button.disabled = false;
+      }
+    }
+
+    async function pollAliasCreateJob(accountID, status) {
+      for (let i = 0; i < 600; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        try {
+          const data = await api('/api/icloud/mailboxes/alias-job?account_id=' + encodeURIComponent(accountID), {showLoading:false});
+          const job = data.job;
+          if (!job) continue;
+          status.textContent = `${job.message || '处理中'}（${Number(job.created||0)}/${Number(job.target||0)}）`;
+          if (job.status === 'success' || job.status === 'failed') {
+            log(status.textContent);
+            await refresh();
+            await loadAliasMailboxPage({silent:true});
+            return;
+          }
+        } catch (err) {
+          status.textContent = '进度查询失败：' + err.message;
+        }
+      }
+      status.textContent = '任务仍在后台执行，可稍后刷新别名邮箱池查看结果';
+    }
+
+    async function updateAliasParentPreview() {
+      const box = $('aliasParentPreview');
+      if (!box) return;
+      const accountID = String(($('aliasAccountSelect') || {}).value || '').trim();
+      if (!accountID) { box.textContent = '请先选择一个 Apple 账号。'; return; }
+      try {
+        const data = await api('/api/mailboxes?page=1&page_size=20&mailbox_type=privacy&account_key=' + encodeURIComponent(accountID));
+        const rows = data.mailboxes || [];
+        const total = Number((data.pagination && data.pagination.total) || rows.length || 0);
+        if (!total) { box.textContent = '该账号还没有普通隐私邮箱，请先去“创建邮箱”。'; return; }
+        const sample = rows.slice(0, 8).map(row => row.email).filter(Boolean);
+        box.innerHTML = `将给 <strong>${total}</strong> 个主邮箱各生成别名。<br>${sample.map(email => esc(email)).join('<br>')}${total > sample.length ? '<br>…' : ''}`;
+      } catch (err) {
+        box.textContent = '读取主邮箱失败：' + err.message;
       }
     }
 
@@ -4490,6 +4620,163 @@
       url.pathname = url.pathname.replace(/\/(?:code|view|content)\/?$/, '/' + suffix);
       url.search = '';
       return url.toString();
+    }
+
+    let lastAliasMailboxes = [];
+    let lastAliasMailboxGroups = [];
+    let lastAliasMailboxPagination = {page:1,page_size:10,total:0,total_all:0,total_pages:1};
+    let aliasMailboxPage = 1;
+    let aliasMailboxPageSize = 10;
+    let activeAliasMailboxAccountKey = 'all';
+    let appliedAliasMailboxFilters = {};
+    const selectedAliasMailboxIDs = new Set();
+
+    function aliasMailboxListQuery() {
+      const params = new URLSearchParams({
+        page: String(Math.max(1, aliasMailboxPage)),
+        page_size: String(Math.max(1, aliasMailboxPageSize)),
+        mailbox_type: 'alias'
+      });
+      const filters = appliedAliasMailboxFilters || {};
+      if (filters.search) params.set('search', filters.search);
+      if (!filters.search && activeAliasMailboxAccountKey && activeAliasMailboxAccountKey !== 'all') params.set('account_key', activeAliasMailboxAccountKey);
+      if (filters.status) params.set('status', filters.status);
+      if (filters.api_status) params.set('api_status', filters.api_status);
+      if (filters.export_status) params.set('export_status', filters.export_status);
+      return params;
+    }
+
+    async function loadAliasMailboxPage(options = {}) {
+      const data = await api('/api/mailboxes?' + aliasMailboxListQuery().toString());
+      lastAliasMailboxes = data.mailboxes || [];
+      lastAliasMailboxGroups = data.groups || [];
+      lastAliasMailboxPagination = data.pagination || lastAliasMailboxPagination;
+      aliasMailboxPage = Number(lastAliasMailboxPagination.page || aliasMailboxPage || 1);
+      aliasMailboxPageSize = Number(lastAliasMailboxPagination.page_size || aliasMailboxPageSize || 10);
+      if ($('aliasMailboxPageSize')) $('aliasMailboxPageSize').value = String(aliasMailboxPageSize);
+      renderAliasMailboxes();
+      updateNavCounts();
+      if (!options.silent) log(`别名邮箱池已刷新：第 ${aliasMailboxPage}/${lastAliasMailboxPagination.total_pages || 1} 页`);
+    }
+
+    function applyAliasMailboxFilters() {
+      appliedAliasMailboxFilters = {
+        search: String(($('aliasMailboxSearch') || {}).value || '').trim(),
+        status: String(($('aliasMailboxStatusFilter') || {}).value || ''),
+        api_status: String(($('aliasMailboxAPIFilter') || {}).value || ''),
+        export_status: String(($('aliasMailboxExportStatusFilter') || {}).value || '')
+      };
+      aliasMailboxPage = 1;
+      loadAliasMailboxPage().catch(err => log('筛选别名邮箱失败：' + err.message));
+    }
+
+    function clearAliasMailboxSearch() {
+      ['aliasMailboxSearch','aliasMailboxStatusFilter','aliasMailboxAPIFilter','aliasMailboxExportStatusFilter'].forEach(id => { if ($(id)) $(id).value = ''; });
+      appliedAliasMailboxFilters = {};
+      activeAliasMailboxAccountKey = 'all';
+      aliasMailboxPage = 1;
+      loadAliasMailboxPage().catch(err => log('清空别名筛选失败：' + err.message));
+    }
+
+    function changeAliasMailboxPage(delta) {
+      aliasMailboxPage += delta;
+      loadAliasMailboxPage().catch(err => log('切换别名页失败：' + err.message));
+    }
+
+    function setAliasMailboxPageSize() {
+      aliasMailboxPageSize = boundedInt('aliasMailboxPageSize', 10, 1, 500);
+      aliasMailboxPage = 1;
+      loadAliasMailboxPage().catch(err => log('更新别名每页数量失败：' + err.message));
+    }
+
+    function setAliasMailboxAccountTab(key) {
+      activeAliasMailboxAccountKey = key || 'all';
+      aliasMailboxPage = 1;
+      loadAliasMailboxPage().catch(err => log('切换别名账号失败：' + err.message));
+    }
+
+    function selectedVisibleAliasMailboxIDs() {
+      return lastAliasMailboxes.filter(row => selectedAliasMailboxIDs.has(row.id)).map(row => row.id);
+    }
+
+    function toggleAliasMailbox(id, checked) {
+      if (checked) selectedAliasMailboxIDs.add(id); else selectedAliasMailboxIDs.delete(id);
+      if ($('aliasMailboxSelectedCount')) $('aliasMailboxSelectedCount').textContent = `已选择 ${selectedAliasMailboxIDs.size} 个`;
+    }
+
+    function toggleAllVisibleAliasMailboxes(checked) {
+      lastAliasMailboxes.forEach(row => toggleAliasMailbox(row.id, checked));
+      renderAliasMailboxes();
+    }
+
+    function renderAliasMailboxes() {
+      const tabs = $('aliasMailboxAccountTabs');
+      if (tabs) {
+        const groups = lastAliasMailboxGroups || [];
+        tabs.innerHTML = `<button class="${activeAliasMailboxAccountKey==='all'?'active':''}" onclick="setAliasMailboxAccountTab('all')">全部</button>` + groups.map(group => `<button class="${activeAliasMailboxAccountKey===group.key?'active':''}" onclick="setAliasMailboxAccountTab('${esc(group.key)}')">${esc(group.title)} · ${group.count}</button>`).join('');
+      }
+      const rows = lastAliasMailboxes || [];
+      const totalPages = Math.max(1, Number(lastAliasMailboxPagination.total_pages || 1));
+      const page = Math.max(1, Math.min(totalPages, Number(lastAliasMailboxPagination.page || 1)));
+      const total = Number(lastAliasMailboxPagination.total || rows.length || 0);
+      if ($('aliasMailboxPageInfo')) $('aliasMailboxPageInfo').textContent = `${page}/${totalPages} 页 · 筛选结果 ${total} 个`;
+      if ($('aliasMailboxPrevPage')) $('aliasMailboxPrevPage').disabled = page <= 1;
+      if ($('aliasMailboxNextPage')) $('aliasMailboxNextPage').disabled = page >= totalPages;
+      if ($('aliasMailboxSelectedCount')) $('aliasMailboxSelectedCount').textContent = `已选择 ${selectedAliasMailboxIDs.size} 个`;
+      if (!rows.length) {
+        $('aliasMailboxes').innerHTML = '<tr><td colspan="9" class="muted">还没有别名邮箱，请先到“生成别名邮箱”创建。</td></tr>';
+        return;
+      }
+      $('aliasMailboxes').innerHTML = rows.map(row => {
+        const checked = selectedAliasMailboxIDs.has(row.id) ? 'checked' : '';
+        const code = mailboxCodeResults.get(row.id);
+        return `<tr>
+          <td><input type="checkbox" ${checked} onchange="toggleAliasMailbox('${esc(row.id)}', this.checked)"></td>
+          <td><strong>${esc(row.label || '-')}</strong><br><span class="mono muted">${esc(row.id)}</span></td>
+          <td><span class="email">${esc(row.email)}</span><br><span class="pill">别名邮箱</span><br><span class="muted">主邮箱：${esc(row.parent_mailbox_email || row.parent_mailbox_id || '-')}</span><br><span class="muted">${esc(mailboxAccountTitle(row))}</span></td>
+          <td>${row.api_active ? '<span class="pill">API启用</span>' : '<span class="pill off">API停用</span>'}<br>${row.icloud_active ? '<span class="pill">iCloud启用</span>' : '<span class="pill off">iCloud停用</span>'}<br><span class="muted">${esc(row.status || '-')}</span></td>
+          <td>${row.exported_at ? `<span class="pill">已导出</span><br><span class="muted">${esc(exactTimeText(row.exported_at))}</span>` : '<span class="pill off">未导出</span>'}</td>
+          <td>${Number(row.receive_count || 0)}</td>
+          <td>${esc(row.last_sync_at ? exactTimeText(row.last_sync_at) : '尚未同步')}</td>
+          <td>${code && code.code ? `<strong>${esc(code.code)}</strong><br><span class="muted">${esc(code.time || '')}</span>` : `<span class="muted">${esc((code && code.message) || '未取码')}</span>`}</td>
+          <td class="toolbar"><button onclick="copyText(${esc(JSON.stringify(row.email))})">复制邮箱</button><button onclick="copyText(${esc(JSON.stringify(mailboxAccessURL(row,'json')))})">复制JSON</button><button onclick="window.open(${esc(JSON.stringify(mailboxAccessURL(row,'visual')))},'_blank')">查看邮箱</button><button onclick="fetchMailboxCode('${esc(row.id)}')">验证码</button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function batchAliasMailboxStatus(status) {
+      const ids = selectedVisibleAliasMailboxIDs();
+      if (!ids.length) { log('请先勾选别名邮箱'); return; }
+      await api('/api/mailboxes/status/batch', {method:'POST', body:JSON.stringify({mailbox_ids:ids, status})});
+      await loadAliasMailboxPage({silent:true});
+    }
+
+    async function batchExportAliasMailboxes(mode) {
+      const ids = selectedVisibleAliasMailboxIDs();
+      if (!ids.length) { log('请先勾选别名邮箱'); return; }
+      const type = String(($('batchAliasMailboxAPIExportType') || {}).value || 'json');
+      const rows = lastAliasMailboxes.filter(row => ids.includes(row.id));
+      const lines = rows.map(row => mode === 'email' ? row.email : `${row.email}----${mailboxAccessURL(row, type)}`);
+      await writeClipboard(lines.join('\n'));
+      log(`已复制 ${lines.length} 条别名${mode === 'email' ? '邮箱' : 'API'}`);
+    }
+
+    async function batchRotateAliasMailboxAPIs() {
+      const ids = selectedVisibleAliasMailboxIDs();
+      if (!ids.length) { log('请先勾选别名邮箱'); return; }
+      await api('/api/mailboxes/api-tokens/rotate', {method:'POST', body:JSON.stringify({mailbox_ids:ids})});
+      await loadAliasMailboxPage({silent:true});
+    }
+
+    async function batchDeleteAliasMailboxes() {
+      const ids = selectedVisibleAliasMailboxIDs();
+      if (!ids.length) { log('请先勾选别名邮箱'); return; }
+      if (!confirm(`确认删除 ${ids.length} 个别名邮箱？主隐私邮箱不会被删除。`)) return;
+      for (const id of ids) {
+        await api('/api/mailboxes/' + encodeURIComponent(id), {method:'DELETE'});
+        selectedAliasMailboxIDs.delete(id);
+      }
+      await loadAliasMailboxPage({silent:true});
     }
 
     async function syncMailbox(id) {

@@ -153,7 +153,7 @@ http://127.0.0.1:8787/login
 | 管理员 | 查看全部用户、全部 iCloud 登录态、全部隐私邮箱；可导出全量数据 |
 | 普通用户 | 只能查看和操作自己创建的 iCloud 登录态和隐私邮箱；只能导出自己的数据 |
 
-所有管理接口默认要求登录后的 HttpOnly Cookie。外部取码接口只接受单邮箱 `mailbox_key` 或全局 `api_key` 请求头，不接受全局 key 放在 URL 查询参数里。
+所有管理接口默认要求登录后的 HttpOnly Cookie。外部取码接口只接受路径里的单邮箱令牌，不再接受 URL 查询参数里的 `key`，也不再用全局 `api_key` 读取某个邮箱的验证码。
 
 ## 使用流程
 
@@ -221,36 +221,37 @@ http://127.0.0.1:8787/login
 
 - 面板可手动点击 `同步邮件`。
 - 服务启动后会默认启用后台取码同步器；所有 `API active`、`iCloud active` 且已保存取码登录的邮箱会自动进入同步池，不需要先访问取码 API 才开始监听。
-- 后台取码同步器会为每个取码登录态维持 IMAP `IDLE` 常驻连接；监听启动时先读取当前 `UIDNEXT` 作为账号级起跑线，之后 iCloud 收到新邮件并推送 `EXISTS` 事件后，后端只同步新 UID 并写入本地库。
+- 后台取码同步器会为每个取码登录态维持 IMAP `IDLE` 常驻连接；监听启动时先读取当前 `UIDNEXT` 作为账号级起跑线，之后 iCloud 收到新邮件并推送 `EXISTS` 事件后，后端只同步新 UID 并写入本地库。同步时除收件箱外，还会扫描 Junk/Spam/垃圾邮件文件夹；垃圾箱邮件使用独立 RemoteID，不会推进收件箱 UID 游标。
 - 同步时优先使用取码登录态里的账号级 `IMAPLastSyncUID` 做 `UID n:*` 增量抓取；兼容旧邮箱级 `LastSyncUID`，没有 UID 游标时才按日期回看兜底。
 - IMAP 连接会优先使用 TCP 公共 DNS，并以 UDP DNS、本机 resolver 和 Apple IMAP IPv4 直连兜底，减少服务器 resolver 或 DNS 53 端口偶发超时导致验证码不能及时入库的问题；直连仍使用 `imap.mail.me.com` 做 TLS SNI。
 - 后台同步默认 3 秒一轮作为兜底；最近被取码 API 访问过的邮箱会被排到本轮前面并立即唤醒同步器，避免 IMAP 事件漏掉或连接被 Apple 断开后长时间不入库。
 - 对外取码 API 会先读取本地已同步邮件；未命中时触发后台快速补抓，普通请求默认最多等待 600ms，带 `wait_ms` 时最多可等待 30 秒，仍未命中就让调用方继续轮询。
 - 后台同步器或快速补抓完成后都会写入本地状态，下一次取码轮询通常直接从本地返回验证码。
-- 普通取码成功后会记录本次返回的邮件 ID；同一封验证码邮件不会被默认重复返回，避免重新发码后仍命中旧码。
-- 建议调用取码 API 时带 `after=<RFC3339>`，避免拿到历史旧码。
+- 普通取码默认返回最近 60 秒内最新一封可识别验证码；同一封验证码邮件可以重复查询，调用方应用 `after` 避免拿到更早的历史码。
+- 建议调用取码 API 时带 `after=<RFC3339>`；如果 `after` 比 60 秒窗口更早，后端仍只返回最近 60 秒内的验证码。
 
 ## 对外取码 API
 
-### 按邮箱地址取码
+### 按路径令牌取码
 
 ```http
-GET /api/v1/mailboxes/{email}/code?key=<mailbox_key>&after=<RFC3339>&keyword=OpenAI
+GET /api/v1/access/{mailbox_token}/mailboxes/{email}/code?after=<RFC3339>&wait_ms=12000
 ```
 
-### 按邮箱 ID 取码
+兼容旧路径，但仍必须把令牌放在路径里，不再接受 `?key=`：
 
 ```http
-GET /api/mailboxes/{id}/code?key=<mailbox_key>&after=<RFC3339>&keyword=OpenAI
+GET /api/v1/mailboxes/{email}/code
+GET /api/mailboxes/{id}/code
 ```
 
 参数：
 
 | 参数 | 说明 |
 | --- | --- |
-| `key` | 必填；单邮箱独立 key |
-| `after` | 建议必填；只返回该时间之后的新验证码 |
-| `keyword` | 邮件关键词，默认 `OpenAI` |
+| 路径中的 `mailbox_token` | 必填；每个邮箱独立令牌，复制出来的地址已包含它 |
+| `after` | 可选；只返回该时间之后的新验证码。未传或早于 60 秒窗口时，后端仍只看最近 60 秒 |
+| `keyword` | 可选。默认不按平台名过滤，任意平台最新验证码都可以取到；只有显式传入非空且不是 `OpenAI` 的关键词时才按邮件内容筛选 |
 | `wait_ms` | 可选；本地未命中时最多等待后台补抓多久，最大 30000；面板复制的 API 默认带 `12000` |
 | `allow_stale` | 默认 false；只有排障时才建议打开，允许同步失败后回退本地缓存旧码 |
 | `cache` | 默认 false；设为 `1/true` 时只读本地缓存，允许查看已返回过的旧验证码，不触发 iCloud 同步 |
@@ -293,36 +294,9 @@ GET /api/mailboxes/{id}/code?key=<mailbox_key>&after=<RFC3339>&keyword=OpenAI
 
 ## 外部自动取号 API
 
-自动取号使用全局 `api_key`，只接受请求头：
+全局自动取号已经关闭。即使持有全局 `api_key`，`POST /api/v1/mailboxes/claim` 和 `POST /api/v1/mailboxes/lookup` 也会返回 HTTP 410。请改用兑换池，或直接复制单个邮箱的路径令牌取码地址。
 
-```http
-POST /api/v1/mailboxes/claim
-Authorization: Bearer <api_key>
-Content-Type: application/json
-
-{
-  "project": "openai",
-  "purpose": "register",
-  "count": 1
-}
-```
-
-返回一个可用邮箱，并自动标记为 `used`，避免并发重复领取：
-
-```json
-{
-  "success": true,
-  "mailbox": {
-    "email": "alias@icloud.com",
-    "api_url": "https://www.example.com/api/v1/mailboxes/alias%40icloud.com/code?key=...",
-    "api_active": true,
-    "icloud_active": true,
-    "status": "used"
-  }
-}
-```
-
-健康检查：
+健康检查仍可使用全局 `api_key`：
 
 ```http
 GET /api/v1/health

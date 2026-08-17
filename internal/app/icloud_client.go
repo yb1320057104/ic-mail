@@ -1663,12 +1663,36 @@ func matchingMailboxIDs(recipients string, aliases map[string]string) []string {
 		if strings.TrimSpace(mailboxID) == "" || strings.TrimSpace(alias) == "" {
 			continue
 		}
-		if containsFold(recipients, alias) {
+		if mailboxRecipientMatches(recipients, alias) {
 			ids = append(ids, mailboxID)
 		}
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func mailboxRecipientMatches(recipients, email string) bool {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return false
+	}
+	if containsFold(recipients, email) {
+		return true
+	}
+	local, domain, ok := strings.Cut(email, "@")
+	if !ok || local == "" || domain == "" {
+		return false
+	}
+	baseLocal, _, _ := strings.Cut(local, "+")
+	if baseLocal == "" {
+		return false
+	}
+	base := baseLocal + "@" + domain
+	if containsFold(recipients, base) {
+		return true
+	}
+	pattern := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(baseLocal) + `\+[a-z0-9._%+-]+@` + regexp.QuoteMeta(domain) + `\b`)
+	return pattern.MatchString(recipients)
 }
 
 type mailMessageDetail struct {

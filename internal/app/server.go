@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"embed"
@@ -28,7 +29,7 @@ import (
 //go:embed templates/*.html
 var webFS embed.FS
 
-const mailboxCodeFreshWindow = 10 * time.Second
+const mailboxCodeFreshWindow = 60 * time.Second
 const mailboxCodeSyncLookback = 5 * time.Minute
 const mailboxReceivedTimePrecisionAllowance = 2 * time.Minute
 const mailboxCodeRequestFetchLimit = 20
@@ -43,7 +44,8 @@ var mailboxCodePollDebounce = 100 * time.Millisecond
 var mailboxCodeLocalPollInterval = 100 * time.Millisecond
 var mailboxCodeBatchSyncTimeout = 120 * time.Second
 var mailboxCodeMaxClientWait = 30 * time.Second
-var mailboxContentSyncTimeout = 20 * time.Second
+var mailboxContentSyncTimeout = 90 * time.Second
+var mailboxVisualSyncResponseWait = 1500 * time.Millisecond
 var iCloudMailboxListAccountTimeout = 25 * time.Second
 var mailWatcherPollInterval = 3 * time.Second
 var mailWatcherFallbackSyncMinInterval = time.Minute
@@ -123,6 +125,8 @@ type Server struct {
 	proxyPoolTestMu                sync.Mutex
 	proxyPoolTestJobs              map[string]*proxyPoolTestJob
 	proxyPoolNodeResults           map[string]map[string]proxyPoolNodeTestResult
+	aliasJobMu                     sync.Mutex
+	aliasJobs                      map[string]*aliasCreateJob
 }
 
 type adminConfirmation struct {
@@ -136,6 +140,19 @@ type operationTask struct {
 	Message    string `json:"message"`
 	StartedAt  string `json:"started_at"`
 	FinishedAt string `json:"finished_at"`
+}
+
+type aliasCreateJob struct {
+	ID        string
+	OwnerID   string
+	AccountID string
+	Status    string
+	Message   string
+	Target    int
+	Created   int
+	Failed    int
+	StartedAt time.Time
+	UpdatedAt time.Time
 }
 
 type createMailboxFailure struct {
@@ -287,6 +304,7 @@ func NewServer(cfg Config, store *FileStore, logger *slog.Logger) http.Handler {
 		proxyPool:                     newProxyPoolRuntime(cfg, store, logger),
 		proxyPoolTestJobs:             make(map[string]*proxyPoolTestJob),
 		proxyPoolNodeResults:          make(map[string]map[string]proxyPoolNodeTestResult),
+		aliasJobs:                     make(map[string]*aliasCreateJob),
 	}
 	if cfg.PublicSyncMinIntervalMS > 0 {
 		s.mailboxSyncMinInterval = time.Duration(cfg.PublicSyncMinIntervalMS) * time.Millisecond
@@ -576,6 +594,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/proxy-pool/test", s.handleStartProxyPoolTestCompat)
 	s.mux.HandleFunc("GET /api/proxy-pool/test-status", s.handleProxyPoolTestStatusCompat)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/create", s.handleCreateICloudMailbox)
+	s.mux.HandleFunc("GET /api/icloud/mailboxes/alias-job", s.handleAliasCreateJobStatus)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/sync", s.handleSyncICloudMailboxes)
 	s.mux.HandleFunc("GET /api/icloud/scheduler/status", s.handleMailboxSchedulerStatus)
 	s.mux.HandleFunc("POST /api/icloud/scheduler/start", s.handleStartMailboxScheduler)
@@ -672,7 +691,7 @@ func (s *Server) redemptionPoolResponse(r *http.Request, ownerID string, poolTyp
 	pool, codes, items := s.store.RedemptionDataForOwnerType(ownerID, poolType)
 	state := s.store.SnapshotForOwner(ownerID)
 	healthy := s.redemptionHealthyMap(state)
-	if poolType == "secondhand" {
+	if poolType == "secondhand" || poolType == "alias" {
 		healthy = s.secondhandHealthyMap(state)
 	}
 	mailboxByID := map[string]Mailbox{}
@@ -687,8 +706,9 @@ func (s *Server) redemptionPoolResponse(r *http.Request, ownerID string, poolTyp
 		if !ok {
 			continue
 		}
-		available := item.RedeemedAt.IsZero() && healthy[item.MailboxID]
-		if available {
+		inStock := item.RedeemedAt.IsZero()
+		available := inStock && healthy[item.MailboxID]
+		if inStock {
 			stock++
 		}
 		if !item.RedeemedAt.IsZero() {
@@ -706,6 +726,11 @@ func (s *Server) redemptionPoolResponse(r *http.Request, ownerID string, poolTyp
 			eligible := healthy[m.ID]
 			if poolType == "secondhand" {
 				eligible = eligible && !m.ExportedAt.IsZero() && m.ExportedAt.Before(time.Now().Add(-7*24*time.Hour))
+			}
+			if poolType == "alias" {
+				eligible = eligible && firstNonEmpty(m.MailboxType, "privacy") == "alias"
+			} else if firstNonEmpty(m.MailboxType, "privacy") == "alias" {
+				eligible = false
 			}
 			if eligible {
 				n++
@@ -738,21 +763,32 @@ func (s *Server) handleAddRedemptionItems(w http.ResponseWriter, r *http.Request
 	state := s.store.SnapshotForOwner(owner)
 	healthy := s.redemptionHealthyMap(state)
 	poolType := firstNonEmpty(strings.TrimSpace(p.PoolType), "primary")
-	if poolType == "secondhand" {
+	if poolType == "secondhand" || poolType == "alias" {
 		healthy = s.secondhandHealthyMap(state)
 	}
 	if p.AddAllEligible {
 		for _, m := range state.Mailboxes {
-			if healthy[m.ID] {
-				p.MailboxIDs = append(p.MailboxIDs, m.ID)
+			if !healthy[m.ID] {
+				continue
 			}
+			mailboxType := firstNonEmpty(m.MailboxType, "privacy")
+			if poolType == "alias" && mailboxType != "alias" {
+				continue
+			}
+			if poolType != "alias" && mailboxType == "alias" {
+				continue
+			}
+			p.MailboxIDs = append(p.MailboxIDs, m.ID)
 		}
 	}
 	var n int
 	var err error
-	if poolType == "secondhand" {
+	switch poolType {
+	case "secondhand":
 		n, err = s.store.AddSecondhandRedemptionItems(owner, p.MailboxIDs, healthy)
-	} else {
+	case "alias":
+		n, err = s.store.AddAliasRedemptionItems(owner, p.MailboxIDs, healthy)
+	default:
 		n, err = s.store.AddRedemptionItems(owner, p.MailboxIDs, healthy)
 	}
 	if err != nil {
@@ -3162,38 +3198,63 @@ func (s *Server) handleCreateICloudMailbox(w http.ResponseWriter, r *http.Reques
 	}
 	accountIDs := normalizeAccountIDSelection(payload.AccountID, payload.AccountIDs)
 	ownerID := requestOwnerID(r, s.store)
-	var aliasParent Mailbox
+	var aliasParents []Mailbox
 	if strings.EqualFold(strings.TrimSpace(payload.CreateMode), "alias") {
 		if len(accountIDs) != 1 {
 			writeError(w, http.StatusBadRequest, errCode("alias_account_invalid", "一键生成别名邮箱时请选择一个 Apple 账号", false))
 			return
 		}
+		if payload.AliasCount < 1 {
+			payload.AliasCount = 1
+		}
 		state := s.store.SnapshotForMailboxList(ownerID)
-		needle := strings.TrimSpace(payload.AliasParent)
+		aliasCountByParent := map[string]int{}
+		for _, mailbox := range state.Mailboxes {
+			if firstNonEmpty(mailbox.MailboxType, "privacy") != "alias" {
+				continue
+			}
+			if parentID := strings.TrimSpace(mailbox.ParentMailboxID); parentID != "" {
+				aliasCountByParent[parentID]++
+			}
+		}
 		for _, mailbox := range state.Mailboxes {
 			if firstNonEmpty(mailbox.MailboxType, "privacy") == "alias" {
 				continue
 			}
-			if needle != "" && (mailbox.ID == needle || strings.EqualFold(mailbox.Email, needle)) {
-				aliasParent = mailbox
-				break
+			if !constantTimeEqual(mailbox.AccountID, accountIDs[0]) {
+				continue
 			}
-			if needle == "" && constantTimeEqual(mailbox.AccountID, accountIDs[0]) && (aliasParent.ID == "" || mailbox.CreatedAt.After(aliasParent.CreatedAt)) {
-				aliasParent = mailbox
+			if ownerID != "" && !constantTimeEqual(mailbox.OwnerID, ownerID) {
+				continue
 			}
+			if aliasCountByParent[mailbox.ID] >= payload.AliasCount {
+				continue
+			}
+			aliasParents = append(aliasParents, mailbox)
 		}
-		if aliasParent.ID == "" {
-			writeError(w, http.StatusBadRequest, errCode("alias_parent_missing", "该 Apple 账号还没有普通隐私邮箱，请先创建一个普通隐私邮箱后再一键生成别名", false))
+		if len(aliasParents) == 0 {
+			writeError(w, http.StatusBadRequest, errCode("alias_parent_missing", "该 Apple 账号下的主邮箱都已达到本次目标数量，没有需要继续生成的主邮箱", false))
 			return
 		}
-		accountIDs = []string{aliasParent.AccountID}
-		if payload.AliasCount < 1 {
-			payload.AliasCount = 1
-		}
-		if payload.AliasCount > 100 {
-			writeError(w, http.StatusBadRequest, errCode("alias_count_invalid", "单次别名邮箱数量必须在 1 到 100 之间", false))
+		if payload.AliasCount > 200 {
+			writeError(w, http.StatusBadRequest, errCode("alias_count_invalid", "每个主邮箱一次最多生成 200 个别名", false))
 			return
 		}
+		if !s.canAccessAccountIDs(r, accountIDs) {
+			writeError(w, http.StatusNotFound, errCode("account_not_found", "账号不存在", false))
+			return
+		}
+		job, err := s.startPlusAliasCreateJob(ownerID, accountIDs[0], aliasParents, payload.AliasCount, payload.Label, payload.Note)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"success": true, "async": true, "job": s.publicAliasCreateJob(job),
+			"created": job.Created, "target": job.Target, "message": job.Message,
+			"mailboxes": []publicMailbox{}, "failures": []createMailboxFailure{},
+		})
+		return
 	}
 	if !s.canAccessAccountIDs(r, accountIDs) {
 		writeError(w, http.StatusNotFound, errCode("account_not_found", "账号不存在", false))
@@ -3208,35 +3269,8 @@ func (s *Server) handleCreateICloudMailbox(w http.ResponseWriter, r *http.Reques
 	var remotes []ICloudRemoteMailbox
 	var failures []createMailboxFailure
 	var err error
-	if aliasParent.ID != "" {
-		// Apple enforces a per-account creation interval. Large alias batches
-		// therefore run in the background so the HTTP request is not held open
-		// until a proxy or browser timeout. The operation is visible in the
-		// admin operation log and the mailbox list can be refreshed meanwhile.
-		if payload.AliasCount > 10 {
-			requested := payload.AliasCount
-			go func() {
-				started := time.Now()
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-				defer cancel()
-				created, _, failed, createErr := s.createAliasMailboxes(ctx, ownerID, aliasParent, requested, payload.Label, payload.Note, channel)
-				message := fmt.Sprintf("别名邮箱批量创建完成：成功 %d，失败 %d", len(created), len(failed))
-				if createErr != nil {
-					message += "；" + createErr.Error()
-				}
-				status := "success"
-				if len(created) == 0 && createErr != nil {
-					status = "failed"
-				}
-				s.recordOperation("别名邮箱批量创建", status, message, started)
-			}()
-			writeJSON(w, http.StatusAccepted, map[string]any{
-				"success": true, "queued": true, "requested": requested,
-				"message": "批量别名邮箱已加入后台任务；创建间隔由 Apple 限制，完成后刷新邮箱列表即可查看。",
-			})
-			return
-		}
-		mailboxes, remotes, failures, err = s.createAliasMailboxes(r.Context(), ownerID, aliasParent, payload.AliasCount, payload.Label, payload.Note, channel)
+	if len(aliasParents) > 0 {
+		mailboxes, remotes, failures, err = s.createPlusAliasMailboxes(r.Context(), ownerID, aliasParents, payload.AliasCount, payload.Label, payload.Note)
 	} else {
 		mailboxes, remotes, failures, err = s.createMailboxesForOwnerWithChannels(r.Context(), ownerID, requests, payload.Label, payload.Note)
 	}
@@ -3539,6 +3573,7 @@ func filterMailboxesForList(mailboxes []Mailbox, accountsByID map[string]Account
 	apiFilter := strings.ToLower(strings.TrimSpace(values.Get("api_status")))
 	icloudFilter := strings.ToLower(strings.TrimSpace(values.Get("icloud_status")))
 	exportFilter := strings.ToLower(strings.TrimSpace(values.Get("export_status")))
+	typeFilter := strings.ToLower(strings.TrimSpace(values.Get("mailbox_type")))
 	minReceive := parseBoundedPositiveInt(values.Get("min_receive"), 0, 0, 1_000_000)
 	maxReceive := parseBoundedPositiveInt(values.Get("max_receive"), 1_000_000, 0, 1_000_000)
 	out := make([]Mailbox, 0, len(mailboxes))
@@ -3547,6 +3582,13 @@ func filterMailboxesForList(mailboxes []Mailbox, accountsByID map[string]Account
 			continue
 		}
 		if keyword != "" && !mailboxListMatchesSearch(mailbox, accountsByID, keyword) {
+			continue
+		}
+		mailboxType := firstNonEmpty(mailbox.MailboxType, "privacy")
+		if typeFilter == "alias" && mailboxType != "alias" {
+			continue
+		}
+		if (typeFilter == "privacy" || typeFilter == "normal") && mailboxType == "alias" {
 			continue
 		}
 		if statusFilter != "" && !strings.EqualFold(mailbox.Status, statusFilter) {
@@ -4270,7 +4312,7 @@ func (s *Server) handleMailboxCodeByEmail(w http.ResponseWriter, r *http.Request
 	}
 	mailbox, ok := s.store.FindMailboxByEmail(email)
 	if !ok {
-		writeError(w, http.StatusNotFound, errCode("mailbox_not_found", "邮箱不存在", false))
+		writeError(w, http.StatusUnauthorized, errCode("invalid_api_key", "API Key 错误", false))
 		return
 	}
 	s.writeMailboxCode(w, r, mailbox)
@@ -4285,7 +4327,7 @@ func (s *Server) publicMailboxByEmail(w http.ResponseWriter, r *http.Request) (M
 	}
 	mailbox, ok := s.store.FindMailboxByEmail(email)
 	if !ok {
-		writeError(w, http.StatusNotFound, errCode("mailbox_not_found", "邮箱不存在", false))
+		writeError(w, http.StatusUnauthorized, errCode("invalid_api_key", "API Key 错误", false))
 		return Mailbox{}, false
 	}
 	if !s.authorized(r, mailbox) {
@@ -4310,16 +4352,16 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 	s.markMailWatcherActive(mailbox.ID)
 	after, err := parseAfter(r.URL.Query().Get("after"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeMailboxCodeAPIError(w, r, http.StatusBadRequest, err)
 		return
 	}
 	cutoff := mailboxCodeAfter(after, time.Now())
 	if truthy(r.URL.Query().Get("cache")) {
 		if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
-			s.writeMailboxContent(w, mailbox, msg)
+			s.writeMailboxContent(w, r, mailbox, msg)
 			return
 		}
-		writeError(w, http.StatusOK, errCode("no_recent_message", "最近10秒本地缓存中暂无邮件", true))
+		writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近60秒本地缓存中暂无邮件", true))
 		return
 	}
 
@@ -4343,26 +4385,26 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 		select {
 		case syncErr := <-done:
 			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
-				s.writeMailboxContent(w, mailbox, msg)
+				s.writeMailboxContent(w, r, mailbox, msg)
 				return
 			}
 			if syncErr != nil {
-				writeError(w, http.StatusBadGateway, errCode("mail_sync_failed", "同步最近邮件失败，请检查取码登录或稍后重试", true))
+				writeMailboxCodeAPIError(w, r, http.StatusBadGateway, errCode("mail_sync_failed", "同步最近邮件失败，请检查取码登录或稍后重试", true))
 				return
 			}
-			writeError(w, http.StatusOK, errCode("no_recent_message", "最近10秒暂未收到邮件", true))
+			writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近60秒暂未收到邮件", true))
 			return
 		case <-ticker.C:
 			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
-				s.writeMailboxContent(w, mailbox, msg)
+				s.writeMailboxContent(w, r, mailbox, msg)
 				return
 			}
 		case <-timer.C:
 			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
-				s.writeMailboxContent(w, mailbox, msg)
+				s.writeMailboxContent(w, r, mailbox, msg)
 				return
 			}
-			writeError(w, http.StatusOK, errCode("no_recent_message", "最近10秒暂未收到邮件，后台仍在同步", true))
+			writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近60秒暂未收到邮件，后台仍在同步", true))
 			return
 		case <-r.Context().Done():
 			return
@@ -4370,11 +4412,16 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (s *Server) writeMailboxContent(w http.ResponseWriter, mailbox Mailbox, msg Message) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+func (s *Server) writeMailboxContent(w http.ResponseWriter, r *http.Request, mailbox Mailbox, msg Message) {
+	body := fmt.Sprintf("邮箱：%s\n主题：%s\n发件人：%s\n时间：%s（北京时间）\n\n%s", mailbox.Email, msg.Subject, msg.From, formatTime(msg.ReceivedAt), msg.Body)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Mail-Received-At", firstNonZeroTime(msg.ReceivedAt, msg.CreatedAt).UTC().Format(time.RFC3339))
-	_, _ = fmt.Fprintf(w, "邮箱：%s\n主题：%s\n发件人：%s\n时间：%s\n\n%s", mailbox.Email, msg.Subject, msg.From, formatTime(msg.ReceivedAt), msg.Body)
+	if prefersMailboxBrowserRefresh(r) {
+		writeMailboxBrowserRefresh(w, http.StatusOK, "text/plain; charset=utf-8", body, "已获取邮件内容，已停止自动刷新", false)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, body)
 }
 
 func latestRecentMailboxMessage(messages []Message, after time.Time) (Message, bool) {
@@ -4433,8 +4480,8 @@ func (s *Server) handleMailboxVisualByEmail(w http.ResponseWriter, r *http.Reque
 	}
 	page := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{EMAIL}} 的最近邮件</title><style>
 :root{color-scheme:light;--bg:#f3f6fa;--panel:#fff;--ink:#142033;--muted:#68778b;--line:#dce3ec;--accent:#2563eb;--accent-soft:#eaf1ff;--ok:#047857;--warn:#b45309}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#edf3ff 0,#f6f8fb 240px);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}.top{background:linear-gradient(135deg,#0f172a,#173b72);color:#fff;padding:24px 18px;box-shadow:0 12px 35px rgba(15,23,42,.18)}.top-inner,.shell{max-width:1040px;margin:auto}.eyebrow{font-size:12px;letter-spacing:.14em;color:#9fc2ff;text-transform:uppercase}.top h1{margin:4px 0 2px;font-size:22px;word-break:break-all}.top p{margin:0;color:#c5d5eb}.shell{padding:18px 14px 44px}.toolbar{position:sticky;top:10px;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:11px 13px;background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 30px rgba(30,41,59,.08);backdrop-filter:blur(12px)}.status-dot{width:9px;height:9px;border-radius:50%;background:#f59e0b;box-shadow:0 0 0 4px #fef3c7}.status-dot.ok{background:#10b981;box-shadow:0 0 0 4px #d1fae5}.status{flex:1;min-width:220px;color:var(--muted)}button{border:0;border-radius:9px;padding:8px 13px;background:var(--accent);color:#fff;font:600 13px inherit;cursor:pointer}button:disabled{opacity:.55;cursor:wait}.toggle{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px}.mail{background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-bottom:16px;overflow:hidden;box-shadow:0 12px 32px rgba(30,41,59,.07)}.mail-head{padding:16px 18px;border-bottom:1px solid var(--line);background:#fbfcff}.mail h2{margin:0;font-size:17px;line-height:1.4}.meta{display:grid;gap:3px;margin-top:7px;color:var(--muted);font-size:13px}.mail-frame{display:block;width:100%;min-height:330px;height:520px;border:0;background:#fff}.mail-plain{background:#fff;color:#172033;padding:28px;line-height:1.75}.mail-code{display:inline-block;margin:0 0 18px;padding:10px 18px;border-radius:10px;background:var(--accent-soft);color:#174ea6;font:700 28px/1.2 ui-monospace,monospace;letter-spacing:5px}.mail-text{white-space:pre-wrap;word-break:break-word}.empty{padding:64px 22px;text-align:center;color:var(--muted)}.empty strong{display:block;color:var(--ink);font-size:18px;margin-bottom:5px}@media(max-width:640px){.top{padding:20px 15px}.top h1{font-size:18px}.toolbar{top:6px}.mail-head{padding:14px}.mail-frame{min-height:380px}.mail-plain{padding:20px}}
-</style></head><body><header class="top"><div class="top-inner"><div class="eyebrow">iCloud Privacy Mail</div><h1>{{EMAIL}}</h1><p>最近邮件·页面先显示本地缓存，后台自动同步</p></div></header><main class="shell"><div class="toolbar"><span class="status-dot" id="statusDot"></span><span class="status" id="syncStatus">已快速加载 {{COUNT}} 封缓存邮件，正在同步最新邮件…</span><label class="toggle"><input id="autoRefresh" type="checkbox" checked>15 秒自动同步</label><button id="refreshButton" type="button">立即同步</button></div><section id="mailList">{{CARDS}}</section></main><script>
-const statusEl=document.getElementById('syncStatus'),dotEl=document.getElementById('statusDot'),buttonEl=document.getElementById('refreshButton'),autoEl=document.getElementById('autoRefresh'),listEl=document.getElementById('mailList');let revision={{REVISION}},timer=null,countdownTimer=null,nextAt=0;function fitFrames(){document.querySelectorAll('.mail-frame').forEach(frame=>{try{const doc=frame.contentDocument;if(!doc||!doc.body)return;frame.style.height=Math.min(Math.max(doc.body.scrollHeight,doc.documentElement.scrollHeight,330)+24,1800)+'px'}catch(_){}})}function schedule(){clearTimeout(timer);clearInterval(countdownTimer);if(!autoEl.checked)return;nextAt=Date.now()+15000;countdownTimer=setInterval(()=>{if(buttonEl.disabled)return;const seconds=Math.max(1,Math.ceil((nextAt-Date.now())/1000));statusEl.textContent='已展示最新缓存，'+seconds+'秒后自动同步'},1000);timer=setTimeout(refresh,15000)}async function refresh(){clearTimeout(timer);clearInterval(countdownTimer);buttonEl.disabled=true;buttonEl.textContent='同步中…';dotEl.classList.remove('ok');statusEl.textContent='正在后台同步最新邮件，当前内容仍可浏览…';try{const u=new URL(location.href);u.searchParams.set('refresh','1');const response=await fetch(u,{cache:'no-store',headers:{Accept:'application/json'}});const data=await response.json();if(!response.ok)throw new Error(data.message||('请求失败 HTTP '+response.status));if(data.revision!==revision){listEl.innerHTML=data.html;revision=data.revision;fitFrames()}dotEl.classList.add('ok');statusEl.textContent=data.sync_error?('已显示本地邮件；'+data.sync_error):('同步完成，共显示 '+data.message_count+' 封最近邮件')}catch(error){statusEl.textContent='同步失败，已继续显示本地缓存：'+error.message}finally{buttonEl.disabled=false;buttonEl.textContent='立即同步';schedule()}}document.querySelectorAll('.mail-frame').forEach(frame=>frame.addEventListener('load',fitFrames));buttonEl.addEventListener('click',refresh);autoEl.addEventListener('change',()=>autoEl.checked?refresh():schedule());setTimeout(fitFrames,150);setTimeout(refresh,350);
+</style></head><body><header class="top"><div class="top-inner"><div class="eyebrow">iCloud Privacy Mail</div><h1>{{EMAIL}}</h1><p>最近邮件·页面先显示本地缓存，后台自动同步</p></div></header><main class="shell"><div class="toolbar"><span class="status-dot" id="statusDot"></span><span class="status" id="syncStatus">已快速加载 {{COUNT}} 封缓存邮件，正在同步最新邮件…</span><label class="toggle"><input id="autoRefresh" type="checkbox" checked>页面自动刷新</label><button id="refreshButton" type="button">立即同步</button></div><section id="mailList">{{CARDS}}</section></main><script>
+const statusEl=document.getElementById('syncStatus'),dotEl=document.getElementById('statusDot'),buttonEl=document.getElementById('refreshButton'),autoEl=document.getElementById('autoRefresh'),listEl=document.getElementById('mailList');let revision={{REVISION}},timer=null,countdownTimer=null,nextAt=0;function fitFrames(){document.querySelectorAll('.mail-frame').forEach(frame=>{try{const doc=frame.contentDocument;if(!doc||!doc.body)return;frame.style.height=Math.min(Math.max(doc.body.scrollHeight,doc.documentElement.scrollHeight,330)+24,1800)+'px'}catch(_){}})}function schedule(delay){clearTimeout(timer);clearInterval(countdownTimer);if(!autoEl.checked)return;const wait=delay||15000;nextAt=Date.now()+wait;countdownTimer=setInterval(()=>{if(buttonEl.disabled)return;const seconds=Math.max(1,Math.ceil((nextAt-Date.now())/1000));statusEl.textContent='已展示最新缓存，'+seconds+'秒后刷新页面'},1000);timer=setTimeout(refresh,wait)}async function refresh(){clearTimeout(timer);clearInterval(countdownTimer);buttonEl.disabled=true;buttonEl.textContent='同步中…';dotEl.classList.remove('ok');statusEl.textContent='正在后台同步最新邮件，当前内容仍可浏览…';try{const u=new URL(location.href);u.searchParams.set('refresh','1');const response=await fetch(u,{cache:'no-store',headers:{Accept:'application/json'}});const data=await response.json();if(!response.ok)throw new Error(data.message||('请求失败 HTTP '+response.status));if(data.revision!==revision){listEl.innerHTML=data.html;revision=data.revision;fitFrames()}if(data.sync_pending){statusEl.textContent='正在同步收件箱和垃圾箱，约 3 秒后刷新页面';schedule(3000)}else{dotEl.classList.add('ok');statusEl.textContent=data.sync_error?('已显示本地邮件；'+data.sync_error):('同步完成，共显示 '+data.message_count+' 封最近邮件');schedule()}}catch(error){statusEl.textContent='同步失败，已继续显示本地缓存：'+error.message;schedule()}finally{buttonEl.disabled=false;buttonEl.textContent='立即同步'}}document.querySelectorAll('.mail-frame').forEach(frame=>frame.addEventListener('load',fitFrames));buttonEl.addEventListener('click',refresh);autoEl.addEventListener('change',()=>autoEl.checked?refresh():schedule());setTimeout(fitFrames,150);setTimeout(refresh,350);
 </script></body></html>`
 	page = strings.NewReplacer(
 		"{{EMAIL}}", escape(mailbox.Email),
@@ -4449,19 +4496,32 @@ const statusEl=document.getElementById('syncStatus'),dotEl=document.getElementBy
 }
 
 func (s *Server) handleMailboxVisualRefresh(w http.ResponseWriter, r *http.Request, mailbox Mailbox, limit int) {
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-	defer cancel()
-	synced, syncErr := s.syncMailbox(ctx, mailbox, time.Now().Add(-24*time.Hour), "")
+	done := s.startMailboxContentSync(mailbox, time.Now().Add(-24*time.Hour))
+	wait := mailboxVisualSyncResponseWait
+	if wait <= 0 {
+		wait = 1500 * time.Millisecond
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	var syncErr error
+	syncPending := false
+	select {
+	case syncErr = <-done:
+	case <-timer.C:
+		syncPending = true
+	case <-r.Context().Done():
+		return
+	}
 	cards, count, revision := s.mailboxVisualCards(mailbox, limit)
 	payload := map[string]any{
 		"success":       true,
 		"html":          cards,
 		"message_count": count,
 		"revision":      revision,
-		"synced":        synced,
+		"sync_pending":  syncPending,
 		"updated_at":    formatTime(time.Now()),
 	}
-	if syncErr != nil {
+	if syncErr != nil && !syncPending {
 		payload["sync_error"] = "后台邮件同步暂时失败，请检查 IMAP 取码登录"
 		if s.logger != nil {
 			s.logger.Warn("visual mailbox background sync failed", "mailbox_id", mailbox.ID, "err", syncErr)
@@ -4486,7 +4546,7 @@ func (s *Server) mailboxVisualCards(mailbox Mailbox, limit int) (string, int, st
 	}
 	var cards strings.Builder
 	for _, msg := range messages {
-		fmt.Fprintf(&cards, `<article class="mail"><div class="mail-head"><h2>%s</h2><div class="meta"><span>发件人：%s</span><span>时间：%s</span></div></div>%s</article>`, escape(decodeMIMEHeader(msg.Subject)), escape(decodeMIMEHeader(msg.From)), escape(formatTime(msg.ReceivedAt)), mailboxVisualMessageContent(msg))
+		fmt.Fprintf(&cards, `<article class="mail"><div class="mail-head"><h2>%s</h2><div class="meta"><span>发件人：%s</span><span>时间：%s（北京时间）</span></div></div>%s</article>`, escape(decodeMIMEHeader(msg.Subject)), escape(decodeMIMEHeader(msg.From)), escape(formatTime(msg.ReceivedAt)), mailboxVisualMessageContent(msg))
 	}
 	if len(messages) == 0 {
 		cards.WriteString(`<div class="mail empty"><strong>暂未收到邮件</strong><span>页面会在后台自动同步，无需手动重复刷新。</span></div>`)
@@ -4503,7 +4563,7 @@ func mailboxVisualMessageContent(msg Message) string {
 	if strings.TrimSpace(msg.HTMLBody) != "" {
 		// srcdoc is attribute-escaped and isolated in a sandbox without scripts,
 		// forms, popups or top-level navigation. Email CSS remains available.
-		return `<iframe class="mail-frame" sandbox="allow-same-origin" referrerpolicy="no-referrer" loading="lazy" title="邮件正文" srcdoc="` + html.EscapeString(msg.HTMLBody) + `"></iframe>`
+		return `<iframe class="mail-frame" sandbox="" referrerpolicy="no-referrer" loading="lazy" title="邮件正文" srcdoc="` + html.EscapeString(msg.HTMLBody) + `"></iframe>`
 	}
 	plain := cleanMailboxVisualPlainText(msg.Body)
 	code := extractOTP(msg.Subject + "\n" + plain)
@@ -4534,27 +4594,29 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 		_ = s.store.RecordRuntimeMetric("code", metricSuccess, time.Since(metricStarted), metricMessage)
 	}()
 	if !s.authorized(r, mailbox) {
-		writeError(w, http.StatusUnauthorized, errCode("invalid_api_key", "API Key 错误", false))
+		writeMailboxCodeAPIError(w, r, http.StatusUnauthorized, errCode("invalid_api_key", "API Key 错误", false))
 		return
 	}
 	if !s.allowPublicMailboxAPI(w, r, mailbox) {
 		return
 	}
 	if !mailbox.APIActive || mailbox.Status == StatusDisabled {
-		writeError(w, http.StatusForbidden, errCode("api_disabled", "API 已停用", false))
+		writeMailboxCodeAPIError(w, r, http.StatusForbidden, errCode("api_disabled", "API 已停用", false))
 		return
 	}
 	if !mailbox.ICloudActive {
-		writeError(w, http.StatusForbidden, errCode("icloud_inactive", "邮箱已停用或 iCloud 状态不可用", false))
+		writeMailboxCodeAPIError(w, r, http.StatusForbidden, errCode("icloud_inactive", "邮箱已停用或 iCloud 状态不可用", false))
 		return
 	}
 	s.markMailWatcherActive(mailbox.ID)
 	after, err := parseAfter(r.URL.Query().Get("after"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeMailboxCodeAPIError(w, r, http.StatusBadRequest, err)
 		return
 	}
 	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
+	// Empty / default OpenAI means "any platform": return the latest
+	// recognizable code instead of requiring the word OpenAI in the mail.
 	if keyword == "" {
 		keyword = "OpenAI"
 	}
@@ -4568,15 +4630,15 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 	messages := s.store.MessagesForMailbox(mailbox.ID)
 	if cacheOnly {
 		if msg, code, ok := latestMailboxCode(messages, codeAfter, keyword, now); ok {
-			metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, "", false)
+			metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, "", false)
 			metricMessage = "缓存取码成功"
 			return
 		}
 		if latestMailboxOTPAmbiguous(messages, codeAfter, keyword, now) {
-			writeError(w, http.StatusOK, errCode("ambiguous_code", "检测到多个相近的验证码候选，为避免返回错误验证码已拒绝取码", true))
+			writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("ambiguous_code", "检测到多个相近的验证码候选，为避免返回错误验证码已拒绝取码", true))
 			return
 		}
-		writeError(w, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
+		writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
 		return
 	}
 	result := s.waitMailboxCode(r.Context(), mailbox, codeAfter, keyword, true, skipMessageID, s.mailboxCodeWaitDuration(r))
@@ -4584,52 +4646,53 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 		s.logger.Warn("icloud sync failed", "mailbox_id", mailbox.ID, "err", result.syncErr)
 	}
 	if result.ok {
-		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, result.message, result.code, staleCacheMessage(result.syncErr), false)
+		metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, result.message, result.code, staleCacheMessage(result.syncErr), false)
 		metricMessage = "同步取码成功"
 		return
 	}
 	if msg, code, ok := latestMailboxCodeSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID); ok {
-		metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, staleCacheMessage(result.syncErr), false)
+		metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, staleCacheMessage(result.syncErr), false)
 		metricMessage = "同步后取码成功"
 		return
 	}
 	if result.syncErr != nil && allowStale {
 		if msg, code, ok := latestMailboxCodeSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID); ok {
-			metricSuccess = s.writeMailboxCodeSuccess(w, mailbox, msg, code, "取码同步失败，当前验证码来自本地缓存", false)
+			metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, "取码同步失败，当前验证码来自本地缓存", false)
 			metricMessage = "旧缓存取码成功"
 			return
 		}
 	}
 	if result.syncErr != nil && !allowStale {
 		metricMessage = result.syncErr.Error()
-		writeError(w, http.StatusBadGateway, errCode("mail_sync_failed", "同步验证码邮件失败，已拒绝返回本地旧验证码；请检查取码登录或稍后重试", true))
+		writeMailboxCodeAPIError(w, r, http.StatusBadGateway, errCode("mail_sync_failed", "同步验证码邮件失败，已拒绝返回本地旧验证码；请检查取码登录或稍后重试", true))
 		return
 	}
 	if latestMailboxOTPAmbiguous(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now()) {
-		writeError(w, http.StatusOK, errCode("ambiguous_code", "检测到多个相近的验证码候选，为避免返回错误验证码已拒绝取码", true))
+		writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("ambiguous_code", "检测到多个相近的验证码候选，为避免返回错误验证码已拒绝取码", true))
 		return
 	}
-	writeError(w, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
+	writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_code", "暂未收到验证码", true))
 }
 
 func (s *Server) allowPublicMailboxAPI(w http.ResponseWriter, r *http.Request, mailbox Mailbox) bool {
-	if s.mailboxAPILimiter == nil {
+	if s.mailboxAPILimiter == nil || prefersMailboxBrowserRefresh(r) {
 		return true
 	}
 	allowed, retry := s.mailboxAPILimiter.allow(requestClientIP(r), mailbox.ID)
 	if allowed {
 		return true
 	}
-	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retry.Seconds()+0.999))))
-	writeError(w, http.StatusTooManyRequests, errCode("mailbox_api_rate_limited", "取码请求过于频繁，请稍后重试", true))
+	retryAfter := max(1, int(retry.Seconds()+0.999))
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	writeMailboxCodeAPIError(w, r, http.StatusTooManyRequests, errCode("mailbox_api_rate_limited", "取码请求过于频繁，请稍后重试", true))
 	return false
 }
 
-func (s *Server) writeMailboxCodeSuccess(w http.ResponseWriter, mailbox Mailbox, msg Message, code string, staleMessage string, markServed bool) bool {
+func (s *Server) writeMailboxCodeSuccess(w http.ResponseWriter, r *http.Request, mailbox Mailbox, msg Message, code string, staleMessage string, markServed bool) bool {
 	if markServed {
 		if _, err := s.store.SetMailboxLastCode(mailbox.ID, msg.ID, time.Now()); err != nil {
 			s.logger.Warn("remember mailbox code failed", "mailbox_id", mailbox.ID, "message_id", msg.ID, "err", err)
-			writeError(w, http.StatusInternalServerError, errCode("remember_code_failed", "保存验证码发放记录失败，请稍后重试", true))
+			writeMailboxCodeAPIError(w, r, http.StatusInternalServerError, errCode("remember_code_failed", "保存验证码发放记录失败，请稍后重试", true))
 			return false
 		}
 	}
@@ -4653,7 +4716,7 @@ func (s *Server) writeMailboxCodeSuccess(w http.ResponseWriter, mailbox Mailbox,
 		payload["stale_cache"] = true
 		payload["sync_error"] = staleMessage
 	}
-	writeJSON(w, http.StatusOK, payload)
+	writeMailboxJSON(w, r, http.StatusOK, payload, false)
 	return true
 }
 
@@ -4707,7 +4770,9 @@ func latestMailboxCodeSkipping(messages []Message, after time.Time, keyword stri
 		if msgTime.IsZero() || msgTime.Before(after) {
 			continue
 		}
-		if keyword != "OpenAI" {
+		// Default OpenAI is intentionally not a keyword filter so any
+		// platform's latest verification code can be returned.
+		if keyword != "" && !strings.EqualFold(keyword, "OpenAI") {
 			text := mailboxOTPText(msg)
 			if !strings.Contains(strings.ToLower(text), strings.ToLower(keyword)) {
 				continue
@@ -4740,7 +4805,7 @@ func latestMailboxOTPAmbiguous(messages []Message, after time.Time, keyword stri
 			continue
 		}
 		text := mailboxOTPText(msg)
-		if keyword != "OpenAI" && !strings.Contains(strings.ToLower(text), strings.ToLower(keyword)) {
+		if keyword != "" && !strings.EqualFold(keyword, "OpenAI") && !strings.Contains(strings.ToLower(text), strings.ToLower(keyword)) {
 			continue
 		}
 		if extractOTPFromMessage(msg).Ambiguous {
@@ -5771,7 +5836,7 @@ func (s *Server) syncMailboxCodeBatchForOwnerWithLimit(ctx context.Context, owne
 	if len(mailboxes) == 0 {
 		return 0, nil
 	}
-	release, err := s.acquireMailboxSyncSlot(ctx, ownerID)
+	release, err := s.acquireMailboxSyncSlot(ctx, ownerID, mailboxes)
 	if err != nil {
 		return 0, err
 	}
@@ -5788,10 +5853,10 @@ func (s *Server) syncMailboxCodeBatchForOwnerWithLimit(ctx context.Context, owne
 	if len(refreshed) == 0 {
 		return 0, nil
 	}
-	if err := s.waitMailboxSyncInterval(ctx, ownerID); err != nil {
+	if err := s.waitMailboxSyncInterval(ctx, ownerID, mailboxes); err != nil {
 		return 0, err
 	}
-	defer s.markMailboxSyncFinished(ownerID)
+	defer s.markMailboxSyncFinished(ownerID, mailboxes)
 
 	syncFn := s.syncCodeMailboxBatchWithCursor
 	if syncFn == nil && s.syncCodeMailboxBatch != nil {
@@ -5875,6 +5940,9 @@ func (s *Server) syncMailboxCodeBatchForOwnerWithLimit(ctx context.Context, owne
 					mailboxChanged = true
 				}
 				candidateUID := firstNonEmpty(msg.UID, remoteID)
+				if imapUIDNumber(candidateUID) <= 0 {
+					candidateUID = ""
+				}
 				if msg.ReceivedAt.After(latestMessageAt) {
 					latestMessageAt = msg.ReceivedAt
 					lastSyncUID = candidateUID
@@ -5911,7 +5979,7 @@ func (s *Server) syncMailboxBatchForOwnerWithLimit(ctx context.Context, ownerID 
 	if len(mailboxes) == 0 {
 		return nil
 	}
-	release, err := s.acquireMailboxSyncSlot(ctx, ownerID)
+	release, err := s.acquireMailboxSyncSlot(ctx, ownerID, mailboxes)
 	if err != nil {
 		return err
 	}
@@ -5928,10 +5996,10 @@ func (s *Server) syncMailboxBatchForOwnerWithLimit(ctx context.Context, ownerID 
 	if len(refreshed) == 0 {
 		return nil
 	}
-	if err := s.waitMailboxSyncInterval(ctx, ownerID); err != nil {
+	if err := s.waitMailboxSyncInterval(ctx, ownerID, mailboxes); err != nil {
 		return err
 	}
-	defer s.markMailboxSyncFinished(ownerID)
+	defer s.markMailboxSyncFinished(ownerID, mailboxes)
 	syncFn := s.syncMailboxBatch
 	if syncFn == nil {
 		syncFn = func(ctx context.Context, session ICloudSession, mailboxes []Mailbox, after time.Time, keyword string, maxThreads int) (map[string][]ICloudSyncedMessage, error) {
@@ -5997,6 +6065,12 @@ func highestICloudMessageUID(messagesByMailbox map[string][]ICloudSyncedMessage)
 	highest := 0
 	for _, messages := range messagesByMailbox {
 		for _, msg := range messages {
+			if strings.Contains(strings.TrimSpace(msg.RemoteID), ":") && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.RemoteID)), "imap:") {
+				continue
+			}
+			if strings.Count(strings.TrimSpace(msg.RemoteID), ":") > 1 {
+				continue
+			}
 			uid := imapUIDNumber(firstNonEmpty(msg.UID, msg.RemoteID))
 			if uid > highest {
 				highest = uid
@@ -6022,8 +6096,8 @@ func icloudRemoteIDsFromMessages(messages []Message) []string {
 	return uniqueStrings(ids)
 }
 
-func (s *Server) acquireMailboxSyncSlot(ctx context.Context, ownerID string) (func(), error) {
-	key := mailboxSyncOwnerKey(ownerID)
+func (s *Server) acquireMailboxSyncSlot(ctx context.Context, ownerID string, mailboxes []Mailbox) (func(), error) {
+	key := mailboxSyncLockKey(ownerID, mailboxes)
 	s.icloudMailSyncMu.Lock()
 	if s.icloudMailSyncGates == nil {
 		s.icloudMailSyncGates = make(map[string]chan struct{})
@@ -6043,12 +6117,12 @@ func (s *Server) acquireMailboxSyncSlot(ctx context.Context, ownerID string) (fu
 	}
 }
 
-func (s *Server) waitMailboxSyncInterval(ctx context.Context, ownerID string) error {
+func (s *Server) waitMailboxSyncInterval(ctx context.Context, ownerID string, mailboxes []Mailbox) error {
 	interval := s.mailboxSyncMinInterval
 	if interval <= 0 {
 		return nil
 	}
-	key := mailboxSyncOwnerKey(ownerID)
+	key := mailboxSyncLockKey(ownerID, mailboxes)
 	s.icloudMailSyncMu.Lock()
 	last := s.icloudMailSyncLast[key]
 	s.icloudMailSyncMu.Unlock()
@@ -6069,14 +6143,30 @@ func (s *Server) waitMailboxSyncInterval(ctx context.Context, ownerID string) er
 	}
 }
 
-func (s *Server) markMailboxSyncFinished(ownerID string) {
-	key := mailboxSyncOwnerKey(ownerID)
+func (s *Server) markMailboxSyncFinished(ownerID string, mailboxes []Mailbox) {
+	key := mailboxSyncLockKey(ownerID, mailboxes)
 	s.icloudMailSyncMu.Lock()
 	if s.icloudMailSyncLast == nil {
 		s.icloudMailSyncLast = make(map[string]time.Time)
 	}
 	s.icloudMailSyncLast[key] = time.Now()
 	s.icloudMailSyncMu.Unlock()
+}
+
+func mailboxSyncLockKey(ownerID string, mailboxes []Mailbox) string {
+	owner := strings.TrimSpace(ownerID)
+	if owner == "" {
+		owner = "__legacy__"
+	}
+	if len(mailboxes) == 1 {
+		if accountID := strings.TrimSpace(mailboxes[0].AccountID); accountID != "" {
+			return owner + "|acc|" + accountID
+		}
+		if mailboxID := strings.TrimSpace(mailboxes[0].ID); mailboxID != "" {
+			return owner + "|mbx|" + mailboxID
+		}
+	}
+	return owner
 }
 
 func mailboxSyncOwnerKey(ownerID string) string {
@@ -6144,45 +6234,182 @@ func (s *Server) createMailboxesForOwner(ctx context.Context, ownerID string, ac
 	return s.createMailboxesForOwnerWithChannels(ctx, ownerID, requests, label, note)
 }
 
-func (s *Server) createAliasMailboxes(ctx context.Context, ownerID string, parent Mailbox, count int, label, note string, channel mailboxCreateChannel) ([]Mailbox, []ICloudRemoteMailbox, []createMailboxFailure, error) {
-	mailboxes := make([]Mailbox, 0, count)
-	remotes := make([]ICloudRemoteMailbox, 0, count)
+func plusAliasLocalPart(parentEmail string) (string, string, error) {
+	email := strings.ToLower(strings.TrimSpace(parentEmail))
+	local, domain, ok := strings.Cut(email, "@")
+	if !ok || local == "" || domain == "" {
+		return "", "", errCode("alias_parent_invalid", "主隐私邮箱地址无效", false)
+	}
+	baseLocal, _, _ := strings.Cut(local, "+")
+	if baseLocal == "" {
+		return "", "", errCode("alias_parent_invalid", "主隐私邮箱地址无效", false)
+	}
+	token, err := randomToken(5)
+	if err != nil {
+		return "", "", err
+	}
+	tag := strings.ToLower(strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		default:
+			return -1
+		}
+	}, token))
+	if len(tag) < 4 {
+		tag = fmt.Sprintf("%04d", time.Now().UnixNano()%10000)
+	}
+	if len(tag) > 8 {
+		tag = tag[:8]
+	}
+	return baseLocal + "+" + tag + "@" + domain, tag, nil
+}
+
+func (s *Server) createPlusAliasMailboxes(ctx context.Context, ownerID string, parents []Mailbox, count int, label, note string) ([]Mailbox, []ICloudRemoteMailbox, []createMailboxFailure, error) {
+	if count < 1 {
+		count = 1
+	}
+	mailboxes := make([]Mailbox, 0, len(parents)*count)
+	remotes := make([]ICloudRemoteMailbox, 0, len(parents)*count)
 	failures := make([]createMailboxFailure, 0)
 	var firstErr error
-	for i := 0; i < count; i++ {
-		aliasLabel := strings.TrimSpace(label)
-		if aliasLabel == "" {
-			aliasLabel = firstNonEmpty(parent.Label, parent.Email) + fmt.Sprintf("-别名-%02d", i+1)
-		}
-		aliasNote := strings.TrimSpace(note)
-		if aliasNote == "" {
-			aliasNote = "属于隐私邮箱 " + parent.Email
-		}
-		createCtx := contextWithMailboxCreateChannel(ctx, channel)
-		mailbox, remote, err := s.createMailboxForOwner(createCtx, ownerID, parent.AccountID, aliasLabel, aliasNote)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			failures = append(failures, createMailboxFailure{AccountID: parent.AccountID, Channel: string(channel), Error: err.Error()})
+	used := map[string]bool{}
+	existingByParent := map[string]int{}
+	state := s.store.SnapshotForMailboxList(ownerID)
+	for _, mailbox := range state.Mailboxes {
+		if firstNonEmpty(mailbox.MailboxType, "privacy") != "alias" {
 			continue
 		}
-		if err = s.store.MarkMailboxesAsAliases(ownerID, parent.ID, []string{mailbox.ID}); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			failures = append(failures, createMailboxFailure{AccountID: parent.AccountID, Channel: string(channel), Error: err.Error()})
+		if parentID := strings.TrimSpace(mailbox.ParentMailboxID); parentID != "" {
+			existingByParent[parentID]++
+		}
+	}
+	for _, parent := range parents {
+		if ctx.Err() != nil {
+			break
+		}
+		need := count - existingByParent[parent.ID]
+		if need < 1 {
 			continue
 		}
-		mailbox.MailboxType = "alias"
-		mailbox.ParentMailboxID = parent.ID
-		mailboxes = append(mailboxes, mailbox)
-		remotes = append(remotes, remote)
+		for i := 0; i < need; i++ {
+			var email, tag string
+			var err error
+			for attempt := 0; attempt < 8; attempt++ {
+				email, tag, err = plusAliasLocalPart(parent.Email)
+				if err != nil {
+					break
+				}
+				if !used[email] {
+					if _, exists := s.store.FindMailboxByEmail(email); !exists {
+						used[email] = true
+						break
+					}
+				}
+				email = ""
+			}
+			if err != nil || email == "" {
+				if firstErr == nil {
+					if err == nil {
+						err = errCode("alias_generate_failed", "别名邮箱生成失败，请重试", true)
+					}
+					firstErr = err
+				}
+				failures = append(failures, createMailboxFailure{AccountID: parent.AccountID, AppleID: parent.Email, Error: err.Error()})
+				continue
+			}
+			aliasLabel := strings.TrimSpace(label)
+			if aliasLabel == "" {
+				aliasLabel = firstNonEmpty(parent.Label, parent.Email) + "-" + tag
+			}
+			mailbox, addErr := s.store.AddPlusAliasMailbox(ownerID, parent.ID, email, aliasLabel, note)
+			if addErr != nil {
+				if firstErr == nil {
+					firstErr = addErr
+				}
+				failures = append(failures, createMailboxFailure{AccountID: parent.AccountID, AppleID: parent.Email, Error: addErr.Error()})
+				continue
+			}
+			mailboxes = append(mailboxes, mailbox)
+			remotes = append(remotes, ICloudRemoteMailbox{Email: mailbox.Email, Label: mailbox.Label, Note: mailbox.Note, IsActive: true})
+		}
 	}
 	if len(mailboxes) == 0 && firstErr != nil {
 		return nil, nil, failures, firstErr
 	}
 	return mailboxes, remotes, failures, nil
+}
+
+func (s *Server) startPlusAliasCreateJob(ownerID, accountID string, parents []Mailbox, count int, label, note string) (*aliasCreateJob, error) {
+	key := strings.TrimSpace(ownerID) + "|" + strings.TrimSpace(accountID)
+	s.aliasJobMu.Lock()
+	defer s.aliasJobMu.Unlock()
+	if s.aliasJobs == nil {
+		s.aliasJobs = map[string]*aliasCreateJob{}
+	}
+	if current := s.aliasJobs[key]; current != nil && (current.Status == "queued" || current.Status == "running") {
+		return current, errCode("alias_job_running", "该 Apple 账号正在生成别名邮箱，请等待当前任务完成", true)
+	}
+	job := &aliasCreateJob{ID: fmt.Sprintf("alias-%d", time.Now().UnixNano()), OwnerID: ownerID, AccountID: accountID, Status: "queued", Message: fmt.Sprintf("已排队，准备为 %d 个主邮箱各生成 %d 个别名", len(parents), count), Target: len(parents) * count, StartedAt: time.Now(), UpdatedAt: time.Now()}
+	s.aliasJobs[key] = job
+	go s.runPlusAliasCreateJob(job, append([]Mailbox(nil), parents...), count, label, note)
+	return job, nil
+}
+
+func (s *Server) runPlusAliasCreateJob(job *aliasCreateJob, parents []Mailbox, count int, label, note string) {
+	s.updateAliasCreateJob(job, func() {
+		job.Status = "running"
+		job.Message = "正在后台生成别名邮箱"
+		job.UpdatedAt = time.Now()
+	})
+	mailboxes, _, failures, err := s.createPlusAliasMailboxes(context.Background(), job.OwnerID, parents, count, label, note)
+	s.updateAliasCreateJob(job, func() {
+		job.Created = len(mailboxes)
+		job.Failed = len(failures)
+		job.UpdatedAt = time.Now()
+		if err != nil && len(mailboxes) == 0 {
+			job.Status = "failed"
+			job.Message = err.Error()
+			return
+		}
+		job.Status = "success"
+		job.Message = fmt.Sprintf("别名邮箱生成完成：成功 %d 个，失败 %d 个", len(mailboxes), len(failures))
+	})
+	s.recordOperation("生成别名邮箱", map[bool]string{true: "success", false: "failed"}[err == nil || len(mailboxes) > 0], job.Message, job.StartedAt)
+}
+
+func (s *Server) updateAliasCreateJob(job *aliasCreateJob, mutate func()) {
+	s.aliasJobMu.Lock()
+	defer s.aliasJobMu.Unlock()
+	mutate()
+}
+
+func (s *Server) handleAliasCreateJobStatus(w http.ResponseWriter, r *http.Request) {
+	ownerID := requestOwnerID(r, s.store)
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if ownerID == "" || accountID == "" {
+		writeError(w, http.StatusBadRequest, errCode("account_required", "请选择要查看进度的账号", false))
+		return
+	}
+	s.aliasJobMu.Lock()
+	job := s.aliasJobs[ownerID+"|"+accountID]
+	s.aliasJobMu.Unlock()
+	if job == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "job": nil})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "job": s.publicAliasCreateJob(job)})
+}
+
+func (s *Server) publicAliasCreateJob(job *aliasCreateJob) map[string]any {
+	if job == nil {
+		return nil
+	}
+	s.aliasJobMu.Lock()
+	defer s.aliasJobMu.Unlock()
+	return map[string]any{"id": job.ID, "account_id": job.AccountID, "status": job.Status, "message": job.Message, "target": job.Target, "created": job.Created, "failed": job.Failed, "started_at": formatTime(job.StartedAt), "updated_at": formatTime(job.UpdatedAt)}
 }
 
 func (s *Server) createMailboxesForOwnerWithChannels(ctx context.Context, ownerID string, requests []mailboxCreateRequest, label, note string) ([]Mailbox, []ICloudRemoteMailbox, []createMailboxFailure, error) {
@@ -6818,6 +7045,7 @@ func (s *Server) allowsUserSession(r *http.Request) bool {
 			"/api/apple-account/login/start",
 			"/api/apple-account/login/2fa",
 			"/api/icloud/session/check",
+			"/api/icloud/web-login/check",
 			"/api/icloud/imap-login/save",
 			"/api/icloud/imap-login/check",
 			"/api/icloud/auto-login/bind",
@@ -6829,7 +7057,16 @@ func (s *Server) allowsUserSession(r *http.Request) bool {
 			return true
 		}
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/api/icloud/auto-login/logs" {
+		return true
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/icloud/auto-login/logs" {
+		return true
+	}
 	if r.Method == http.MethodGet && r.URL.Path == "/api/icloud/scheduler/status" {
+		return true
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/api/icloud/mailboxes/alias-job" {
 		return true
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/api/accounts" {
@@ -7514,6 +7751,86 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(payload)
+}
+
+func prefersMailboxBrowserRefresh(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if truthy(r.URL.Query().Get("raw")) {
+		return false
+	}
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	if strings.Contains(accept, "application/json") || strings.Contains(accept, "text/plain") {
+		return false
+	}
+	return strings.Contains(accept, "text/html")
+}
+
+func writeMailboxBrowserRefresh(w http.ResponseWriter, status int, contentType, body, doneMessage string, keepRefreshing bool) {
+	intervalMS := 8000
+	if retryAfter := strings.TrimSpace(w.Header().Get("Retry-After")); keepRefreshing && retryAfter != "" {
+		if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
+			intervalMS = seconds * 1000
+		}
+	}
+	if !keepRefreshing {
+		intervalMS = 0
+	}
+	statusText := "正在自动刷新，拿到结果后会自动停止"
+	if !keepRefreshing {
+		statusText = doneMessage
+	}
+	page := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>取码结果</title><style>
+:root{color-scheme:light}body{margin:0;background:#f3f6fa;color:#142033;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}.shell{max-width:860px;margin:0 auto;padding:22px 16px 40px}.status{margin:0 0 12px;color:#68778b}.box{background:#fff;border:1px solid #dce3ec;border-radius:14px;padding:18px;white-space:pre-wrap;word-break:break-word;box-shadow:0 12px 32px rgba(30,41,59,.07)}
+</style></head><body><main class="shell"><p class="status">` + html.EscapeString(statusText) + `</p><pre class="box">` + html.EscapeString(body) + `</pre></main>`
+	if keepRefreshing {
+		page += `<script>setTimeout(function(){location.reload()},` + strconv.Itoa(intervalMS) + `)</script>`
+	}
+	page += `</body></html>`
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, private")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if contentType != "" {
+		w.Header().Set("X-Original-Content-Type", contentType)
+	}
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, page)
+}
+
+func writeMailboxJSON(w http.ResponseWriter, r *http.Request, status int, payload any, keepRefreshing bool) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(payload); err != nil {
+		writeJSON(w, status, payload)
+		return
+	}
+	body := strings.TrimSpace(buf.String())
+	if prefersMailboxBrowserRefresh(r) {
+		done := "已获取验证码，已停止自动刷新"
+		if keepRefreshing {
+			done = "暂未获取结果，稍后自动刷新"
+		}
+		writeMailboxBrowserRefresh(w, status, "application/json; charset=utf-8", body, done, keepRefreshing)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, body)
+	if !strings.HasSuffix(body, "\n") {
+		_, _ = io.WriteString(w, "\n")
+	}
+}
+
+func writeMailboxCodeAPIError(w http.ResponseWriter, r *http.Request, status int, err error) {
+	var coded codedError
+	payload := apiError{Success: false, Code: "internal_error", Message: err.Error()}
+	if errors.As(err, &coded) {
+		payload = apiError{Success: false, Code: coded.code, Message: coded.message, Retryable: coded.retryable}
+	}
+	writeMailboxJSON(w, r, status, payload, payload.Code == "no_code" || payload.Code == "no_recent_message" || payload.Code == "ambiguous_code" || payload.Code == "mail_sync_failed" || payload.Code == "mailbox_api_rate_limited")
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {

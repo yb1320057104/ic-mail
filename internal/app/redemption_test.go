@@ -78,6 +78,34 @@ func TestRedemptionPoolRedeemAndRotate(t *testing.T) {
 	}
 }
 
+func TestAliasRedemptionPoolOnlyAcceptsAliasMailboxes(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "user-alias-pool"
+	parent, err := store.AddMailboxForOwner(owner, "acc-1", "主邮箱", "hake_tellers6w@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias, err := store.AddPlusAliasMailbox(owner, parent.ID, "hake_tellers6w+awds@icloud.com", "别名", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy := map[string]bool{parent.ID: true, alias.ID: true}
+	if _, err := store.AddRedemptionItems(owner, []string{alias.ID}, healthy); err == nil {
+		t.Fatal("primary pool should reject alias mailbox")
+	}
+	n, err := store.AddAliasRedemptionItems(owner, []string{parent.ID, alias.ID}, healthy)
+	if err != nil || n != 1 {
+		t.Fatalf("alias pool add=%d err=%v", n, err)
+	}
+	_, _, items := store.RedemptionDataForOwnerType(owner, "alias")
+	if len(items) != 1 || items[0].MailboxID != alias.ID {
+		t.Fatalf("alias pool items = %#v", items)
+	}
+}
+
 func TestRedemptionPoolDoesNotPartiallyRedeem(t *testing.T) {
 	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {

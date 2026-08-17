@@ -166,6 +166,9 @@ func (s *FileStore) MailboxCountForAccount(ownerID, accountID string) int {
 	defer s.mu.Unlock()
 	count := 0
 	for _, mailbox := range s.state.Mailboxes {
+		if firstNonEmpty(mailbox.MailboxType, "privacy") == "alias" {
+			continue
+		}
 		if constantTimeEqual(mailbox.OwnerID, ownerID) && constantTimeEqual(mailbox.AccountID, accountID) {
 			count++
 		}
@@ -1323,6 +1326,65 @@ func (s *FileStore) AddMailboxForOwner(ownerID, accountID, label, email string) 
 	return mailbox, s.saveLocked()
 }
 
+func (s *FileStore) AddPlusAliasMailbox(ownerID, parentID, email, label, note string) (Mailbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID = strings.TrimSpace(ownerID)
+	parentID = strings.TrimSpace(parentID)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if parentID == "" || email == "" {
+		return Mailbox{}, errCode("alias_parent_missing", "请选择一个主隐私邮箱后再生成别名", false)
+	}
+	var parent Mailbox
+	for _, mailbox := range s.state.Mailboxes {
+		if mailbox.ID == parentID {
+			parent = mailbox
+			break
+		}
+	}
+	if parent.ID == "" || (ownerID != "" && !constantTimeEqual(parent.OwnerID, ownerID)) {
+		return Mailbox{}, errCode("alias_parent_missing", "主隐私邮箱不存在", false)
+	}
+	if firstNonEmpty(parent.MailboxType, "privacy") == "alias" {
+		return Mailbox{}, errCode("alias_parent_invalid", "不能再给别名邮箱生成别名，请选择普通隐私邮箱", false)
+	}
+	for _, mailbox := range s.state.Mailboxes {
+		if strings.EqualFold(mailbox.Email, email) {
+			return Mailbox{}, errCode("mailbox_exists", "别名邮箱已存在", false)
+		}
+	}
+	now := time.Now()
+	token, err := randomToken(24)
+	if err != nil {
+		return Mailbox{}, err
+	}
+	if strings.TrimSpace(label) == "" {
+		label = firstNonEmpty(parent.Label, parent.Email) + "-别名"
+	}
+	if strings.TrimSpace(note) == "" {
+		note = "属于隐私邮箱 " + parent.Email
+	}
+	mailbox := Mailbox{
+		ID:                s.nextIDLocked("mbx"),
+		OwnerID:           firstNonEmpty(ownerID, parent.OwnerID),
+		AccountID:         parent.AccountID,
+		Label:             strings.TrimSpace(label),
+		Email:             email,
+		APIToken:          token,
+		APITokenExpiresAt: now.Add(180 * 24 * time.Hour),
+		APIActive:         true,
+		ICloudActive:      parent.ICloudActive,
+		Status:            StatusAvailable,
+		Note:              strings.TrimSpace(note),
+		MailboxType:       "alias",
+		ParentMailboxID:   parent.ID,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	s.state.Mailboxes = append(s.state.Mailboxes, mailbox)
+	return mailbox, s.saveLocked()
+}
+
 func (s *FileStore) UpsertMailboxFromRemote(ownerID, accountID string, remote ICloudRemoteMailbox, defaultNote string) (Mailbox, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2106,6 +2168,10 @@ func (s *FileStore) AddSecondhandRedemptionItems(ownerID string, ids []string, h
 	return s.addRedemptionItems(ownerID, "secondhand", ids, healthy)
 }
 
+func (s *FileStore) AddAliasRedemptionItems(ownerID string, ids []string, healthy map[string]bool) (int, error) {
+	return s.addRedemptionItems(ownerID, "alias", ids, healthy)
+}
+
 func (s *FileStore) addRedemptionItems(ownerID, poolType string, ids []string, healthy map[string]bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2141,6 +2207,13 @@ func (s *FileStore) addRedemptionItems(ownerID, poolType string, ids []string, h
 		eligibleExport := mailbox.ExportedAt.IsZero()
 		if poolType == "secondhand" {
 			eligibleExport = !mailbox.ExportedAt.IsZero() && mailbox.ExportedAt.Before(now.Add(-7*24*time.Hour))
+		}
+		mailboxType := firstNonEmpty(mailbox.MailboxType, "privacy")
+		if poolType == "alias" && mailboxType != "alias" {
+			continue
+		}
+		if poolType != "alias" && mailboxType == "alias" {
+			continue
 		}
 		if !wanted[mailbox.ID] || existing[mailbox.ID] || !constantTimeEqual(mailbox.OwnerID, ownerID) || !eligibleExport || !mailbox.APIActive || !mailbox.ICloudActive || mailbox.Status != StatusAvailable || !healthy[mailbox.ID] {
 			continue

@@ -39,11 +39,18 @@ func maskSecret(value string, keep int) string {
 	return "********" + value[len(value)-keep:]
 }
 
+func chinaLocation() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		return loc
+	}
+	return time.FixedZone("CST", 8*3600)
+}
+
 func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.Format("2006-01-02 15:04")
+	return t.In(chinaLocation()).Format("2006-01-02 15:04")
 }
 
 func firstNonEmpty(values ...string) string {

@@ -483,3 +483,63 @@ func TestAppendUniqueIPv4(t *testing.T) {
 		t.Fatalf("appendUniqueIPv4 order = %v", got)
 	}
 }
+func TestIMAPLooksLikeJunkMailbox(t *testing.T) {
+	for _, name := range []string{"Junk", "INBOX.Junk", "Spam", "Junk E-mail", "垃圾邮件", "垃圾箱"} {
+		if !imapLooksLikeJunkMailbox(name) {
+			t.Fatalf("expected junk mailbox %q", name)
+		}
+	}
+	for _, name := range []string{"INBOX", "Sent", "Drafts", "Archive", "Notes"} {
+		if imapLooksLikeJunkMailbox(name) {
+			t.Fatalf("did not expect junk mailbox %q", name)
+		}
+	}
+}
+
+func TestIMAPListedJunkMailboxesParsesLIST(t *testing.T) {
+	got := imapListedJunkMailboxes([]string{
+		`* LIST (\HasNoChildren) "/" INBOX`,
+		`* LIST (\HasNoChildren) "/" Junk`,
+		`* LIST (\HasNoChildren) "/" "Junk E-mail"`,
+		`* LIST (\HasNoChildren) "/" Sent`,
+		`A005 OK LIST completed`,
+	})
+	if len(got) != 2 || got[0] != "Junk" || got[1] != "Junk E-mail" {
+		t.Fatalf("listed junk mailboxes = %#v", got)
+	}
+}
+
+func TestICloudIMAPJunkMessageUsesFolderRemoteID(t *testing.T) {
+	raw := "From: OpenAI <noreply@tm.openai.com>\r\n" +
+		"To: junk-alias@icloud.com\r\n" +
+		"Subject: Your temporary ChatGPT verification code\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"Enter this temporary verification code to continue: 246810\r\n"
+	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{
+		UID:    "42",
+		Raw:    []byte(raw),
+		Folder: "Junk",
+	}}, []Mailbox{{ID: "mbx_junk", Email: "junk-alias@icloud.com"}}, time.Time{}, "ChatGPT")
+	messages := got["mbx_junk"]
+	if len(messages) != 1 {
+		t.Fatalf("junk messages = %+v", got)
+	}
+	if messages[0].RemoteID != "imap:Junk:42" {
+		t.Fatalf("junk remote id = %q, want imap:Junk:42", messages[0].RemoteID)
+	}
+	if messages[0].UID != "" {
+		t.Fatalf("junk UID should not advance inbox cursor, got %q", messages[0].UID)
+	}
+	if imapUIDNumber(messages[0].RemoteID) != 0 {
+		t.Fatalf("junk remote id should not parse as inbox UID: %q", messages[0].RemoteID)
+	}
+}
+
+func TestJunkLimitForKeepsRecentFilteredMail(t *testing.T) {
+	if got := junkLimitFor(8); got != 20 {
+		t.Fatalf("junkLimitFor(8)=%d, want 20", got)
+	}
+	if got := junkLimitFor(50); got != 40 {
+		t.Fatalf("junkLimitFor(50)=%d, want 40", got)
+	}
+}
