@@ -1983,6 +1983,20 @@
       }
       setActiveView('mailboxes');
     }
+
+    const ADMIN_DATA_VIEWS = new Set([
+      'data-accountManage',
+      'data-users',
+      'data-mailboxes',
+      'data-accounts',
+      'data-sessions',
+      'data-invites',
+      'data-announcements',
+      'data-audit',
+      'data-operations',
+      'data-logs'
+    ]);
+
     function setActiveView(view) {
       let normalized = viewMeta[view] ? view : 'overview';
       if (normalized === 'data-overview') normalized = 'overview';

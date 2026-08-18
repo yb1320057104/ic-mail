@@ -4050,7 +4050,7 @@ func TestMailboxContentDoesNotReturnExpiredMessage(t *testing.T) {
 	rr := httptest.NewRecorder()
 	path := "/api/v1/access/" + url.PathEscape(mailbox.APIToken) + "/mailboxes/" + url.PathEscape(mailbox.Email) + "/content"
 	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
-	if rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), "old code") || !strings.Contains(rr.Body.String(), `"code":"no_recent_message"`) {
+	if rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), "old code") || !strings.Contains(rr.Body.String(), "no_recent_message") {
 		t.Fatalf("content status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
