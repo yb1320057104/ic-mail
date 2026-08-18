@@ -26,3 +26,21 @@ func TestIndexDefinesAdminDataViewsBeforeUse(t *testing.T) {
 		}
 	}
 }
+
+func TestIndexHidesAdminNavigationForOrdinaryUsers(t *testing.T) {
+	content, err := webFS.ReadFile("templates/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(content)
+	for _, required := range []string{
+		".admin-data-nav[hidden] { display: none !important; }",
+		"const showAdminNavigation = !!currentUser.is_admin;",
+		"item.hidden = !showAdminNavigation;",
+		"item.style.display = showAdminNavigation ? '' : 'none';",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("ordinary-user admin navigation guard missing %q", required)
+		}
+	}
+}

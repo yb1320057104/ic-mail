@@ -279,6 +279,7 @@
       font-size: 12px;
     }
     .nav-item.active .count-dot { color: var(--green-2); background: rgba(255,255,255,.88); }
+    .admin-data-nav[hidden] { display: none !important; }
     .account-data-frame {
       display: block;
       width: 100%;
@@ -2187,7 +2188,12 @@
 		$('currentUserExpiry').classList.toggle('expired', !!currentUser.expired);
 	  }
 	  if ($('renewInviteTopButton')) $('renewInviteTopButton').hidden = !!currentUser.is_admin;
-	  for (const item of document.querySelectorAll('.admin-data-nav')) item.hidden = !currentUser.is_admin;
+	  const showAdminNavigation = !!currentUser.is_admin;
+	  for (const item of document.querySelectorAll('.admin-data-nav')) {
+		item.hidden = !showAdminNavigation;
+		item.style.display = showAdminNavigation ? '' : 'none';
+		item.setAttribute('aria-hidden', String(!showAdminNavigation));
+	  }
 	  if (!currentUser.is_admin && ADMIN_DATA_VIEWS.has(activeView)) setActiveView('overview');
 	  if (currentUser.expired) openRenewInviteModal(false);
       return currentUser;
