@@ -2033,6 +2033,12 @@ func (s *FileStore) SetMailboxLastCode(id string, messageID string, servedAt tim
 	if servedAt.IsZero() {
 		servedAt = time.Now()
 	}
+	// Repeated reads of the same message must not slide the delivery window
+	// forever. Preserve the first successful delivery time; a newer message ID
+	// starts a new window immediately.
+	if s.state.Mailboxes[idx].LastCodeMessageID == messageID && !s.state.Mailboxes[idx].LastCodeAt.IsZero() {
+		return s.state.Mailboxes[idx], nil
+	}
 	original := s.state.Mailboxes[idx]
 	s.state.Mailboxes[idx].LastCodeMessageID = messageID
 	s.state.Mailboxes[idx].LastCodeAt = servedAt

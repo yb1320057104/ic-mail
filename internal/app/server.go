@@ -29,7 +29,8 @@ import (
 //go:embed templates/*.html
 var webFS embed.FS
 
-const mailboxCodeFreshWindow = 60 * time.Second
+const mailboxCodeFreshWindow = 180 * time.Second
+const mailboxCodeRepeatWindow = 60 * time.Second
 const mailboxCodeSyncLookback = 5 * time.Minute
 const mailboxReceivedTimePrecisionAllowance = 2 * time.Minute
 const mailboxCodeRequestFetchLimit = 20
@@ -4587,12 +4588,13 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	cutoff := mailboxCodeAfter(after, time.Now())
+	skipMessageID := expiredMailboxServedMessageID(mailbox, time.Now())
 	if truthy(r.URL.Query().Get("cache")) {
-		if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+		if msg, found := latestRecentMailboxMessageSkipping(s.store.MessagesForMailbox(mailbox.ID), cutoff, skipMessageID); found {
 			s.writeMailboxContent(w, r, mailbox, msg)
 			return
 		}
-		writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近60秒本地缓存中暂无邮件", true))
+		writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近180秒本地缓存中暂无邮件", true))
 		return
 	}
 
@@ -4615,7 +4617,7 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 	for {
 		select {
 		case syncErr := <-done:
-			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+			if msg, found := latestRecentMailboxMessageSkipping(s.store.MessagesForMailbox(mailbox.ID), cutoff, skipMessageID); found {
 				s.writeMailboxContent(w, r, mailbox, msg)
 				return
 			}
@@ -4623,19 +4625,19 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 				writeMailboxCodeAPIError(w, r, http.StatusBadGateway, errCode("mail_sync_failed", "同步最近邮件失败，请检查取码登录或稍后重试", true))
 				return
 			}
-			writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近60秒暂未收到邮件", true))
+			writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近180秒暂未收到邮件", true))
 			return
 		case <-ticker.C:
-			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+			if msg, found := latestRecentMailboxMessageSkipping(s.store.MessagesForMailbox(mailbox.ID), cutoff, skipMessageID); found {
 				s.writeMailboxContent(w, r, mailbox, msg)
 				return
 			}
 		case <-timer.C:
-			if msg, found := latestRecentMailboxMessage(s.store.MessagesForMailbox(mailbox.ID), cutoff); found {
+			if msg, found := latestRecentMailboxMessageSkipping(s.store.MessagesForMailbox(mailbox.ID), cutoff, skipMessageID); found {
 				s.writeMailboxContent(w, r, mailbox, msg)
 				return
 			}
-			writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近60秒暂未收到邮件，后台仍在同步", true))
+			writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("no_recent_message", "最近180秒暂未收到邮件，后台仍在同步", true))
 			return
 		case <-r.Context().Done():
 			return
@@ -4644,6 +4646,11 @@ func (s *Server) handleMailboxContentByEmail(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) writeMailboxContent(w http.ResponseWriter, r *http.Request, mailbox Mailbox, msg Message) {
+	if _, err := s.store.SetMailboxLastCode(mailbox.ID, msg.ID, time.Now()); err != nil {
+		s.logger.Warn("remember mailbox content failed", "mailbox_id", mailbox.ID, "message_id", msg.ID, "err", err)
+		writeMailboxCodeAPIError(w, r, http.StatusInternalServerError, errCode("remember_code_failed", "保存邮件发放记录失败，请稍后重试", true))
+		return
+	}
 	body := fmt.Sprintf("邮箱：%s\n主题：%s\n发件人：%s\n时间：%s（北京时间）\n\n%s", mailbox.Email, msg.Subject, msg.From, formatTime(msg.ReceivedAt), msg.Body)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Mail-Received-At", firstNonZeroTime(msg.ReceivedAt, msg.CreatedAt).UTC().Format(time.RFC3339))
@@ -4656,8 +4663,16 @@ func (s *Server) writeMailboxContent(w http.ResponseWriter, r *http.Request, mai
 }
 
 func latestRecentMailboxMessage(messages []Message, after time.Time) (Message, bool) {
+	return latestRecentMailboxMessageSkipping(messages, after, "")
+}
+
+func latestRecentMailboxMessageSkipping(messages []Message, after time.Time, skipMessageID string) (Message, bool) {
+	skipMessageID = strings.TrimSpace(skipMessageID)
 	var latest Message
 	for _, msg := range messages {
+		if skipMessageID != "" && msg.ID == skipMessageID {
+			continue
+		}
 		msgAt := mailboxMessageAvailableAt(msg)
 		if msgAt.IsZero() || msgAt.Before(after) || (latest.ID != "" && !mailboxMessageIsNewer(msg, latest)) {
 			continue
@@ -4855,17 +4870,18 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 	codeAfter := mailboxCodeAfter(after, now)
 	allowStale := truthy(r.URL.Query().Get("allow_stale"))
 	cacheOnly := truthy(r.URL.Query().Get("cache"))
-	// Code APIs are latest-value lookups, not a consumable queue. Skipping the
-	// previously returned message makes two recent messages alternate forever.
-	skipMessageID := ""
+	// The IMAP lookup window is intentionally wider than the delivery window.
+	// A served message may repeat for one minute, then it is skipped until a
+	// newer UID/message arrives, preventing delayed sync from returning old OTPs.
+	skipMessageID := expiredMailboxServedMessageID(mailbox, now)
 	messages := s.store.MessagesForMailbox(mailbox.ID)
 	if cacheOnly {
-		if msg, code, ok := latestMailboxCode(messages, codeAfter, keyword, now); ok {
-			metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, "", false)
+		if msg, code, ok := latestMailboxCodeSkipping(messages, codeAfter, keyword, now, skipMessageID); ok {
+			metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, "", true)
 			metricMessage = "缓存取码成功"
 			return
 		}
-		if latestMailboxOTPAmbiguous(messages, codeAfter, keyword, now) {
+		if latestMailboxOTPAmbiguousSkipping(messages, codeAfter, keyword, now, skipMessageID) {
 			writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("ambiguous_code", "检测到多个相近的验证码候选，为避免返回错误验证码已拒绝取码", true))
 			return
 		}
@@ -4877,18 +4893,18 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 		s.logger.Warn("icloud sync failed", "mailbox_id", mailbox.ID, "err", result.syncErr)
 	}
 	if result.ok {
-		metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, result.message, result.code, staleCacheMessage(result.syncErr), false)
+		metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, result.message, result.code, staleCacheMessage(result.syncErr), true)
 		metricMessage = "同步取码成功"
 		return
 	}
 	if msg, code, ok := latestMailboxCodeSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID); ok {
-		metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, staleCacheMessage(result.syncErr), false)
+		metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, staleCacheMessage(result.syncErr), true)
 		metricMessage = "同步后取码成功"
 		return
 	}
 	if result.syncErr != nil && allowStale {
 		if msg, code, ok := latestMailboxCodeSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID); ok {
-			metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, "取码同步失败，当前验证码来自本地缓存", false)
+			metricSuccess = s.writeMailboxCodeSuccess(w, r, mailbox, msg, code, "取码同步失败，当前验证码来自本地缓存", true)
 			metricMessage = "旧缓存取码成功"
 			return
 		}
@@ -4898,7 +4914,7 @@ func (s *Server) writeMailboxCode(w http.ResponseWriter, r *http.Request, mailbo
 		writeMailboxCodeAPIError(w, r, http.StatusBadGateway, errCode("mail_sync_failed", "同步验证码邮件失败，已拒绝返回本地旧验证码；请检查取码登录或稍后重试", true))
 		return
 	}
-	if latestMailboxOTPAmbiguous(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now()) {
+	if latestMailboxOTPAmbiguousSkipping(s.store.MessagesForMailbox(mailbox.ID), codeAfter, keyword, time.Now(), skipMessageID) {
 		writeMailboxCodeAPIError(w, r, http.StatusOK, errCode("ambiguous_code", "检测到多个相近的验证码候选，为避免返回错误验证码已拒绝取码", true))
 		return
 	}
@@ -4956,6 +4972,20 @@ func staleCacheMessage(err error) string {
 		return ""
 	}
 	return "取码同步失败，当前验证码来自本地缓存"
+}
+
+func expiredMailboxServedMessageID(mailbox Mailbox, now time.Time) string {
+	messageID := strings.TrimSpace(mailbox.LastCodeMessageID)
+	if messageID == "" || mailbox.LastCodeAt.IsZero() {
+		return ""
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if now.Before(mailbox.LastCodeAt.Add(mailboxCodeRepeatWindow)) {
+		return ""
+	}
+	return messageID
 }
 
 func mailboxCodeAfter(after, now time.Time) time.Time {
@@ -5025,12 +5055,20 @@ func mailboxOTPText(msg Message) string {
 }
 
 func latestMailboxOTPAmbiguous(messages []Message, after time.Time, keyword string, now time.Time) bool {
+	return latestMailboxOTPAmbiguousSkipping(messages, after, keyword, now, "")
+}
+
+func latestMailboxOTPAmbiguousSkipping(messages []Message, after time.Time, keyword string, now time.Time, skipMessageID string) bool {
 	keyword = strings.TrimSpace(keyword)
 	if keyword == "" {
 		keyword = "OpenAI"
 	}
 	after = mailboxCodeAfter(after, now)
+	skipMessageID = strings.TrimSpace(skipMessageID)
 	for _, msg := range messages {
+		if skipMessageID != "" && msg.ID == skipMessageID {
+			continue
+		}
 		msgTime := mailboxMessageAvailableAt(msg)
 		if msgTime.IsZero() || msgTime.Before(after) {
 			continue

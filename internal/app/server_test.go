@@ -3978,8 +3978,8 @@ func TestMailboxCodeQuerySyncsBeforeReturningCachedOldCode(t *testing.T) {
 		t.Fatalf("sync calls = %d, want 1", got)
 	}
 	updated, ok := store.FindMailboxByID(mailbox.ID)
-	if !ok || updated.LastCodeMessageID != "" {
-		t.Fatalf("latest-value lookup must not consume code: %+v", updated)
+	if !ok || updated.LastCodeMessageID != body.MessageID || updated.LastCodeAt.IsZero() {
+		t.Fatalf("code delivery marker was not saved: mailbox=%+v response=%+v", updated, body)
 	}
 }
 
@@ -4505,6 +4505,10 @@ func TestMailboxCodeQueryConsistentlyReturnsLatestCachedCode(t *testing.T) {
 	if !first.Success || first.Code != "135790" {
 		t.Fatalf("first code = %+v, want 135790", first)
 	}
+	firstMarker, ok := store.FindMailboxByID(mailbox.ID)
+	if !ok || firstMarker.LastCodeMessageID == "" || firstMarker.LastCodeAt.IsZero() {
+		t.Fatalf("first delivery marker missing: %+v", firstMarker)
+	}
 	second := requestCode("")
 	if !second.Success || second.Code != "135790" {
 		t.Fatalf("second code = %+v, want latest 135790 again", second)
@@ -4512,6 +4516,10 @@ func TestMailboxCodeQueryConsistentlyReturnsLatestCachedCode(t *testing.T) {
 	cached := requestCode("&cache=1")
 	if !cached.Success || cached.Code != "135790" {
 		t.Fatalf("cache code = %+v, want cached 135790", cached)
+	}
+	repeatedMarker, _ := store.FindMailboxByID(mailbox.ID)
+	if !repeatedMarker.LastCodeAt.Equal(firstMarker.LastCodeAt) {
+		t.Fatalf("repeat delivery slid window from %v to %v", firstMarker.LastCodeAt, repeatedMarker.LastCodeAt)
 	}
 }
 
@@ -4621,11 +4629,11 @@ func TestLatestMailboxCodeUsesIMAPUIDWhenTimesMatch(t *testing.T) {
 	}
 }
 
-func TestLatestMailboxCodeOnlyUsesSixtySecondWindow(t *testing.T) {
+func TestLatestMailboxCodeOnlyUsesThreeMinuteWindow(t *testing.T) {
 	now := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
 	messages := []Message{
-		{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-61 * time.Second)},
-		{ID: "older", Subject: "ChatGPT code", Body: "code 222222", ReceivedAt: now.Add(-59 * time.Second)},
+		{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-181 * time.Second)},
+		{ID: "older", Subject: "ChatGPT code", Body: "code 222222", ReceivedAt: now.Add(-179 * time.Second)},
 		{ID: "newest", Subject: "ChatGPT code", Body: "code 333333", ReceivedAt: now.Add(-time.Second)},
 	}
 
@@ -4634,10 +4642,38 @@ func TestLatestMailboxCodeOnlyUsesSixtySecondWindow(t *testing.T) {
 		t.Fatalf("latestMailboxCode() msg=%s code=%q ok=%v, want newest 333333 true", msg.ID, code, ok)
 	}
 
-	tooOld := Message{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-61 * time.Second)}
+	tooOld := Message{ID: "too-old", Subject: "ChatGPT code", Body: "code 111111", ReceivedAt: now.Add(-181 * time.Second)}
 	_, _, ok = latestMailboxCode([]Message{tooOld}, time.Time{}, "ChatGPT", now)
 	if ok {
 		t.Fatalf("latestMailboxCode(old only) ok=true, want false")
+	}
+}
+
+func TestMailboxCodeRepeatWindowExpiresWithoutHidingNewerMessage(t *testing.T) {
+	now := time.Date(2026, 8, 18, 16, 0, 0, 0, time.UTC)
+	old := Message{ID: "old", RemoteID: "imap:100", Subject: "ChatGPT code", Body: "code 123456", ReceivedAt: now.Add(-90 * time.Second)}
+	newer := Message{ID: "new", RemoteID: "imap:101", Subject: "ChatGPT code", Body: "code 654321", ReceivedAt: now.Add(-20 * time.Second)}
+
+	withinWindow := Mailbox{LastCodeMessageID: old.ID, LastCodeAt: now.Add(-59 * time.Second)}
+	if skip := expiredMailboxServedMessageID(withinWindow, now); skip != "" {
+		t.Fatalf("59-second delivery skip=%q, want empty", skip)
+	}
+
+	expired := Mailbox{LastCodeMessageID: old.ID, LastCodeAt: now.Add(-60 * time.Second)}
+	skip := expiredMailboxServedMessageID(expired, now)
+	if skip != old.ID {
+		t.Fatalf("60-second delivery skip=%q, want %q", skip, old.ID)
+	}
+	if _, _, ok := latestMailboxCodeSkipping([]Message{old}, time.Time{}, "ChatGPT", now, skip); ok {
+		t.Fatal("expired message was returned without a newer message")
+	}
+	msg, code, ok := latestMailboxCodeSkipping([]Message{old, newer}, time.Time{}, "ChatGPT", now, skip)
+	if !ok || msg.ID != newer.ID || code != "654321" {
+		t.Fatalf("newer code result msg=%+v code=%q ok=%v", msg, code, ok)
+	}
+	content, ok := latestRecentMailboxMessageSkipping([]Message{old, newer}, now.Add(-mailboxCodeFreshWindow), skip)
+	if !ok || content.ID != newer.ID {
+		t.Fatalf("newer content result=%+v ok=%v", content, ok)
 	}
 }
 
@@ -6341,6 +6377,13 @@ func TestSetMailboxLastCodePersistsOnlyMailboxMarker(t *testing.T) {
 	servedAt := time.Now().UTC().Truncate(time.Millisecond)
 	if _, err := store.SetMailboxLastCode(mailbox.ID, "msg-code-marker", servedAt); err != nil {
 		t.Fatal(err)
+	}
+	repeated, err := store.SetMailboxLastCode(mailbox.ID, "msg-code-marker", servedAt.Add(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repeated.LastCodeAt.Equal(servedAt) {
+		t.Fatalf("repeat delivery moved first-served time to %v", repeated.LastCodeAt)
 	}
 	reopened, err := NewFileStore(store.path)
 	if err != nil {
