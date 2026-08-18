@@ -61,6 +61,9 @@ func (s *FileStore) openSQLite() error {
 			return fmt.Errorf("initialize sqlite: %w", err)
 		}
 	}
+	if err := initializeMessageSearch(db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -127,6 +130,12 @@ func (s *FileStore) loadSQLiteLocked() (bool, error) {
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
+	// Release the read cursor before the one-time FTS rebuild opens a write
+	// transaction on a separate SQLite connection. Keeping this cursor open
+	// can hold a read lock indefinitely and prevent the HTTP server starting.
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
 	if len(stored) > 0 {
 		s.state.Messages = stored
 		s.needsMessageMigration = false
@@ -134,6 +143,9 @@ func (s *FileStore) loadSQLiteLocked() (bool, error) {
 		s.needsMessageMigration = true
 	}
 	s.persistedMessages = persisted
+	if err := s.ensureMessageSearchIndexLocked(); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
@@ -158,7 +170,18 @@ func (s *FileStore) loadNormalizedMessagesLocked(db *sql.DB) (bool, error) {
 		s.state.Messages = append(s.state.Messages, m)
 		s.persistedMessages[id] = string(raw)
 	}
-	return true, rows.Err()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	// The search index rebuild uses its own connection. Close this cursor first
+	// so WAL/SQLite can grant the writer immediately during an upgrade.
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if err := s.ensureMessageSearchIndexLocked(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *FileStore) saveSQLiteLocked() error {
@@ -192,12 +215,20 @@ func (s *FileStore) saveSQLiteLocked() error {
 			_ = tx.Rollback()
 			return err
 		}
+		if err := upsertMessageSearchTx(tx, message); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 	}
 	for id := range s.persistedMessages {
 		if _, ok := next[id]; ok {
 			continue
 		}
 		if _, err := tx.Exec(`DELETE FROM messages WHERE id=?`, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := deleteMessageSearchTx(tx, id); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -262,6 +293,10 @@ func (s *FileStore) saveMailboxMessageLocked(mailbox Mailbox, message Message) e
 		ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at`, message.ID, messageRaw, now); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("save message: %w", err)
+	}
+	if err = upsertMessageSearchTx(tx, message); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("save message search index: %w", err)
 	}
 	if _, err = tx.Exec(`INSERT INTO state_meta(key,value) VALUES('next_id',?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.Itoa(s.state.NextID)); err != nil {

@@ -1344,6 +1344,7 @@
         <button class="nav-item admin-data-nav" data-view="data-mailboxes" onclick="setActiveView('data-mailboxes')" hidden><span class="nav-ico">✉</span><span>邮箱数据</span></button>
         <button class="nav-item admin-data-nav" data-view="data-accounts" onclick="setActiveView('data-accounts')" hidden><span class="nav-ico">◎</span><span>登录账号数据</span></button>
         <button class="nav-item admin-data-nav" data-view="data-sessions" onclick="setActiveView('data-sessions')" hidden><span class="nav-ico">◫</span><span>用户登录态</span></button>
+		<button class="nav-item admin-data-nav" data-view="data-mailSearch" onclick="setActiveView('data-mailSearch')" hidden><span class="nav-ico">⌕</span><span>全局邮件检索</span></button>
         <button class="nav-item admin-data-nav" data-view="data-invites" onclick="setActiveView('data-invites')" hidden><span class="nav-ico">✦</span><span>注册邀请</span></button>
         <button class="nav-item admin-data-nav" data-view="data-announcements" onclick="setActiveView('data-announcements')" hidden><span class="nav-ico">▤</span><span>平台公告</span></button>
         <button class="nav-item admin-data-nav" data-view="data-audit" onclick="setActiveView('data-audit')" hidden><span class="nav-ico">◉</span><span>安全审计</span></button>
@@ -1891,6 +1892,7 @@
       'data-mailboxes': ['账号数据 · 邮箱数据', '从管理视角筛选和维护隐私邮箱。'],
       'data-accounts': ['账号数据 · 登录账号', '查询 Apple/iCloud 登录账号分类和归属。'],
       'data-sessions': ['账号数据 · 用户登录态', '集中查看用户的新接口、旧接口和 IMAP 状态。'],
+	  'data-mailSearch': ['平台管理 · 全局邮件检索', '仅管理员检索所有正常 IMAP 登录态的本地邮件缓存。'],
       'data-invites': ['平台管理 · 注册邀请', '生成、导出和维护注册邀请码。'],
       'data-announcements': ['平台管理 · 平台公告', '发布公告并查看用户已读情况。'],
       'data-audit': ['平台管理 · 安全审计', '查询登录、权限和数据操作记录。'],
@@ -1912,6 +1914,7 @@
       'data-mailboxes':'使用管理筛选器查询邮箱数据并执行授权范围内的操作。',
       'data-accounts':'维护登录账号分类、标签和所属用户。',
       'data-sessions':'查看所有授权范围内的登录态、保活和异常原因。',
+	  'data-mailSearch':'使用 SQLite 全文索引跨用户检索正常 IMAP 账号已经同步到本地的邮件，并按需查看正文。',
       'data-invites':'管理员专用的邀请码批次管理。',
       'data-announcements':'管理员专用的平台公告管理。',
       'data-audit':'管理员专用的安全审计查询。',
@@ -1995,6 +1998,7 @@
       'data-mailboxes',
       'data-accounts',
       'data-sessions',
+	  'data-mailSearch',
       'data-invites',
       'data-announcements',
       'data-audit',
@@ -4778,7 +4782,7 @@
         return `<tr>
           <td><input type="checkbox" ${checked} onchange="toggleAliasMailbox('${esc(row.id)}', this.checked)"></td>
           <td><strong>${esc(row.label || '-')}</strong><br><span class="mono muted">${esc(row.id)}</span></td>
-          <td><span class="email">${esc(row.email)}</span><br><span class="pill">别名邮箱</span><br><span class="muted">主邮箱：${esc(row.parent_mailbox_email || row.parent_mailbox_id || '-')}</span><br><span class="muted">${esc(mailboxAccountTitle(row))}</span></td>
+          <td><span class="email">${esc(row.email)}</span><br><span class="pill">别名邮箱</span>${currentUser&&currentUser.is_admin?`<br><span class="pill">所属用户：${esc(row.owner||row.owner_id||'-')}</span>`:''}<br><span class="muted">主邮箱：${esc(row.parent_mailbox_email || row.parent_mailbox_id || '-')}</span><br><span class="muted">${esc(mailboxAccountTitle(row))}</span></td>
           <td>${row.api_active ? '<span class="pill">API启用</span>' : '<span class="pill off">API停用</span>'}<br>${row.icloud_active ? '<span class="pill">iCloud启用</span>' : '<span class="pill off">iCloud停用</span>'}<br><span class="muted">${esc(statusText(row.status || '-'))}</span><br><span class="pill ${row.can_receive_code ? '' : 'off'}" title="${esc(row.receive_code_error || '')}">${esc(row.receive_code_status || (row.can_receive_code ? '可以正常接码' : '当前不可接码'))}</span></td>
           <td>${row.redemption_locked&&!currentUser.is_admin?'<span class="pill">兑换池锁定</span><br><span class="muted">仅能通过兑换码导出</span>':row.exported_at ? `<span class="pill">已导出</span><br><span class="muted">${esc(exactTimeText(row.exported_at))}</span>` : '<span class="pill off">未导出</span>'}</td>
           <td>${Number(row.receive_count || 0)}</td>

@@ -475,6 +475,7 @@
         <button class="admin-only" data-view="invites" onclick="setActiveView('invites')" hidden><span class="nav-icon">✦</span>注册邀请</button>
         <button class="admin-only" data-view="announcements" onclick="setActiveView('announcements')" hidden><span class="nav-icon">▤</span>平台公告</button>
         <button class="admin-only" data-view="audit" onclick="setActiveView('audit')" hidden><span class="nav-icon">◉</span>安全审计</button>
+		<button class="admin-only" data-view="mailSearch" onclick="setActiveView('mailSearch');loadAdminIMAPMessages(1)" hidden><span class="nav-icon">⌕</span>全局邮件检索</button>
 		<button class="admin-only" data-view="operations" onclick="setActiveView('operations');loadOperationsSafe()" hidden><span class="nav-icon">⚙</span>运维中心</button>
         <button data-view="logs" onclick="setActiveView('logs')"><span class="nav-icon">☰</span>运行日志</button>
         <button onclick="refresh()"><span class="nav-icon">↻</span>刷新数据</button>
@@ -639,6 +640,24 @@
           <div class="empty" id="announcementsEmpty" hidden>暂无公告</div>
         </section>
 
+		<section class="panel view-section admin-only" data-view="mailSearch" hidden>
+		  <div class="panel-head"><div><h2>全局 IMAP 邮件检索</h2><p>仅检索最近检测正常的 IMAP 登录态，并优先读取本地全文索引；列表只加载摘要，点击后才读取完整正文。</p></div><span id="adminMailHealthyCount" class="pill gray">正常邮箱 0 个</span></div>
+		  <div class="table-filter">
+			<label>邮件内容<input id="adminMailKeyword" placeholder="主题、发件人、正文或验证码" onkeydown="if(event.key==='Enter'){event.preventDefault();loadAdminIMAPMessages(1)}"></label>
+			<label>邮箱 / 账号<input id="adminMailMailboxQuery" placeholder="隐私邮箱、Apple ID、用户名" onkeydown="if(event.key==='Enter'){event.preventDefault();loadAdminIMAPMessages(1)}"></label>
+			<label>所属用户<select id="adminMailOwner"><option value="">全部用户</option></select></label>
+			<label>开始日期<input id="adminMailDateFrom" type="date"></label>
+			<label>结束日期<input id="adminMailDateTo" type="date"></label>
+			<label>每页<select id="adminMailPageSize"><option>10</option><option selected>20</option><option>50</option><option>100</option></select></label>
+			<button class="btn primary" id="adminMailSearchButton" onclick="loadAdminIMAPMessages(1)">搜索</button>
+			<button class="btn" onclick="clearAdminMailSearch()">清空</button>
+		  </div>
+		  <div class="notice" id="adminMailSearchStatus">输入条件后点击搜索；不输入关键词时按收件时间显示最近邮件。</div>
+		  <div class="table-wrap"><table><thead><tr><th>收件时间</th><th>所属用户</th><th>隐私邮箱 / Apple 账号</th><th>主题 / 发件人</th><th>正文摘要</th><th>操作</th></tr></thead><tbody id="adminMailSearchRows"></tbody></table></div>
+		  <div class="empty" id="adminMailSearchEmpty">尚未执行检索</div>
+		  <div class="panel-tools" style="padding:14px 18px;justify-content:flex-end"><button class="btn" id="adminMailPrev" onclick="changeAdminMailPage(-1)" disabled>上一页</button><span id="adminMailPageInfo" class="muted">第 1 页</span><button class="btn" id="adminMailNext" onclick="changeAdminMailPage(1)" disabled>下一页</button></div>
+		</section>
+
 		<section class="panel view-section admin-only" data-view="operations" hidden>
 		  <div class="panel-head"><div><h2>运维中心</h2><p>查看 SQLite、后台任务、运行告警、数据库备份和用户回收站。</p></div><button class="btn primary" onclick="createDatabaseBackup()">立即备份</button></div>
 		  <div class="stats"><div class="stat-card"><strong id="opsDbSize">-</strong><span>数据库大小</span></div><div class="stat-card"><strong id="opsDiskFree">-</strong><span>磁盘剩余</span></div><div class="stat-card"><strong id="opsUptime">-</strong><span>运行时间</span></div><div class="stat-card"><strong id="opsUnhealthy">0</strong><span>异常登录态</span></div><div class="stat-card"><strong id="opsBackupCount">0</strong><span>可用备份</span></div></div>
@@ -668,6 +687,11 @@
     <div id="manageGuideBody" class="guide-body"></div>
   </dialog>
 
+	<dialog id="adminMailViewerDialog" style="width:min(960px,calc(100vw - 32px));max-height:90vh;background:#061a3b;color:#eaf2ff;border:1px solid #1d4ed8;border-radius:10px;padding:0;overflow:hidden">
+	  <div class="panel-head"><div><h2 id="adminMailViewerTitle">查看邮件</h2><p id="adminMailViewerMeta">正在读取邮件正文…</p></div><button class="btn" type="button" onclick="closeAdminMailViewer()">关闭</button></div>
+	  <div id="adminMailViewerBody" style="padding:18px;max-height:72vh;overflow:auto"></div>
+	</dialog>
+
   <script>
     const $ = id => document.getElementById(id);
     let currentUser = null;
@@ -686,6 +710,9 @@
     let mailboxPage = 1;
     let mailboxPageSize = defaultMailboxPageSize;
 	let mailboxLoadTimer = 0;
+	let adminMailPage = 1;
+	let adminMailHasMore = false;
+	let adminMailLoaded = false;
     const viewMeta = {
       overview: '仪表盘',
       accountManage: '账号管理',
@@ -696,10 +723,11 @@
       invites: '注册邀请',
       announcements: '平台公告',
       audit: '安全审计',
+	  mailSearch: '全局邮件检索',
 	  operations: '运维中心',
       logs: '运行日志'
     };
-	const viewDescriptions = {overview:'查看平台数据总览。',accountManage:'按平台用户切换数据范围，核对用户与账号、邮箱、邮件的归属。',users:'搜索平台用户，查看角色、注册来源和最后登录。',mailboxes:'按邮箱、Apple账号、状态和收件数组合筛选子邮箱。',accounts:'维护登录账号分类与标签。',sessions:'查看所有用户登录态的新接口、旧接口、IMAP、子邮箱和异常原因。',invites:'仅管理员创建和维护注册邀请码。',announcements:'管理员发布平台公告并查看用户已读人数。',audit:'仅管理员查询登录、权限和数据修改记录。',operations:'查看任务、告警、备份和用户回收站。',logs:'查看当前浏览器会话中的最近操作结果。'};
+	const viewDescriptions = {overview:'查看平台数据总览。',accountManage:'按平台用户切换数据范围，核对用户与账号、邮箱、邮件的归属。',users:'搜索平台用户，查看角色、注册来源和最后登录。',mailboxes:'按邮箱、Apple账号、状态和收件数组合筛选子邮箱。',accounts:'维护登录账号分类与标签。',sessions:'查看所有用户登录态的新接口、旧接口、IMAP、子邮箱和异常原因。',invites:'仅管理员创建和维护注册邀请码。',announcements:'管理员发布平台公告并查看用户已读人数。',audit:'仅管理员查询登录、权限和数据修改记录。',mailSearch:'仅管理员跨用户检索正常 IMAP 登录态已经同步到本地的邮件。',operations:'查看任务、告警、备份和用户回收站。',logs:'查看当前浏览器会话中的最近操作结果。'};
     const manageGuides = {
       overview:{summary:'快速确认当前权限范围内的用户、登录账号、隐私邮箱和邮件总量。',steps:['核对四项统计是否符合预期。','需要查看归属关系时进入“账号管理”，需要排障时进入“用户登录态”或“运维中心”。','数据刚发生变化时点击右上角刷新。'],tips:['普通用户只会看到自己的数据；管理员可以查看全平台数据。']},
       accountManage:{summary:'按平台用户切换查看范围，确认登录账号、邮箱和邮件属于哪个用户。',steps:['在账号卡片中选择目标平台用户。','确认“当前查看”已经切换到该用户。','再进入隐私邮箱、登录账号或登录态页面查看该用户的数据。','点击“查看全部”恢复全局范围。'],tips:['执行修改或导出前务必核对当前用户范围。']},
@@ -710,6 +738,7 @@
       invites:{summary:'批量生成、导出和维护平台注册或续期邀请码。',steps:['设置生成数量和使用后延续天数；需要时选择永久有效。','批量生成邀请码并按批次导出。','通过状态和批次查看邀请码是否已使用、使用人和使用时间。','发现泄露时及时禁用尚未使用的邀请码。'],tips:['有效期从用户实际使用当天起算；提前续期会在原到期时间后叠加。']},
       announcements:{summary:'发布面向普通用户的平台公告，并查看已读情况。',steps:['填写清晰的公告标题和适合用户阅读的内容。','发布后普通用户登录会自动看到未读公告。','查看已读人数确认触达情况。','内容过期时停止发布或新建更正公告。'],tips:['公告不要包含管理员密钥、服务器地址、用户隐私或内部安全细节。']},
       audit:{summary:'查询登录、权限和数据修改操作，定位异常访问与误操作。',steps:['按用户、操作类型、IP 或时间范围筛选。','先查看失败登录和权限操作，再核对高风险数据修改。','记录异常事件的时间、用户和来源 IP。','确认风险后修改相关密钥、密码或停用凭证。'],tips:['审计日志用于追踪，不应由普通用户修改或删除。']},
+	  mailSearch:{summary:'从正常 IMAP 登录态的本地邮件缓存中跨用户全文检索，快速确认邮件归属和正文。',steps:['输入正文关键词、验证码、发件人或主题。','可再按平台用户、隐私邮箱、Apple ID 和日期缩小范围。','点击搜索后查看摘要，点击“查看”才加载完整正文。','翻页时系统继续使用全文索引，不会批量连接外部 IMAP。'],tips:['该功能只显示最近一次 IMAP 检测正常的账号。','搜索读取本地已同步邮件，不会强制同步所有用户收件箱。','邮件正文可能包含隐私信息，请勿向无关人员转发。']},
       operations:{summary:'查看真实运行指标、后台任务、数据库备份和用户回收站。',steps:['通过 IMAP 异常率、保活成功率和取码耗时判断服务健康度。','查看后台任务最近结果与错误，处理失败或堆积任务。','在重大修改前手动创建数据库备份。','需要恢复用户时在永久清除时间前从回收站操作。'],tips:['数据库恢复会改变线上数据，执行前应再次创建当前备份。','指标无样本表示尚未产生对应检测或取码请求。']},
       logs:{summary:'查看当前浏览器会话中的操作结果，便于判断任务是否提交成功。',steps:['执行功能后查看最新一行中文结果。','出现错误时复制日志，连同账号和操作时间用于排查。','确认不再需要后可以清空当前页面日志。'],tips:['提交日志给他人前请遮盖邮箱 API、密码、验证码、Cookie 和授权码。']}
     };
@@ -795,7 +824,7 @@
       const el = $(id);
       if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
     }
-    const ADMIN_MANAGE_VIEWS = new Set(['accountManage','users','sessions','invites','announcements','audit','operations']);
+    const ADMIN_MANAGE_VIEWS = new Set(['accountManage','users','sessions','invites','announcements','audit','mailSearch','operations']);
     function setActiveView(view) {
       let normalized = viewMeta[view] ? view : 'overview';
       if (currentUser && !currentUser.is_admin && ADMIN_MANAGE_VIEWS.has(normalized)) normalized = 'overview';
@@ -871,6 +900,72 @@
       if (!data.success) throw new Error(data.message || data.code || `HTTP ${res.status}`);
       return data;
     }
+	let adminMailRequestSerial = 0;
+	function adminMailQuery(page) {
+	  const query = new URLSearchParams({
+		page:String(Math.max(1,page||1)), page_size:String(Number(($('adminMailPageSize')||{}).value||20)),
+		q:String(($('adminMailKeyword')||{}).value||'').trim(),
+		mailbox_q:String(($('adminMailMailboxQuery')||{}).value||'').trim(),
+		owner_id:String(($('adminMailOwner')||{}).value||''),
+		date_from:String(($('adminMailDateFrom')||{}).value||''), date_to:String(($('adminMailDateTo')||{}).value||'')
+	  });
+	  return query;
+	}
+	async function loadAdminIMAPMessages(page=1) {
+	  if (!currentUser || !currentUser.is_admin) return;
+	  const serial = ++adminMailRequestSerial;
+	  adminMailPage = Math.max(1,Number(page)||1);
+	  const button=$('adminMailSearchButton'); if(button){button.disabled=true;button.textContent='正在检索…'}
+	  $('adminMailSearchStatus').textContent='正在查询本地全文索引，请稍候…';
+	  try {
+		const data=await api('/api/admin/imap-messages?'+adminMailQuery(adminMailPage).toString());
+		if(serial!==adminMailRequestSerial)return;
+		adminMailLoaded=true; adminMailHasMore=!!data.has_more;
+		$('adminMailHealthyCount').textContent=`正常邮箱 ${Number(data.healthy_mailboxes||0)} 个`;
+		const ownerSelect=$('adminMailOwner'), selected=ownerSelect.value;
+		ownerSelect.innerHTML='<option value="">全部用户</option>'+(data.owners||[]).map(row=>`<option value="${esc(row.id)}">${esc(row.name)}</option>`).join('');
+		if([...ownerSelect.options].some(option=>option.value===selected))ownerSelect.value=selected;
+		const rows=data.items||[];
+		$('adminMailSearchRows').innerHTML=rows.map(row=>`<tr><td>${esc(displayTime(row.received_at))}</td><td><strong>${esc(row.owner||row.owner_id||'-')}</strong><br><span class="mono muted">${esc(row.owner_id||'')}</span></td><td><span class="email">${esc(row.mailbox_email||'-')}</span><br><span class="muted">${esc(row.account_label||row.apple_id||'-')} · ${esc(row.imap_host||'-')}</span>${row.mailbox_type==='alias'?'<br><span class="pill">别名邮箱</span>':''}</td><td><strong>${esc(row.subject||'(无主题)')}</strong><br><span class="muted">${esc(row.from||'-')}</span></td><td style="min-width:260px;white-space:normal;line-height:1.6">${esc(row.preview||'无纯文本摘要')}</td><td><button class="btn primary" onclick="openAdminMailViewer('${esc(row.id)}')">查看</button></td></tr>`).join('');
+		$('adminMailSearchEmpty').hidden=rows.length>0;
+		$('adminMailSearchEmpty').textContent=rows.length?'':'没有符合条件的邮件；只会显示 IMAP 最近检测正常账号的本地缓存。';
+		$('adminMailPageInfo').textContent=`第 ${adminMailPage} 页 · 当前 ${rows.length} 封`;
+		$('adminMailPrev').disabled=adminMailPage<=1; $('adminMailNext').disabled=!adminMailHasMore;
+		$('adminMailSearchStatus').textContent=`检索完成：本页 ${rows.length} 封，扫描候选 ${Number(data.scanned||0)} 条；完整正文仅在点击查看时读取。`;
+	  } catch(err) {
+		if(serial!==adminMailRequestSerial)return;
+		$('adminMailSearchStatus').textContent='检索失败：'+err.message;
+		$('adminMailSearchRows').innerHTML=''; $('adminMailSearchEmpty').hidden=false; $('adminMailSearchEmpty').textContent=err.message;
+		log('全局邮件检索失败：'+err.message);
+	  } finally { if(serial===adminMailRequestSerial&&button){button.disabled=false;button.textContent='搜索'} }
+	}
+	function changeAdminMailPage(delta){const next=Math.max(1,adminMailPage+delta);if(next===adminMailPage)return;loadAdminIMAPMessages(next)}
+	function clearAdminMailSearch(){['adminMailKeyword','adminMailMailboxQuery','adminMailDateFrom','adminMailDateTo'].forEach(id=>{if($(id))$(id).value=''});if($('adminMailOwner'))$('adminMailOwner').value='';loadAdminIMAPMessages(1)}
+	function safeAdminMailHTML(raw){
+	  const doc=new DOMParser().parseFromString(String(raw||''),'text/html');
+	  doc.querySelectorAll('script,iframe,object,embed,form,input,button,textarea,select,meta,base,link').forEach(node=>node.remove());
+	  doc.querySelectorAll('*').forEach(node=>{for(const attr of [...node.attributes]){const name=attr.name.toLowerCase(),value=String(attr.value||'').trim();if(name.startsWith('on')||name==='srcdoc'||name==='action'||name==='formaction')node.removeAttribute(attr.name);if((name==='href'||name==='src')&&!/^(https?:|mailto:|data:image\/)/i.test(value))node.removeAttribute(attr.name);if(name==='src'&&/^https?:/i.test(value))node.removeAttribute(attr.name)}});
+	  doc.querySelectorAll('a').forEach(link=>{link.target='_blank';link.rel='noopener noreferrer'});
+	  const csp=doc.createElement('meta');csp.httpEquiv='Content-Security-Policy';csp.content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";doc.head.prepend(csp);
+	  const style=doc.createElement('style');style.textContent='html,body{margin:0!important;max-width:100%!important;background:#fff!important;color:#172033!important}body{padding:18px!important;box-sizing:border-box!important}table{max-width:100%!important}img{max-width:100%!important;height:auto!important}';doc.head.appendChild(style);
+	  return '<!doctype html>'+doc.documentElement.outerHTML;
+	}
+	async function openAdminMailViewer(id){
+	  const dialog=$('adminMailViewerDialog'); $('adminMailViewerTitle').textContent='查看邮件'; $('adminMailViewerMeta').textContent='正在读取邮件正文…'; $('adminMailViewerBody').textContent='正在加载…'; dialog.showModal();
+	  try{
+		const data=await api('/api/admin/imap-messages/'+encodeURIComponent(id)); const row=data.message||{};
+		$('adminMailViewerTitle').textContent=row.subject||'(无主题)'; $('adminMailViewerMeta').textContent=`所属用户：${row.owner||row.owner_id||'-'} · 收件邮箱：${row.mailbox_email||'-'} · 发件人：${row.from||'-'} · ${displayTime(row.received_at)}`;
+		const body=$('adminMailViewerBody'); body.replaceChildren();
+		if(String(row.html_body||'').trim()){
+		  const frame=document.createElement('iframe');frame.setAttribute('sandbox','');frame.setAttribute('referrerpolicy','no-referrer');frame.title='邮件 HTML 正文';frame.srcdoc=safeAdminMailHTML(row.html_body);frame.style.cssText='width:100%;min-height:520px;border:1px solid #244d88;border-radius:8px;background:white';body.appendChild(frame);
+		}
+		if(String(row.body||'').trim()){
+		  const details=document.createElement('details');details.style.marginTop='14px';const summary=document.createElement('summary');summary.textContent=row.html_body?'查看纯文本正文':'邮件正文';const pre=document.createElement('pre');pre.style.cssText='white-space:pre-wrap;word-break:break-word;line-height:1.7';pre.textContent=String(row.body);details.append(summary,pre);body.appendChild(details);
+		}
+		if(!String(row.html_body||'').trim()&&!String(row.body||'').trim())body.textContent='该邮件没有可显示的正文。';
+	  }catch(err){$('adminMailViewerMeta').textContent='读取失败';$('adminMailViewerBody').textContent=err.message}
+	}
+	function closeAdminMailViewer(){if($('adminMailViewerDialog').open)$('adminMailViewerDialog').close();$('adminMailViewerBody').replaceChildren()}
 	async function adminConfirmedApi(path, options={}) {
 	  const password = prompt('该操作需要管理员二次验证，请输入当前管理员密码：');
 	  if (password === null) throw new Error('已取消二次验证');
@@ -1451,6 +1546,7 @@
 	  let requestedView='overview';
 	  try { requestedView=new URLSearchParams(location.search).get('view')||localStorage.getItem(viewStorageKey)||'overview'; } catch (_) {}
 	  if (currentUser&&currentUser.is_admin&&requestedView==='operations') await loadOperationsSafe();
+	  if (currentUser&&currentUser.is_admin&&requestedView==='mailSearch') await loadAdminIMAPMessages(1);
 	}).catch(err => log(err.message));
   </script>
 </body>

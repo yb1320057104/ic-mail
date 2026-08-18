@@ -536,6 +536,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/admin/backups/{name}/download", s.handleAdminDownloadBackup)
 	s.mux.HandleFunc("POST /api/admin/backups/{name}/restore", s.handleAdminRestoreBackup)
 	s.mux.HandleFunc("GET /api/admin/mailboxes", s.handleAdminMailboxPage)
+	s.mux.HandleFunc("GET /api/admin/imap-messages", s.handleAdminIMAPMessages)
+	s.mux.HandleFunc("GET /api/admin/imap-messages/{id}", s.handleAdminIMAPMessage)
 	s.mux.HandleFunc("GET /api/admin/operations", s.handleAdminOperations)
 	s.mux.HandleFunc("POST /api/admin/invites", s.handleCreateInvite)
 	s.mux.HandleFunc("GET /api/admin/invites/export", s.handleExportInvites)
@@ -1612,6 +1614,170 @@ func (s *Server) handleAdminMailboxPage(w http.ResponseWriter, r *http.Request) 
 		items = append(items, s.publicMailbox(r, mailbox))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "items": items, "page": page, "page_size": size, "total": total, "pages": max(1, (total+size-1)/size)})
+}
+
+type adminIMAPMailboxContext struct {
+	Mailbox      Mailbox
+	Owner        string
+	AccountLabel string
+	AppleID      string
+	IMAPHost     string
+}
+
+func (s *Server) adminHealthyIMAPMailboxes(mailboxQuery string) (map[string]adminIMAPMailboxContext, map[string]struct{}, []map[string]string) {
+	state := s.store.SnapshotForMailboxList("")
+	users := make(map[string]string, len(state.Users))
+	for _, user := range state.Users {
+		users[user.ID] = user.Username
+	}
+	accounts := make(map[string]Account, len(state.Accounts))
+	for _, account := range state.Accounts {
+		accounts[account.ID] = account
+	}
+	type healthyIMAP struct{ host string }
+	healthy := make(map[string]healthyIMAP)
+	for _, session := range state.ICloudSessions {
+		imapState, ok := iCloudIMAPLoginState(session)
+		if !ok || imapState.LastCheckedAt.IsZero() || !imapState.LastCheckOK {
+			continue
+		}
+		healthy[strings.TrimSpace(session.OwnerID)+"|"+strings.TrimSpace(session.AccountID)] = healthyIMAP{host: imapState.IMAPHost}
+	}
+	if state.ICloudSession != nil {
+		if imapState, ok := iCloudIMAPLoginState(*state.ICloudSession); ok && !imapState.LastCheckedAt.IsZero() && imapState.LastCheckOK {
+			healthy[strings.TrimSpace(state.ICloudSession.OwnerID)+"|"+strings.TrimSpace(state.ICloudSession.AccountID)] = healthyIMAP{host: imapState.IMAPHost}
+		}
+	}
+	mailboxQuery = strings.ToLower(strings.TrimSpace(mailboxQuery))
+	contexts := make(map[string]adminIMAPMailboxContext)
+	eligible := make(map[string]struct{})
+	ownerRows := make(map[string]string)
+	for _, mailbox := range state.Mailboxes {
+		imap, ok := healthy[strings.TrimSpace(mailbox.OwnerID)+"|"+strings.TrimSpace(mailbox.AccountID)]
+		if !ok {
+			continue
+		}
+		account := accounts[mailbox.AccountID]
+		owner := firstNonEmpty(users[mailbox.OwnerID], mailbox.OwnerID)
+		if mailboxQuery != "" {
+			haystack := strings.ToLower(strings.Join([]string{mailbox.Email, mailbox.Label, mailbox.ID, mailbox.OwnerID, owner, account.Label, account.AppleID}, " "))
+			if !strings.Contains(haystack, mailboxQuery) {
+				continue
+			}
+		}
+		contexts[mailbox.ID] = adminIMAPMailboxContext{Mailbox: mailbox, Owner: owner, AccountLabel: account.Label, AppleID: account.AppleID, IMAPHost: imap.host}
+		eligible[mailbox.ID] = struct{}{}
+		ownerRows[mailbox.OwnerID] = owner
+	}
+	owners := make([]map[string]string, 0, len(ownerRows))
+	for id, name := range ownerRows {
+		owners = append(owners, map[string]string{"id": id, "name": name})
+	}
+	sort.Slice(owners, func(i, j int) bool { return strings.ToLower(owners[i]["name"]) < strings.ToLower(owners[j]["name"]) })
+	return contexts, eligible, owners
+}
+
+func parseAdminSearchDate(value string, endOfDay bool) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", value, time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	if endOfDay {
+		return parsed.Add(24*time.Hour - time.Nanosecond)
+	}
+	return parsed
+}
+
+func adminMessagePreview(message Message) string {
+	text := strings.TrimSpace(firstNonEmpty(message.Body, visibleEmailHTMLText(message.HTMLBody)))
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) > 180 {
+		return string(runes[:180]) + "…"
+	}
+	return text
+}
+
+func (s *Server) handleAdminIMAPMessages(w http.ResponseWriter, r *http.Request) {
+	queryValues := r.URL.Query()
+	contexts, eligible, owners := s.adminHealthyIMAPMailboxes(queryValues.Get("mailbox_q"))
+	ownerID := strings.TrimSpace(queryValues.Get("owner_id"))
+	if ownerID != "" && ownerID != "all" {
+		for mailboxID, contextRow := range contexts {
+			if !constantTimeEqual(contextRow.Mailbox.OwnerID, ownerID) {
+				delete(contexts, mailboxID)
+				delete(eligible, mailboxID)
+			}
+		}
+	}
+	searchCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	result, err := s.store.AdminSearchIMAPMessages(searchCtx, AdminMessageSearchQuery{
+		Keyword: queryValues.Get("q"), OwnerID: ownerID,
+		After:    parseAdminSearchDate(queryValues.Get("date_from"), false),
+		Before:   parseAdminSearchDate(queryValues.Get("date_to"), true),
+		Page:     parseBoundedPositiveInt(queryValues.Get("page"), 1, 1, 100000),
+		PageSize: parseBoundedPositiveInt(queryValues.Get("page_size"), 20, 1, 100),
+	}, eligible)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(searchCtx.Err(), context.DeadlineExceeded) {
+			writeError(w, http.StatusRequestTimeout, errCode("admin_mail_search_timeout", "邮件数量较多，本次检索已超时，请增加关键词、用户或日期范围后重试", true))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		ctxRow, ok := contexts[row.Message.MailboxID]
+		if !ok {
+			continue
+		}
+		items = append(items, map[string]any{
+			"id": row.Message.ID, "owner_id": ctxRow.Mailbox.OwnerID, "owner": ctxRow.Owner,
+			"mailbox_id": ctxRow.Mailbox.ID, "mailbox_email": ctxRow.Mailbox.Email,
+			"mailbox_type":  firstNonEmpty(ctxRow.Mailbox.MailboxType, "privacy"),
+			"account_label": ctxRow.AccountLabel, "apple_id": ctxRow.AppleID, "imap_host": ctxRow.IMAPHost,
+			"subject": row.Message.Subject, "from": row.Message.From, "preview": adminMessagePreview(row.Message),
+			"received_at": formatTime(row.Message.ReceivedAt),
+		})
+	}
+	w.Header().Set("Cache-Control", "no-store, private")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true, "items": items, "owners": owners, "healthy_mailboxes": len(eligible),
+		"page": result.Page, "page_size": result.PageSize, "has_more": result.HasMore, "scanned": result.Scanned,
+	})
+}
+
+func (s *Server) handleAdminIMAPMessage(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	message, found, err := s.store.MessageByIDFromSQLite(ctx, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found || !strings.EqualFold(message.Source, "imap") {
+		writeError(w, http.StatusNotFound, errCode("message_not_found", "邮件不存在", false))
+		return
+	}
+	contexts, eligible, _ := s.adminHealthyIMAPMailboxes("")
+	if _, ok := eligible[message.MailboxID]; !ok {
+		writeError(w, http.StatusConflict, errCode("imap_session_unhealthy", "该邮件所属账号的 IMAP 当前不是正常状态，已禁止管理员跨用户查看", true))
+		return
+	}
+	ctxRow := contexts[message.MailboxID]
+	w.Header().Set("Cache-Control", "no-store, private")
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": map[string]any{
+		"id": message.ID, "owner": ctxRow.Owner, "owner_id": ctxRow.Mailbox.OwnerID,
+		"mailbox_email": ctxRow.Mailbox.Email, "account_label": ctxRow.AccountLabel, "apple_id": ctxRow.AppleID,
+		"subject": message.Subject, "from": message.From, "body": message.Body, "html_body": message.HTMLBody,
+		"received_at": formatTime(message.ReceivedAt),
+	}})
 }
 
 func (s *Server) StartAutomaticBackups(ctx context.Context) {
@@ -3512,14 +3678,18 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 	state := s.store.SnapshotForMailboxList(scopedOwnerID(r, s.store))
 	accountsByID := mailboxAccountMap(state.Accounts)
+	ownerNames := make(map[string]string, len(state.Users))
+	for _, user := range state.Users {
+		ownerNames[user.ID] = user.Username
+	}
 	base := filterMailboxesByOwner(state.Mailboxes, strings.TrimSpace(r.URL.Query().Get("owner_id")), scopedOwnerID(r, s.store), s.isAdminRequest(r))
 	groupValues := cloneURLValues(r.URL.Query())
 	groupValues.Del("account_key")
 	groupValues.Del("account_id")
-	groupBase := filterMailboxesForList(base, accountsByID, groupValues)
+	groupBase := filterMailboxesForListWithOwners(base, accountsByID, ownerNames, groupValues)
 	groupBase = s.filterMailboxesByReceiveCode(groupBase, r.URL.Query().Get("receive_code_status"))
 	groups := publicMailboxGroups(groupBase, accountsByID)
-	filtered := filterMailboxesForList(base, accountsByID, r.URL.Query())
+	filtered := filterMailboxesForListWithOwners(base, accountsByID, ownerNames, r.URL.Query())
 	filtered = s.filterMailboxesByReceiveCode(filtered, r.URL.Query().Get("receive_code_status"))
 	sortMailboxesForList(filtered, accountsByID)
 
@@ -3654,6 +3824,30 @@ func filterMailboxesForList(mailboxes []Mailbox, accountsByID map[string]Account
 		out = append(out, mailbox)
 	}
 	return out
+}
+
+func filterMailboxesForListWithOwners(mailboxes []Mailbox, accountsByID map[string]Account, ownerNames map[string]string, values url.Values) []Mailbox {
+	filtered := filterMailboxesForList(mailboxes, accountsByID, values)
+	keyword := strings.ToLower(strings.TrimSpace(firstNonEmpty(values.Get("search"), values.Get("q"))))
+	if keyword == "" || len(ownerNames) == 0 {
+		return filtered
+	}
+	withoutSearch := cloneURLValues(values)
+	withoutSearch.Del("search")
+	withoutSearch.Del("q")
+	candidates := filterMailboxesForList(mailboxes, accountsByID, withoutSearch)
+	seen := make(map[string]bool, len(filtered))
+	for _, mailbox := range filtered {
+		seen[mailbox.ID] = true
+	}
+	for _, mailbox := range candidates {
+		if seen[mailbox.ID] || !strings.Contains(strings.ToLower(ownerNames[mailbox.OwnerID]), keyword) {
+			continue
+		}
+		filtered = append(filtered, mailbox)
+		seen[mailbox.ID] = true
+	}
+	return filtered
 }
 
 func mailboxListMatchesSearch(mailbox Mailbox, accountsByID map[string]Account, parentEmails map[string]string, keyword string) bool {

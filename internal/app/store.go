@@ -100,11 +100,19 @@ func (s *FileStore) SnapshotForMailboxList(ownerID string) State {
 	ownerID = strings.TrimSpace(ownerID)
 	in := s.state
 	out := State{
+		Users:          append([]User(nil), in.Users...),
 		Accounts:       append([]Account(nil), in.Accounts...),
 		Mailboxes:      append([]Mailbox(nil), in.Mailboxes...),
 		ICloudSessions: make([]ICloudSession, len(in.ICloudSessions)),
 	}
 	if ownerID != "" {
+		filteredUsers := out.Users[:0]
+		for _, user := range out.Users {
+			if constantTimeEqual(user.ID, ownerID) {
+				filteredUsers = append(filteredUsers, user)
+			}
+		}
+		out.Users = filteredUsers
 		filteredAccounts := out.Accounts[:0]
 		for _, account := range out.Accounts {
 			if constantTimeEqual(account.OwnerID, ownerID) {
