@@ -986,6 +986,11 @@ func (s *Server) handlePublicRedemptionOrders(w http.ResponseWriter, r *http.Req
 	}
 	for _, order := range orders {
 		orderLines := append([]string(nil), order.ExportLines...)
+		if len(orderLines) > 0 {
+			for i := range orderLines {
+				orderLines[i] = convertRedemptionExportLine(orderLines[i], p.APIType)
+			}
+		}
 		if len(orderLines) == 0 { // Backward compatibility for orders created before history was stored.
 			for _, id := range order.MailboxIDs {
 				if mailbox, ok := mailboxByID[id]; ok {
@@ -997,6 +1002,33 @@ func (s *Server) handlePublicRedemptionOrders(w http.ResponseWriter, r *http.Req
 		publicOrders = append(publicOrders, map[string]any{"id": order.ID, "quantity": len(order.MailboxIDs), "redeemed_at": formatTime(order.RedeemedAt), "lines": orderLines})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "orders": publicOrders, "quantity": len(lines), "lines": lines})
+}
+
+func convertRedemptionExportLine(line, apiType string) string {
+	parts := strings.SplitN(strings.TrimSpace(line), "----", 2)
+	if len(parts) != 2 {
+		return line
+	}
+	target := "code"
+	switch strings.ToLower(strings.TrimSpace(apiType)) {
+	case "visual", "view":
+		target = "view"
+	case "content":
+		target = "content"
+	}
+	parsed, err := url.Parse(strings.TrimSpace(parts[1]))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return line
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	for _, suffix := range []string{"/code", "/view", "/content"} {
+		if strings.HasSuffix(path, suffix) {
+			path = strings.TrimSuffix(path, suffix)
+			break
+		}
+	}
+	parsed.Path = path + "/" + target
+	return strings.TrimSpace(parts[0]) + "----" + parsed.String()
 }
 
 func (s *Server) handleManagePage(w http.ResponseWriter, r *http.Request) {
@@ -3577,11 +3609,15 @@ func filterMailboxesForList(mailboxes []Mailbox, accountsByID map[string]Account
 	minReceive := parseBoundedPositiveInt(values.Get("min_receive"), 0, 0, 1_000_000)
 	maxReceive := parseBoundedPositiveInt(values.Get("max_receive"), 1_000_000, 0, 1_000_000)
 	out := make([]Mailbox, 0, len(mailboxes))
+	parentEmails := make(map[string]string, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		parentEmails[mailbox.ID] = mailbox.Email
+	}
 	for _, mailbox := range mailboxes {
 		if keyword == "" && accountKey != "" && accountKey != "all" && !constantTimeEqual(mailboxListAccountKey(mailbox, accountsByID), accountKey) {
 			continue
 		}
-		if keyword != "" && !mailboxListMatchesSearch(mailbox, accountsByID, keyword) {
+		if keyword != "" && !mailboxListMatchesSearch(mailbox, accountsByID, parentEmails, keyword) {
 			continue
 		}
 		mailboxType := firstNonEmpty(mailbox.MailboxType, "privacy")
@@ -3620,7 +3656,7 @@ func filterMailboxesForList(mailboxes []Mailbox, accountsByID map[string]Account
 	return out
 }
 
-func mailboxListMatchesSearch(mailbox Mailbox, accountsByID map[string]Account, keyword string) bool {
+func mailboxListMatchesSearch(mailbox Mailbox, accountsByID map[string]Account, parentEmails map[string]string, keyword string) bool {
 	account := accountsByID[strings.TrimSpace(mailbox.AccountID)]
 	haystack := strings.ToLower(strings.Join([]string{
 		mailbox.Email,
@@ -3633,6 +3669,7 @@ func mailboxListMatchesSearch(mailbox Mailbox, accountsByID map[string]Account, 
 		mailbox.OwnerID,
 		mailbox.MailboxType,
 		mailbox.ParentMailboxID,
+		parentEmails[strings.TrimSpace(mailbox.ParentMailboxID)],
 	}, " "))
 	return strings.Contains(haystack, keyword)
 }
@@ -6276,24 +6313,11 @@ func (s *Server) createPlusAliasMailboxes(ctx context.Context, ownerID string, p
 	failures := make([]createMailboxFailure, 0)
 	var firstErr error
 	used := map[string]bool{}
-	existingByParent := map[string]int{}
-	state := s.store.SnapshotForMailboxList(ownerID)
-	for _, mailbox := range state.Mailboxes {
-		if firstNonEmpty(mailbox.MailboxType, "privacy") != "alias" {
-			continue
-		}
-		if parentID := strings.TrimSpace(mailbox.ParentMailboxID); parentID != "" {
-			existingByParent[parentID]++
-		}
-	}
 	for _, parent := range parents {
 		if ctx.Err() != nil {
 			break
 		}
-		need := count - existingByParent[parent.ID]
-		if need < 1 {
-			continue
-		}
+		need := count
 		for i := 0; i < need; i++ {
 			var email, tag string
 			var err error

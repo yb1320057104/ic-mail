@@ -1253,16 +1253,6 @@ func iCloudIMAPMessagesByMailbox(fetched []iCloudIMAPFetchedMessage, mailboxes [
 			continue
 		}
 		aliases[id] = email
-		if firstNonEmpty(mailbox.MailboxType, "privacy") == "alias" {
-			if parent, ok := lookupMailboxByID(mailboxes, mailbox.ParentMailboxID); ok {
-				parentEmail := normalizeICloudIMAPEmail(parent.Email)
-				if parentEmail != "" {
-					if _, skip := ignored[parentEmail]; !skip {
-						aliases[id] = parentEmail
-					}
-				}
-			}
-		}
 		// Visual/content synchronization must be able to recover a message that
 		// an older recognizer skipped. The bounded UID rescan already limits the
 		// work, so do not let LastSyncAt permanently hide an older missed UID.

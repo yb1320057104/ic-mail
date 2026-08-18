@@ -1658,7 +1658,11 @@
             <div class="mailbox-filter-row">
               <label class="mailbox-filter-field">邮箱状态<select id="aliasMailboxStatusFilter"><option value="">全部状态</option><option value="available">可用</option><option value="used">已使用</option><option value="failed">失败</option><option value="disabled">停用</option></select></label>
               <label class="mailbox-filter-field">API 状态<select id="aliasMailboxAPIFilter"><option value="">全部</option><option value="active">API启用</option><option value="disabled">API停用</option></select></label>
+              <label class="mailbox-filter-field">iCloud 状态<select id="aliasMailboxICloudFilter"><option value="">全部</option><option value="active">iCloud启用</option><option value="disabled">iCloud停用</option></select></label>
+              <label class="mailbox-filter-field">接码状态<select id="aliasMailboxReceiveCodeFilter"><option value="">全部接码状态</option><option value="available">可以接码</option><option value="unavailable">当前不可接码</option></select></label>
               <label class="mailbox-filter-field">导出状态<select id="aliasMailboxExportStatusFilter"><option value="">全部导出状态</option><option value="exported">已导出</option><option value="unexported">未导出</option></select></label>
+              <label class="mailbox-filter-field">最低收件数<input id="aliasMailboxMinReceive" type="number" min="0" placeholder="不限"></label>
+              <label class="mailbox-filter-field">最高收件数<input id="aliasMailboxMaxReceive" type="number" min="0" placeholder="不限"></label>
             </div>
             <div class="mailbox-control-stack">
               <div class="mailbox-action-row">
@@ -1685,7 +1689,7 @@
                 <section class="mailbox-action-group"><h4>导出数据</h4><div class="toolbar"><select id="batchAliasMailboxAPIExportType"><option value="json">JSON取码地址</option><option value="visual">邮件可视化取码地址</option><option value="content">邮件内容取码地址</option></select><button onclick="batchExportAliasMailboxes('api')">导出所选 API</button><button onclick="batchExportAliasMailboxes('email')">只导出邮箱</button></div></section>
                 <section class="mailbox-action-group"><h4>加入兑换池</h4><p>把符合条件的邮箱加入兑换库存。</p><div class="toolbar"><button onclick="addSelectedAliasToRedemptionPool()">加入兑换池</button></div></section>
               </div>
-              <details class="mailbox-danger-zone"><summary>API 地址维护与删除（高风险操作）</summary><div><p class="muted">重置后旧取码地址会立即失效。</p><div class="toolbar"><button onclick="batchRotateAliasMailboxAPIs()">重置所选取码 API</button><button class="danger" onclick="batchDeleteAliasMailboxes()">删除选中别名</button></div></div></details>
+              <details class="mailbox-danger-zone"><summary>API 地址维护与删除（高风险操作）</summary><div><p class="muted">重置后旧取码地址会立即失效。</p><div class="toolbar"><button onclick="batchRotateAliasMailboxAPIs(false)">重置所选取码 API</button><button onclick="batchRotateAliasMailboxAPIs(true)">重置筛选结果全部 API</button><button onclick="openAliasRefreshAPIImport()">导入旧地址并更新导出</button><input id="aliasRefreshAPIImportFile" type="file" accept=".txt,text/plain" hidden onchange="refreshImportedMailboxAPIs(this,{typeSelectId:'batchAliasMailboxAPIExportType',alias:true})"><button class="danger" onclick="batchDeleteAliasMailboxes()">删除选中别名</button></div></div></details>
             </div>
           </section>
           <section class="workspace-block"><div class="workspace-block-head"><div><h3>3. 账号范围</h3><p>点击账号标签只查看该 Apple 登录态下的别名邮箱。</p></div></div><div id="aliasMailboxAccountTabs" class="account-tabs workspace-block-body"></div></section>
@@ -2103,7 +2107,7 @@
       set('navOverviewCount', accountTotal);
       set('navSessionCount', visibleSessionTotal);
       set('navMailboxCount', mailboxTotal);
-      set('navAliasCount', Number(lastAliasMailboxPagination.total_all || lastAliasMailboxes.length || 0));
+      set('navAliasCount', Number(aliasMailboxGrandTotal || lastAliasMailboxPagination.total_all || lastAliasMailboxes.length || 0));
     }
 
     async function api(path, options = {}) {
@@ -3145,7 +3149,7 @@
       $('redemptionItemRows').innerHTML=(data.items||[]).map(i=>`<tr><td>${esc(i.mailbox.email)}</td><td>${i.mailbox.can_receive_code?'<span class="badge ok">正常</span>':`<span class="badge danger" title="${esc(i.mailbox.receive_code_error||'')}">异常</span>`}</td><td>${i.redeemed_at?'<span class="badge warn">已兑换</span>':i.available?'<span class="badge ok">库存中</span>':'<span class="badge danger">暂不可兑换</span>'}</td><td>${esc(i.added_at||'-')}<br>${esc(i.redeemed_at||'-')}</td><td>${i.redeemed_at?'-':`<button onclick="removeRedemptionItem('${esc(i.mailbox.id)}')">移出</button>`}</td></tr>`).join('')||'<tr><td colspan="5">兑换池暂无邮箱</td></tr>';
     }
     async function addSelectedToRedemptionPool(){const ids=[...selectedMailboxIDs];if(!ids.length){alert('请先在邮箱池勾选邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids})});selectedMailboxIDs.clear();log('所选符合条件的邮箱已加入兑换池');await loadMailboxPage();}
-    async function addSelectedAliasToRedemptionPool(){const ids=selectedVisibleAliasMailboxIDs();if(!ids.length){alert('请先勾选邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids,pool_type:'alias'})});selectedAliasMailboxIDs.clear();log('所选符合条件的邮箱已加入兑换池');await loadAliasMailboxPage({silent:true});}
+    async function addSelectedAliasToRedemptionPool(){const ids=selectedAliasMailboxIDList();if(!ids.length){alert('请先勾选邮箱');return}await api('/api/redemption-pool/items',{method:'POST',loadingText:`正在把 ${ids.length} 个别名邮箱加入兑换池…`,body:JSON.stringify({mailbox_ids:ids,pool_type:'alias'})});selectedAliasMailboxIDs.clear();log('所选符合条件的邮箱已加入兑换池');await loadAliasMailboxPage({silent:true});}
     async function addSelectedToSecondhandPool(){const ids=[...selectedMailboxIDs];if(!ids.length){alert('请先勾选已导出超过7天且接码正常的邮箱');return}await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({mailbox_ids:ids,pool_type:'secondhand'})});selectedMailboxIDs.clear();log('符合条件的邮箱已加入二手兑换池');await loadMailboxPage();}
     async function addAllEligibleToRedemptionPool(){const pool_type=selectedRedemptionPoolType(),d=await api('/api/redemption-pool/items',{method:'POST',body:JSON.stringify({add_all_eligible:true,pool_type})});log(`已加入 ${d.added} 个邮箱`);await loadRedemptionPool()}
     async function removeRedemptionItem(id){await api('/api/redemption-pool/items',{method:'DELETE',body:JSON.stringify({mailbox_ids:[id]})});await loadRedemptionPool()}
@@ -3612,7 +3616,7 @@
       input.click();
     }
 
-    async function refreshImportedMailboxAPIs(input) {
+    async function refreshImportedMailboxAPIs(input, options = {}) {
       const file = input.files && input.files[0];
       if (!file) return;
       if (file.size > 1024 * 1024) { alert('导入文件不能超过 1 MB'); return; }
@@ -3621,7 +3625,7 @@
       if (!lines.length) { alert('导入文件中没有可处理的数据'); return; }
       if (lines.length > 10000) { alert('单次最多导入 10000 行'); return; }
       if (!confirm(`将按照邮箱地址匹配 ${lines.length} 行旧数据，并导出当前的新取码地址。\n旧文件中的密钥不会恢复或保存，是否继续？`)) return;
-      const fallbackType = (($('batchMailboxAPIExportType') || {}).value || 'json');
+      const fallbackType = (($(options.typeSelectId || 'batchMailboxAPIExportType') || {}).value || 'json');
       try {
         const data = await api('/api/mailboxes/import-refresh-apis', {method:'POST', body:JSON.stringify({lines, api_type:fallbackType})});
         const blob = new Blob([data.content || ''], {type:'text/plain;charset=utf-8'});
@@ -3634,7 +3638,7 @@
         if (data.missing_count) details.push(`未匹配 ${data.missing_count} 个`);
         if (data.skipped_locked) details.push(`跳过兑换池邮箱 ${data.skipped_locked} 个`);
         alert(details.join('，') + '。'); log(details.join('，'));
-        await loadMailboxPage();
+        if (options.alias) await loadAliasMailboxPage({silent:true}); else await loadMailboxPage();
       } catch (error) {
         alert(`导入更新失败：${error.message || error}`);
       } finally {
@@ -4645,6 +4649,7 @@
     let lastAliasMailboxes = [];
     let lastAliasMailboxGroups = [];
     let lastAliasMailboxPagination = {page:1,page_size:10,total:0,total_all:0,total_pages:1};
+    let aliasMailboxGrandTotal = 0;
     let aliasMailboxPage = 1;
     let aliasMailboxPageSize = 10;
     let activeAliasMailboxAccountKey = 'all';
@@ -4662,7 +4667,11 @@
       if (!filters.search && activeAliasMailboxAccountKey && activeAliasMailboxAccountKey !== 'all') params.set('account_key', activeAliasMailboxAccountKey);
       if (filters.status) params.set('status', filters.status);
       if (filters.api_status) params.set('api_status', filters.api_status);
+      if (filters.icloud_status) params.set('icloud_status', filters.icloud_status);
+      if (filters.receive_code_status) params.set('receive_code_status', filters.receive_code_status);
       if (filters.export_status) params.set('export_status', filters.export_status);
+      if (filters.min_receive !== '') params.set('min_receive', filters.min_receive);
+      if (filters.max_receive !== '') params.set('max_receive', filters.max_receive);
       return params;
     }
 
@@ -4671,6 +4680,7 @@
       lastAliasMailboxes = data.mailboxes || [];
       lastAliasMailboxGroups = data.groups || [];
       lastAliasMailboxPagination = data.pagination || lastAliasMailboxPagination;
+      if (!Object.values(appliedAliasMailboxFilters || {}).some(value => String(value || '').trim()) && activeAliasMailboxAccountKey === 'all') aliasMailboxGrandTotal = Number(lastAliasMailboxPagination.total_all || 0);
       aliasMailboxPage = Number(lastAliasMailboxPagination.page || aliasMailboxPage || 1);
       aliasMailboxPageSize = Number(lastAliasMailboxPagination.page_size || aliasMailboxPageSize || 10);
       if ($('aliasMailboxPageSize')) $('aliasMailboxPageSize').value = String(aliasMailboxPageSize);
@@ -4684,14 +4694,18 @@
         search: String(($('aliasMailboxSearch') || {}).value || '').trim(),
         status: String(($('aliasMailboxStatusFilter') || {}).value || ''),
         api_status: String(($('aliasMailboxAPIFilter') || {}).value || ''),
-        export_status: String(($('aliasMailboxExportStatusFilter') || {}).value || '')
+        icloud_status: String(($('aliasMailboxICloudFilter') || {}).value || ''),
+        receive_code_status: String(($('aliasMailboxReceiveCodeFilter') || {}).value || ''),
+        export_status: String(($('aliasMailboxExportStatusFilter') || {}).value || ''),
+        min_receive: String(($('aliasMailboxMinReceive') || {}).value || ''),
+        max_receive: String(($('aliasMailboxMaxReceive') || {}).value || '')
       };
       aliasMailboxPage = 1;
       loadAliasMailboxPage().catch(err => log('筛选别名邮箱失败：' + err.message));
     }
 
     function clearAliasMailboxSearch() {
-      ['aliasMailboxSearch','aliasMailboxStatusFilter','aliasMailboxAPIFilter','aliasMailboxExportStatusFilter'].forEach(id => { if ($(id)) $(id).value = ''; });
+      ['aliasMailboxSearch','aliasMailboxStatusFilter','aliasMailboxAPIFilter','aliasMailboxICloudFilter','aliasMailboxReceiveCodeFilter','aliasMailboxExportStatusFilter','aliasMailboxMinReceive','aliasMailboxMaxReceive'].forEach(id => { if ($(id)) $(id).value = ''; });
       appliedAliasMailboxFilters = {};
       activeAliasMailboxAccountKey = 'all';
       aliasMailboxPage = 1;
@@ -4715,18 +4729,30 @@
       loadAliasMailboxPage().catch(err => log('切换别名账号失败：' + err.message));
     }
 
-    function selectedVisibleAliasMailboxIDs() {
-      return lastAliasMailboxes.filter(row => selectedAliasMailboxIDs.has(row.id)).map(row => row.id);
+    function selectedAliasMailboxIDList() {
+      return [...selectedAliasMailboxIDs];
     }
 
     function toggleAliasMailbox(id, checked) {
       if (checked) selectedAliasMailboxIDs.add(id); else selectedAliasMailboxIDs.delete(id);
-      if ($('aliasMailboxSelectedCount')) $('aliasMailboxSelectedCount').textContent = `已选择 ${selectedAliasMailboxIDs.size} 个`;
+      updateAliasMailboxSelectionUI();
     }
 
     function toggleAllVisibleAliasMailboxes(checked) {
       lastAliasMailboxes.forEach(row => toggleAliasMailbox(row.id, checked));
       renderAliasMailboxes();
+    }
+
+    function openAliasRefreshAPIImport() {
+      const input = $('aliasRefreshAPIImportFile');
+      input.value = '';
+      input.click();
+    }
+
+    function updateAliasMailboxSelectionUI() {
+      if ($('aliasMailboxSelectedCount')) $('aliasMailboxSelectedCount').textContent = `已选择 ${selectedAliasMailboxIDs.size} 个`;
+      const rows = lastAliasMailboxes || [];
+      if ($('aliasMailboxSelectAll')) $('aliasMailboxSelectAll').checked = rows.length > 0 && rows.every(row => selectedAliasMailboxIDs.has(row.id));
     }
 
     function renderAliasMailboxes() {
@@ -4749,47 +4775,83 @@
       }
       $('aliasMailboxes').innerHTML = rows.map(row => {
         const checked = selectedAliasMailboxIDs.has(row.id) ? 'checked' : '';
-        const code = mailboxCodeResults.get(row.id);
         return `<tr>
           <td><input type="checkbox" ${checked} onchange="toggleAliasMailbox('${esc(row.id)}', this.checked)"></td>
           <td><strong>${esc(row.label || '-')}</strong><br><span class="mono muted">${esc(row.id)}</span></td>
           <td><span class="email">${esc(row.email)}</span><br><span class="pill">别名邮箱</span><br><span class="muted">主邮箱：${esc(row.parent_mailbox_email || row.parent_mailbox_id || '-')}</span><br><span class="muted">${esc(mailboxAccountTitle(row))}</span></td>
-          <td>${row.api_active ? '<span class="pill">API启用</span>' : '<span class="pill off">API停用</span>'}<br>${row.icloud_active ? '<span class="pill">iCloud启用</span>' : '<span class="pill off">iCloud停用</span>'}<br><span class="muted">${esc(row.status || '-')}</span></td>
-          <td>${row.exported_at ? `<span class="pill">已导出</span><br><span class="muted">${esc(exactTimeText(row.exported_at))}</span>` : '<span class="pill off">未导出</span>'}</td>
+          <td>${row.api_active ? '<span class="pill">API启用</span>' : '<span class="pill off">API停用</span>'}<br>${row.icloud_active ? '<span class="pill">iCloud启用</span>' : '<span class="pill off">iCloud停用</span>'}<br><span class="muted">${esc(statusText(row.status || '-'))}</span><br><span class="pill ${row.can_receive_code ? '' : 'off'}" title="${esc(row.receive_code_error || '')}">${esc(row.receive_code_status || (row.can_receive_code ? '可以正常接码' : '当前不可接码'))}</span></td>
+          <td>${row.redemption_locked&&!currentUser.is_admin?'<span class="pill">兑换池锁定</span><br><span class="muted">仅能通过兑换码导出</span>':row.exported_at ? `<span class="pill">已导出</span><br><span class="muted">${esc(exactTimeText(row.exported_at))}</span>` : '<span class="pill off">未导出</span>'}</td>
           <td>${Number(row.receive_count || 0)}</td>
           <td>${esc(row.last_sync_at ? exactTimeText(row.last_sync_at) : '尚未同步')}</td>
-          <td>${code && code.code ? `<strong>${esc(code.code)}</strong><br><span class="muted">${esc(code.time || '')}</span>` : `<span class="muted">${esc((code && code.message) || '未取码')}</span>`}</td>
-          <td class="toolbar"><button onclick="copyText(${esc(JSON.stringify(row.email))})">复制邮箱</button><button onclick="copyText(${esc(JSON.stringify(mailboxAccessURL(row,'json')))})">复制JSON</button><button onclick="window.open(${esc(JSON.stringify(mailboxAccessURL(row,'visual')))},'_blank')">查看邮箱</button><button onclick="fetchMailboxCode('${esc(row.id)}')">验证码</button></td>
+          <td>${renderMailboxCodeCell(row.id)}</td>
+          <td class="toolbar">
+            ${row.redemption_locked&&!currentUser.is_admin?'<span class="pill">导出已锁定</span>':`<button onclick="copyAliasMailboxValue('${esc(row.id)}','email')">复制邮箱</button><button onclick="copyAliasMailboxValue('${esc(row.id)}','json')">复制JSON</button><button onclick="copyAliasMailboxValue('${esc(row.id)}','visual')">复制可视化</button><button onclick="copyAliasMailboxValue('${esc(row.id)}','content')">复制内容地址</button>`}
+            <button onclick="viewAliasMailbox('${esc(row.id)}')">查看邮箱</button>
+            <button onclick="verifyAliasMailbox('${esc(row.id)}')">验证码</button>
+            ${row.redemption_locked&&!currentUser.is_admin?'':`<button onclick="rotateAliasMailboxAPI('${esc(row.id)}')">重置API</button>`}
+            <button onclick="cleanAliasRemoteMailbox('${esc(row.id)}')">删除邮件</button>
+            <button onclick="setAliasMailboxStatus('${esc(row.id)}','${row.status==='disabled'?'available':'disabled'}')">${row.status==='disabled'?'恢复可用':'停用'}</button>
+            <button class="danger" onclick="deleteAliasMailbox('${esc(row.id)}')">删除</button>
+          </td>
         </tr>`;
       }).join('');
     }
 
     async function batchAliasMailboxStatus(status) {
-      const ids = selectedVisibleAliasMailboxIDs();
+      const ids = selectedAliasMailboxIDList();
       if (!ids.length) { log('请先勾选别名邮箱'); return; }
-      await api('/api/mailboxes/status/batch', {method:'POST', body:JSON.stringify({mailbox_ids:ids, status})});
+      if (!confirm(`确认修改选中的 ${ids.length} 个别名邮箱状态？`)) return;
+      const payload = {mailbox_ids:ids, status, note:'面板批量修改别名状态'};
+      if (status === 'disabled') payload.api_active = false;
+      if (status === 'available') payload.api_active = true;
+      await api('/api/mailboxes/status/batch', {method:'POST', loadingText:`正在批量更新 ${ids.length} 个别名邮箱…`, body:JSON.stringify(payload)});
+      selectedAliasMailboxIDs.clear();
       await loadAliasMailboxPage({silent:true});
     }
 
     async function batchExportAliasMailboxes(mode) {
-      const ids = selectedVisibleAliasMailboxIDs();
+      const ids = selectedAliasMailboxIDList();
       if (!ids.length) { log('请先勾选别名邮箱'); return; }
       const type = String(($('batchAliasMailboxAPIExportType') || {}).value || 'json');
-      const rows = lastAliasMailboxes.filter(row => ids.includes(row.id));
-      const lines = rows.map(row => mode === 'email' ? row.email : `${row.email}----${mailboxAccessURL(row, type)}`);
-      await writeClipboard(lines.join('\n'));
-      log(`已复制 ${lines.length} 条别名${mode === 'email' ? '邮箱' : 'API'}`);
-    }
-
-    async function batchRotateAliasMailboxAPIs() {
-      const ids = selectedVisibleAliasMailboxIDs();
-      if (!ids.length) { log('请先勾选别名邮箱'); return; }
-      await api('/api/mailboxes/api-tokens/rotate', {method:'POST', body:JSON.stringify({mailbox_ids:ids})});
+      const path = mode === 'email' ? '/api/runtime/export-mailbox-emails' : '/api/runtime/export-mailbox-apis';
+      const url = new URL(path, location.origin);
+      url.searchParams.set('format', 'txt');
+      url.searchParams.set('mailbox_ids', ids.join(','));
+      if (mode === 'api') url.searchParams.set('api_type', type);
+      await downloadExportFile(url.toString(), `icloud-alias-selected-${Date.now()}.txt`, 'txt', '已取消别名导出', `已导出选中的 ${ids.length} 个别名邮箱`, '别名批量导出失败');
+      selectedAliasMailboxIDs.clear();
       await loadAliasMailboxPage({silent:true});
     }
 
+    async function allFilteredAliasMailboxIDs() {
+      const first = aliasMailboxListQuery();
+      first.set('page', '1'); first.set('page_size', '500');
+      const firstData = await api('/api/mailboxes?' + first.toString());
+      const ids = (firstData.mailboxes || []).map(row => row.id);
+      const pages = Math.max(1, Number((firstData.pagination || {}).total_pages || 1));
+      for (let page = 2; page <= pages; page++) {
+        first.set('page', String(page));
+        const data = await api('/api/mailboxes?' + first.toString());
+        ids.push(...(data.mailboxes || []).map(row => row.id));
+      }
+      return ids;
+    }
+
+    async function batchRotateAliasMailboxAPIs(all) {
+      const ids = all ? await allFilteredAliasMailboxIDs() : selectedAliasMailboxIDList();
+      if (!ids.length) { log('请先勾选别名邮箱'); return; }
+      if (ids.length > 10000) { alert('单次最多重置 10000 个别名邮箱，请先缩小筛选范围'); return; }
+      const days = Number(prompt('请输入新取码 API 的有效天数（1-3650）', '180'));
+      if (!Number.isInteger(days) || days < 1 || days > 3650) { alert('有效天数必须是 1 到 3650 之间的整数'); return; }
+      if (!confirm(`确认重置${all?'当前筛选结果':'选中'}的 ${ids.length} 个别名邮箱 API？旧地址会立即失效。`)) return;
+      const data = await api('/api/mailboxes/api-tokens/rotate', {method:'POST', loadingText:`正在重置 ${ids.length} 个别名邮箱 API…`, body:JSON.stringify({mailbox_ids:ids, valid_days:days})});
+      selectedAliasMailboxIDs.clear();
+      await loadAliasMailboxPage({silent:true});
+      alert(`成功重置 ${data.rotated || 0} 个，跳过兑换池锁定 ${data.skipped_locked || 0} 个`);
+    }
+
     async function batchDeleteAliasMailboxes() {
-      const ids = selectedVisibleAliasMailboxIDs();
+      const ids = selectedAliasMailboxIDList();
       if (!ids.length) { log('请先勾选别名邮箱'); return; }
       if (!confirm(`确认删除 ${ids.length} 个别名邮箱？主隐私邮箱不会被删除。`)) return;
       for (const id of ids) {
@@ -4797,6 +4859,54 @@
         selectedAliasMailboxIDs.delete(id);
       }
       await loadAliasMailboxPage({silent:true});
+    }
+
+    function aliasMailboxRow(id) { return (lastAliasMailboxes || []).find(row => row.id === id); }
+    async function copyAliasMailboxValue(id, type) {
+      const row = aliasMailboxRow(id); if (!row) return;
+      const value = type === 'email' ? row.email : mailboxAccessURL(row, type);
+      if (!value || (type !== 'email' && !row.api_url)) { alert('该别名邮箱取码地址不可导出'); return; }
+      await copyText(value);
+    }
+    function viewAliasMailbox(id) {
+      const row = aliasMailboxRow(id); if (!row || !row.api_url) { alert('该别名邮箱取码地址不可用'); return; }
+      window.open(mailboxAccessURL(row, 'visual'), '_blank', 'noopener');
+    }
+    async function verifyAliasMailbox(id) {
+      const row = aliasMailboxRow(id); if (!row || !row.api_url) { alert('该别名邮箱取码地址不可用'); return; }
+      mailboxCodeResults.set(id, {email:row.email, loading:true}); renderAliasMailboxes();
+      try {
+        const response = await fetch(mailboxCodeURL(row, {waitMs:12000, peek:true}));
+        const data = await response.json();
+        mailboxCodeResults.set(id, data.success ? {email:row.email, code:data.code, time:data.received_at||''} : {email:row.email, message:data.message||'暂未收到验证码'});
+      } catch (err) { mailboxCodeResults.set(id, {email:row.email, message:err.message}); }
+      renderAliasMailboxes();
+    }
+    async function rotateAliasMailboxAPI(id) {
+      const days = Number(prompt('请输入新取码 API 的有效天数（1-3650）', '180'));
+      if (!Number.isInteger(days) || days < 1 || days > 3650) return;
+      if (!confirm('确认重置该别名邮箱 API？旧地址会立即失效。')) return;
+      await api(`/api/mailboxes/${encodeURIComponent(id)}/api-token/rotate`, {method:'POST', loadingText:'正在重置别名邮箱 API…', body:JSON.stringify({valid_days:days})});
+      await loadAliasMailboxPage({silent:true});
+    }
+    async function setAliasMailboxStatus(id, status) {
+      const active = status !== 'disabled';
+      await api('/api/mailboxes/status/batch', {method:'POST', loadingText:'正在更新别名邮箱状态…', body:JSON.stringify({mailbox_ids:[id], status, api_active:active})});
+      await loadAliasMailboxPage({silent:true});
+    }
+    async function deleteAliasMailbox(id) {
+      const row = aliasMailboxRow(id); if (!row) return;
+      if (!confirm(`确认删除别名邮箱 ${row.email}？`)) return;
+      await api('/api/mailboxes/' + encodeURIComponent(id), {method:'DELETE', loadingText:'正在删除别名邮箱…'});
+      selectedAliasMailboxIDs.delete(id); await loadAliasMailboxPage({silent:true});
+    }
+    async function cleanAliasRemoteMailbox(id) {
+      const row = aliasMailboxRow(id); if (!row) return;
+      if (!confirm(`确认删除 ${row.email} 已同步的远端邮件并清空废纸篓？`)) return;
+      const data = await api(`/api/mailboxes/${encodeURIComponent(id)}/remote-clean`, {method:'POST', loadingText:'正在清理别名邮箱邮件…', body:JSON.stringify({move_synced:true, empty_trash:true})});
+      mailboxCodeResults.delete(id); await loadAliasMailboxPage({silent:true});
+      const cleanup = data.cleanup || {};
+      log(`别名邮件清理完成：本地 ${data.local_deleted||0}，移入废纸篓 ${cleanup.moved_to_trash||0}，清空 ${cleanup.destroyed||0}`);
     }
 
     async function syncMailbox(id) {

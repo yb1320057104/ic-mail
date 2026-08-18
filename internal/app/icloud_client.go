@@ -1658,6 +1658,29 @@ func matchingMailboxIDs(recipients string, aliases map[string]string) []string {
 	if len(aliases) == 0 {
 		return nil
 	}
+	var exactAliasIDs []string
+	var exactIDs []string
+	for mailboxID, alias := range aliases {
+		if strings.TrimSpace(mailboxID) == "" || strings.TrimSpace(alias) == "" {
+			continue
+		}
+		if containsFold(recipients, strings.ToLower(strings.TrimSpace(alias))) {
+			local, _, _ := strings.Cut(strings.TrimSpace(alias), "@")
+			if strings.Contains(local, "+") {
+				exactAliasIDs = append(exactAliasIDs, mailboxID)
+			} else {
+				exactIDs = append(exactIDs, mailboxID)
+			}
+		}
+	}
+	if len(exactAliasIDs) > 0 {
+		sort.Strings(exactAliasIDs)
+		return exactAliasIDs
+	}
+	if len(exactIDs) > 0 {
+		sort.Strings(exactIDs)
+		return exactIDs
+	}
 	var ids []string
 	for mailboxID, alias := range aliases {
 		if strings.TrimSpace(mailboxID) == "" || strings.TrimSpace(alias) == "" {
@@ -1681,6 +1704,9 @@ func mailboxRecipientMatches(recipients, email string) bool {
 	}
 	local, domain, ok := strings.Cut(email, "@")
 	if !ok || local == "" || domain == "" {
+		return false
+	}
+	if strings.Contains(local, "+") {
 		return false
 	}
 	baseLocal, _, _ := strings.Cut(local, "+")

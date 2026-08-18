@@ -362,6 +362,19 @@ func TestICloudIMAPMessagesByMailboxMatchesForwardedRecipientLine(t *testing.T) 
 	}
 }
 
+func TestICloudIMAPMessagesByMailboxKeepsPlusAliasesIsolated(t *testing.T) {
+	mailboxes := []Mailbox{
+		{ID: "parent", Email: "isolation@icloud.com"},
+		{ID: "alias-one", Email: "isolation+one@icloud.com", MailboxType: "alias", ParentMailboxID: "parent"},
+		{ID: "alias-two", Email: "isolation+two@icloud.com", MailboxType: "alias", ParentMailboxID: "parent"},
+	}
+	raw := "To: isolation+one@icloud.com\r\nFrom: OpenAI <noreply@example.com>\r\nSubject: Verification code 123456\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nYour code is 123456"
+	got := iCloudIMAPMessagesByMailbox([]iCloudIMAPFetchedMessage{{UID: "alias-1", Raw: []byte(raw)}}, mailboxes, time.Time{}, "ChatGPT")
+	if len(got["alias-one"]) != 1 || len(got["alias-two"]) != 0 || len(got["parent"]) != 0 {
+		t.Fatalf("plus alias message leaked between mailboxes: %+v", got)
+	}
+}
+
 func TestICloudIMAPMessagesByMailboxMatchesHTMLForwardedRecipient(t *testing.T) {
 	mailboxes := []Mailbox{{ID: "mbx_html", Email: "html-alias@icloud.com"}}
 	raw := "To: destination@qq.com\r\nFrom: ChatGPT <noreply@example.com>\r\nSubject: Verification code 654321\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" +

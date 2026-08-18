@@ -2045,6 +2045,11 @@ func (s *FileStore) DeleteMailbox(id string) error {
 	if idx < 0 {
 		return errCode("mailbox_not_found", "邮箱不存在", false)
 	}
+	for _, mailbox := range s.state.Mailboxes {
+		if strings.TrimSpace(mailbox.ParentMailboxID) == strings.TrimSpace(id) {
+			return errCode("alias_children_exist", "该主邮箱仍有关联别名，请先删除对应别名邮箱", false)
+		}
+	}
 	s.state.Mailboxes = append(s.state.Mailboxes[:idx], s.state.Mailboxes[idx+1:]...)
 	filtered := s.state.Messages[:0]
 	for _, msg := range s.state.Messages {

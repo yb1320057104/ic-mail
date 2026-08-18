@@ -726,6 +726,44 @@ func TestCreatePlusAliasMailboxesForAllParents(t *testing.T) {
 	}
 }
 
+func TestCreatePlusAliasMailboxesCountMeansNewAliases(t *testing.T) {
+	store := newTestStore(t)
+	parent, err := store.AddMailboxForOwner("owner-alias-count", "acc-alias", "主邮箱", "alias-count@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{}, store, discardLogger()).(*Server)
+	first, _, _, err := server.createPlusAliasMailboxes(context.Background(), "owner-alias-count", []Mailbox{parent}, 2, "", "")
+	if err != nil || len(first) != 2 {
+		t.Fatalf("first create = %d, err=%v", len(first), err)
+	}
+	second, _, _, err := server.createPlusAliasMailboxes(context.Background(), "owner-alias-count", []Mailbox{parent}, 2, "", "")
+	if err != nil || len(second) != 2 {
+		t.Fatalf("second create should add two aliases, got=%d err=%v", len(second), err)
+	}
+}
+
+func TestAliasMailboxSearchMatchesParentEmail(t *testing.T) {
+	parent := Mailbox{ID: "parent", Email: "parent-search@icloud.com", MailboxType: "privacy"}
+	alias := Mailbox{ID: "alias", Email: "parent-search+tag@icloud.com", MailboxType: "alias", ParentMailboxID: parent.ID}
+	got := filterMailboxesForList([]Mailbox{parent, alias}, nil, url.Values{"mailbox_type": {"alias"}, "search": {"parent-search@icloud.com"}})
+	if len(got) != 1 || got[0].ID != alias.ID {
+		t.Fatalf("parent email search = %#v", got)
+	}
+}
+
+func TestConvertRedemptionExportLinePreservesOriginalToken(t *testing.T) {
+	original := "alias@icloud.com----https://mail.example/api/v1/access/old-token/mailboxes/alias@icloud.com/code?x=1"
+	visual := convertRedemptionExportLine(original, "visual")
+	if visual != "alias@icloud.com----https://mail.example/api/v1/access/old-token/mailboxes/alias@icloud.com/view?x=1" {
+		t.Fatalf("visual line = %q", visual)
+	}
+	content := convertRedemptionExportLine(visual, "content")
+	if content != "alias@icloud.com----https://mail.example/api/v1/access/old-token/mailboxes/alias@icloud.com/content?x=1" {
+		t.Fatalf("content line = %q", content)
+	}
+}
+
 func TestMailboxRecipientMatchesPlusAliasAndParent(t *testing.T) {
 	recipients := "To: Hide My Email <hake_tellers6w+awds@icloud.com>\nX-ICLOUD-HME: p=hake_tellers6w+awds@icloud.com"
 	if !mailboxRecipientMatches(recipients, "hake_tellers6w@icloud.com") {

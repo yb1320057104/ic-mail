@@ -135,7 +135,7 @@ func TestStartPlusAliasCreateJobRunsInBackground(t *testing.T) {
 	}
 }
 
-func TestCreatePlusAliasMailboxesSkipsParentsAlreadyAtTarget(t *testing.T) {
+func TestCreatePlusAliasMailboxesAddsRequestedCountWhenAliasesExist(t *testing.T) {
 	store := newTestStore(t)
 	owner := "owner-skip-alias"
 	parent, err := store.AddMailboxForOwner(owner, "acc-skip", "主邮箱", "hake_tellers6w@icloud.com")
@@ -150,8 +150,8 @@ func TestCreatePlusAliasMailboxesSkipsParentsAlreadyAtTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created) != 0 {
-		t.Fatalf("expected skip, created=%d", len(created))
+	if len(created) != 1 {
+		t.Fatalf("expected one new alias, created=%d", len(created))
 	}
 	if store.MailboxCountForAccount(owner, "acc-skip") != 1 {
 		t.Fatalf("privacy mailbox count should ignore aliases, got %d", store.MailboxCountForAccount(owner, "acc-skip"))

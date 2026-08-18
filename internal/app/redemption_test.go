@@ -2,6 +2,7 @@ package app
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -341,6 +342,20 @@ func TestRedemptionOrderKeepsOriginalExportLines(t *testing.T) {
 	}
 	if len(orders) != 1 || len(orders[0].ExportLines) != 1 || orders[0].ExportLines[0] != want {
 		t.Fatalf("historical lines changed: %#v", orders)
+	}
+}
+
+func TestDeleteParentMailboxWithAliasesIsRejected(t *testing.T) {
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, _ := store.AddMailboxForOwner("owner", "account", "parent", "parent-delete@icloud.com")
+	if _, err = store.AddPlusAliasMailbox("owner", parent.ID, "parent-delete+tag@icloud.com", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DeleteMailbox(parent.ID); err == nil || !strings.Contains(err.Error(), "关联别名") {
+		t.Fatalf("delete parent error = %v", err)
 	}
 }
 

@@ -475,7 +475,7 @@
         <button class="admin-only" data-view="invites" onclick="setActiveView('invites')" hidden><span class="nav-icon">✦</span>注册邀请</button>
         <button class="admin-only" data-view="announcements" onclick="setActiveView('announcements')" hidden><span class="nav-icon">▤</span>平台公告</button>
         <button class="admin-only" data-view="audit" onclick="setActiveView('audit')" hidden><span class="nav-icon">◉</span>安全审计</button>
-		<button class="admin-only" data-view="operations" onclick="setActiveView('operations');loadOperations()" hidden><span class="nav-icon">⚙</span>运维中心</button>
+		<button class="admin-only" data-view="operations" onclick="setActiveView('operations');loadOperationsSafe()" hidden><span class="nav-icon">⚙</span>运维中心</button>
         <button data-view="logs" onclick="setActiveView('logs')"><span class="nav-icon">☰</span>运行日志</button>
         <button onclick="refresh()"><span class="nav-icon">↻</span>刷新数据</button>
       </nav>
@@ -1241,6 +1241,15 @@
 	  const backups=data.backups||[]; $('opsBackups').innerHTML=backups.map(row=>`<tr><td class="mono">${esc(row.name)}</td><td>${formatBytes(row.size)}</td><td>${esc(displayTime(row.created_at))}</td><td><button class="btn small" onclick="downloadDatabaseBackup('${esc(row.name)}')">下载</button> <button class="btn small danger" onclick="restoreDatabaseBackup('${esc(row.name)}')">恢复</button></td></tr>`).join(''); renderEmpty('opsBackups',backups);
 	  const recycle=data.recycle_bin||[]; $('opsRecycle').innerHTML=recycle.map(row=>`<tr><td>${esc(row.username)}<br><span class="mono muted">${esc(row.user_id)}</span></td><td>${esc(row.reason||'-')}</td><td>${esc(displayTime(row.deleted_at))}</td><td>${esc(displayTime(row.purge_at))}</td><td><button class="btn small" onclick="restoreRecycleUser('${esc(row.id)}')">恢复用户</button></td></tr>`).join(''); renderEmpty('opsRecycle',recycle);
 	}
+	async function loadOperationsSafe() {
+	  try {
+		await loadOperations();
+	  } catch (err) {
+		const message='运维数据加载失败：'+(err&&err.message?err.message:String(err));
+		if ($('opsAlerts')) { $('opsAlerts').hidden=false; $('opsAlerts').textContent=message; }
+		log(message);
+	  }
+	}
 	async function createDatabaseBackup(){try{await adminConfirmedApi('/api/admin/backups',{method:'POST',body:'{}'});await loadOperations();log('数据库备份创建成功')}catch(err){log('备份失败：'+err.message)}}
 	async function downloadDatabaseBackup(name){try{const password=prompt('下载数据库备份需要二次验证，请输入当前管理员密码：');if(password===null)return;const verified=await api('/api/admin/verify',{method:'POST',body:JSON.stringify({password})});const response=await fetch(`/api/admin/backups/${encodeURIComponent(name)}/download`,{credentials:'same-origin',headers:{'X-Admin-Confirmation':verified.token}});if(!response.ok)throw new Error('下载失败：HTTP '+response.status);const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);log('数据库备份已下载')}catch(err){log(err.message)}}
 	async function restoreDatabaseBackup(name){if(!confirm(`确定恢复备份 ${name} 吗？当前数据库会先自动备份。`))return;try{await adminConfirmedApi(`/api/admin/backups/${encodeURIComponent(name)}/restore`,{method:'POST',body:'{}'});alert('恢复成功，请重新登录确认数据');location.href='/login'}catch(err){log('恢复失败：'+err.message)}}
@@ -1435,9 +1444,14 @@
       catch (err) { alert('修改失败：' + err.message); }
     }
 
-    initViewNavigation();
     initMailboxPagination();
-    ensureAuth().then(refresh).catch(err => log(err.message));
+    ensureAuth().then(async () => {
+	  initViewNavigation();
+	  await refresh();
+	  let requestedView='overview';
+	  try { requestedView=new URLSearchParams(location.search).get('view')||localStorage.getItem(viewStorageKey)||'overview'; } catch (_) {}
+	  if (currentUser&&currentUser.is_admin&&requestedView==='operations') await loadOperationsSafe();
+	}).catch(err => log(err.message));
   </script>
 </body>
 </html>
