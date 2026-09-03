@@ -331,6 +331,23 @@ func (s *Server) appleHTTPClientForAccount(ctx context.Context, ownerID, account
 			return client, nil
 		}
 	}
+	// A proxy-bound account that reached this point has no pool node; require a
+	// fixed proxy before falling back to direct. When apple_require_proxy is on,
+	// direct is never allowed.
+	if s.cfg.AppleRequireProxy {
+		if configured && config.Enabled && config.URLCipher != "" {
+			raw, err := decryptAutoSecret(s.cfg.AutoLoginSecret, config.URLCipher)
+			if err != nil {
+				return nil, errCode("proxy_decrypt_failed", "代理配置无法解密，已停止 Apple 请求", false)
+			}
+			client, err := proxyHTTPClient(raw, 30*time.Second)
+			if err != nil {
+				return nil, errCode("proxy_unavailable", "代理异常，已停止 Apple 请求："+err.Error(), true)
+			}
+			return client, nil
+		}
+		return nil, errCode("proxy_required", "该账号未绑定代理，已按服务器配置停止直连 Apple 请求", false)
+	}
 	if !configured || !config.Enabled {
 		return &http.Client{Timeout: 30 * time.Second}, nil
 	}
@@ -408,6 +425,33 @@ func (s *Server) accountAppleID(ownerID, accountID string) string {
 	return ""
 }
 
+// accountHasProxy reports whether an account has a usable proxy binding: either
+// a proxy-pool node or a fixed proxy. Used by the background pollers to skip
+// accounts that would otherwise be rejected by apple_require_proxy, keeping
+// logs clean and avoiding wasted work.
+func (s *Server) accountHasProxy(ownerID, accountID string) bool {
+	ownerID = strings.TrimSpace(ownerID)
+	accountID = strings.TrimSpace(accountID)
+	if ownerID == "" {
+		return true
+	}
+	if node := s.store.ProxyPoolNodeForAccount(ownerID, accountID, ""); strings.TrimSpace(node) != "" {
+		return true
+	}
+	config, configured := s.store.UserProxyConfig(ownerID)
+	if configured {
+		// An enabled fixed proxy, or an enabled pool (whose default node now
+		// covers every account), both count as "has a proxy".
+		if config.Enabled && config.URLCipher != "" {
+			return true
+		}
+		if config.PoolEnabled && s.store.DefaultProxyPoolNode(ownerID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) iCloudClientForAccount(ctx context.Context, ownerID, accountID string) (*ICloudClient, error) {
 	client, err := s.appleHTTPClientForAccount(ctx, ownerID, accountID, s.accountAppleID(ownerID, accountID))
 	if err != nil {
@@ -439,6 +483,11 @@ func (s *Server) proxyURLForAccount(ctx context.Context, ownerID, accountID stri
 	_ = ctx
 	config, configured := s.store.UserProxyConfig(ownerID)
 	nodeName := s.store.ProxyPoolNodeForAccount(ownerID, accountID, "")
+	if nodeName == "" {
+		// No per-account binding; use the owner's enabled pool default node so an
+		// imported subscription covers all accounts.
+		nodeName = s.store.DefaultProxyPoolNode(ownerID)
+	}
 	if nodeName != "" && s.proxyPool != nil {
 		port, err := s.proxyPool.ensure(ownerID, nodeName)
 		if err != nil {
@@ -454,14 +503,19 @@ func (s *Server) proxyURLForAccount(ctx context.Context, ownerID, accountID stri
 					}
 				}
 			case proxyFallbackDirect:
-				s.logProxyFallback(ownerID, accountID, proxyFallbackDirect, err)
-				return "", ProxyPoolNode{Name: nodeName}, nil
+				if !s.cfg.AppleRequireProxy {
+					s.logProxyFallback(ownerID, accountID, proxyFallbackDirect, err)
+					return "", ProxyPoolNode{Name: nodeName}, nil
+				}
 			}
 			return "", ProxyPoolNode{Name: nodeName}, errCode("proxy_pool_unavailable", "账号代理异常，已停止请求："+err.Error(), true)
 		}
 		return fmt.Sprintf("http://127.0.0.1:%d", port), ProxyPoolNode{Name: nodeName}, nil
 	}
 	if !configured || !config.Enabled || config.URLCipher == "" {
+		if s.cfg.AppleRequireProxy {
+			return "", ProxyPoolNode{}, errCode("proxy_required", "该账号未绑定代理，已按服务器配置停止直连 Apple 请求", false)
+		}
 		return "", ProxyPoolNode{}, nil
 	}
 	raw, err := decryptAutoSecret(s.cfg.AutoLoginSecret, config.URLCipher)

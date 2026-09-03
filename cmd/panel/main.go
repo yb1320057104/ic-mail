@@ -39,7 +39,7 @@ func main() {
 		cfg.DataPath = firstNonEmpty(*dataPath, cfg.DataPath)
 	}
 
-	store, err := app.NewFileStore(cfg.DataPath)
+	store, err := app.NewConfiguredFileStore(cfg)
 	if err != nil {
 		logger.Error("open store", "err", err)
 		os.Exit(1)

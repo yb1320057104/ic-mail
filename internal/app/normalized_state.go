@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,74 @@ import (
 type normalizedRow struct {
 	id, owner string
 	value     any
+}
+
+// syncNormalizedRowsMySQL writes only rows whose payload hash changed. The
+// process holds s.mu for every mutation and is the sole writer of the ipm_
+// tables, so previous contents are tracked in memory (s.mysqlRowHashes). A
+// table's hashes are seeded once from MySQL on first use and then diffed in
+// memory, removing the per-save full-table SELECT id,SHA2(payload,256) that was
+// the dominant write cost on large mailbox pools.
+func (s *FileStore) syncNormalizedRowsMySQL(tx *sql.Tx, table string, values []normalizedRow, now string) error {
+	existing, seeded := s.mysqlRowHashes[table]
+	if !seeded {
+		existing = make(map[string]string)
+		rows, err := tx.Query("SELECT id,SHA2(payload,256) FROM " + table)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id, hash string
+			if err := rows.Scan(&id, &hash); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			existing[id] = hash
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		_ = rows.Close()
+		s.mysqlRowHashes[table] = existing
+	}
+
+	upsert, err := tx.Prepare("INSERT INTO " + table + "(id,owner_id,payload,updated_at) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE owner_id=VALUES(owner_id),payload=VALUES(payload),updated_at=VALUES(updated_at)")
+	if err != nil {
+		return err
+	}
+	defer upsert.Close()
+	next := make(map[string]struct{}, len(values))
+	for _, row := range values {
+		raw, err := json.Marshal(row.value)
+		if err != nil {
+			return err
+		}
+		next[row.id] = struct{}{}
+		hash := fmt.Sprintf("%x", sha256.Sum256(raw))
+		if existing[row.id] == hash {
+			continue
+		}
+		if _, err = upsert.Exec(row.id, row.owner, raw, now); err != nil {
+			return err
+		}
+		existing[row.id] = hash
+	}
+	remove, err := tx.Prepare("DELETE FROM " + table + " WHERE id=?")
+	if err != nil {
+		return err
+	}
+	defer remove.Close()
+	for id := range existing {
+		if _, ok := next[id]; ok {
+			continue
+		}
+		if _, err := remove.Exec(id); err != nil {
+			return err
+		}
+		delete(existing, id)
+	}
+	return nil
 }
 
 func replaceNormalizedRows(tx *sql.Tx, table string, rows []normalizedRow, now string) error {
@@ -57,7 +126,7 @@ func loadNormalizedRows[T any](db *sql.DB, table string) ([]T, error) {
 
 func (s *FileStore) loadNormalizedStateLocked(db *sql.DB) (bool, error) {
 	var version string
-	if err := db.QueryRow(`SELECT value FROM state_meta WHERE key='schema_version'`).Scan(&version); err == sql.ErrNoRows {
+	if err := db.QueryRow("SELECT value FROM state_meta WHERE `key`='schema_version'").Scan(&version); err == sql.ErrNoRows {
 		return false, nil
 	} else if err != nil {
 		return false, err
@@ -66,7 +135,7 @@ func (s *FileStore) loadNormalizedStateLocked(db *sql.DB) (bool, error) {
 		return false, nil
 	}
 	var next string
-	if err := db.QueryRow(`SELECT value FROM state_meta WHERE key='next_id'`).Scan(&next); err != nil {
+	if err := db.QueryRow("SELECT value FROM state_meta WHERE `key`='next_id'").Scan(&next); err != nil {
 		return false, err
 	}
 	n, _ := strconv.Atoi(next)
@@ -154,14 +223,28 @@ func (s *FileStore) saveNormalizedStateTx(tx *sql.Tx, now string) error {
 		{"redemption_orders", mapRows(s.state.RedemptionOrders, func(v RedemptionOrder) (string, string) { return v.ID, v.OwnerID })},
 	}
 	for _, set := range sets {
-		if err := replaceNormalizedRows(tx, set.table, set.rows, now); err != nil {
+		var err error
+		if s.storageDriver == "mysql" {
+			err = s.syncNormalizedRowsMySQL(tx, set.table, set.rows, now)
+		} else {
+			err = replaceNormalizedRows(tx, set.table, set.rows, now)
+		}
+		if err != nil {
 			return fmt.Errorf("save %s: %w", set.table, err)
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO state_meta(key,value) VALUES('schema_version','2') ON CONFLICT(key) DO UPDATE SET value='2'`); err != nil {
+	metaSchemaSQL := "INSERT INTO state_meta(`key`,value) VALUES('schema_version','2') ON CONFLICT(`key`) DO UPDATE SET value='2'"
+	if s.storageDriver == "mysql" {
+		metaSchemaSQL = "INSERT INTO state_meta(`key`,value) VALUES('schema_version','2') ON DUPLICATE KEY UPDATE value='2'"
+	}
+	if _, err := tx.Exec(metaSchemaSQL); err != nil {
 		return err
 	}
-	_, err := tx.Exec(`INSERT INTO state_meta(key,value) VALUES('next_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.Itoa(s.state.NextID))
+	nextSQL := "INSERT INTO state_meta(`key`,value) VALUES('next_id',?) ON CONFLICT(`key`) DO UPDATE SET value=excluded.value"
+	if s.storageDriver == "mysql" {
+		nextSQL = "INSERT INTO state_meta(`key`,value) VALUES('next_id',?) ON DUPLICATE KEY UPDATE value=VALUES(value)"
+	}
+	_, err := tx.Exec(nextSQL, strconv.Itoa(s.state.NextID))
 	return err
 }
 

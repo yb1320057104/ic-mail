@@ -114,6 +114,14 @@ func dialIMAPTLSForState(ctx context.Context, state LoginState) (net.Conn, error
 	if strings.TrimSpace(state.ProxyURL) == "" {
 		return dialICloudIMAPTLS(ctx, state.IMAPHost, state.IMAPPort)
 	}
+	// Only iCloud's own IMAP endpoint is proxied. Third-party IMAP servers
+	// (QQ, 163, Gmail, …) reject connections arriving from overseas datacenter
+	// proxies with EOF / auth failures, so they always dial directly from the
+	// server. Apple's IMAP, by contrast, must go through the proxy to avoid the
+	// datacenter-IP risk controls that revoked sessions.
+	if !isICloudIMAPHost(state.IMAPHost) {
+		return dialICloudIMAPTLS(ctx, state.IMAPHost, state.IMAPPort)
+	}
 	u, err := url.Parse(state.ProxyURL)
 	if err != nil {
 		return nil, err
@@ -146,6 +154,16 @@ func dialIMAPTLSForState(ctx context.Context, state LoginState) (net.Conn, error
 		return nil, err
 	}
 	return tlsConn, nil
+}
+
+// isICloudIMAPHost reports whether an IMAP host is Apple/iCloud's own endpoint.
+// Third-party IMAP providers must dial directly (see dialIMAPTLSForState).
+func isICloudIMAPHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(host), ".")))
+	if host == "" || host == defaultICloudIMAPHost {
+		return true
+	}
+	return strings.HasSuffix(host, ".icloud.com") || strings.HasSuffix(host, ".icloud.com.cn") || strings.HasSuffix(host, ".me.com") || host == "me.com" || host == "icloud.com"
 }
 
 func dialHTTPConnectProxy(ctx context.Context, proxyURL *url.URL, target string) (net.Conn, error) {
@@ -572,6 +590,41 @@ func imapSelectError(host, detail string) error {
 		return errCode("imap_unsafe_login", "邮箱服务商风控拒绝打开收件箱（"+service+"）：Unsafe Login。账号密码可能已通过认证，但当前服务器 IP、地区或登录环境被判定为风险；请先登录邮箱官网解除安全限制、开启 IMAP/SMTP，并按服务商要求使用客户端授权码；仍无法解除请联系邮箱服务商", false)
 	}
 	return errCode("imap_select_failed", "打开 IMAP 收件箱失败（"+service+"）："+detail, true)
+}
+
+// imapCredentialRejected reports whether an IMAP error means the App-Specific
+// Password itself was rejected by the server (AUTHENTICATIONFAILED), rather
+// than a transient network, proxy or rate-limit failure. A rejected credential
+// will keep failing until the account re-authorizes, so callers should back off
+// aggressively instead of hammering iCloud on the normal cadence.
+func imapCredentialRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToUpper(err.Error())
+	return strings.Contains(message, "AUTHENTICATIONFAILED") || strings.Contains(message, "AUTHENTICATION FAILED") || strings.Contains(message, "[AUTHENTICATIONFAILED]")
+}
+
+// imapTransientFailure reports whether an IMAP error is a temporary network,
+// proxy or upstream rate-limit failure that a short retry may recover.
+func imapTransientFailure(err error) bool {
+	if err == nil || imapCredentialRejected(err) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"i/o timeout", "timeout", "eof", "connection reset", "connection refused",
+		"no such host", "temporary failure", "bad record mac", "tls:",
+		"no public ipv4", "没有可用的公网 ipv4", "proxy", "代理", "http 429", "http 502", "http 503", "http 504",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func WatchICloudIMAPExists(ctx context.Context, state LoginState, onExists func()) error {

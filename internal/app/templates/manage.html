@@ -1108,7 +1108,7 @@
       const inviteBatchSelect = $('inviteExportBatch');
       if (inviteBatchSelect) {
         const selectedBatch = inviteBatchSelect.value;
-        const batches = [...new Set((data.invites || []).map(row => row.name).filter(Boolean))].sort();
+        const batches = [...new Set((data.invites || []).map(row => row.batch_name || row.name).filter(Boolean))].sort();
         inviteBatchSelect.innerHTML = '<option value="">全部批次</option>' + batches.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
         inviteBatchSelect.value = batches.includes(selectedBatch) ? selectedBatch : '';
       }

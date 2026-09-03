@@ -556,3 +556,26 @@ func TestJunkLimitForKeepsRecentFilteredMail(t *testing.T) {
 		t.Fatalf("junkLimitFor(50)=%d, want 40", got)
 	}
 }
+
+func TestIsICloudIMAPHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"imap.mail.me.com", true},
+		{"imap.mail.me.com.", true},
+		{"IMAP.MAIL.ME.COM", true},
+		{"", true}, // empty defaults to iCloud host
+		{"imap.icloud.com", true},
+		{"imap.mail.icloud.com.cn", true},
+		{"imap.qq.com", false},
+		{"imap.163.com", false},
+		{"imap.gmail.com", false},
+		{"imap.126.com", false},
+	}
+	for _, tc := range cases {
+		if got := isICloudIMAPHost(tc.host); got != tc.want {
+			t.Errorf("isICloudIMAPHost(%q)=%v want %v", tc.host, got, tc.want)
+		}
+	}
+}

@@ -13,12 +13,20 @@ import (
 )
 
 type FileStore struct {
-	mu                    sync.Mutex
+	mu                    sync.RWMutex
 	path                  string
 	dbPath                string
 	state                 State
 	persistedMessages     map[string]string
+	imapCursorPersistedAt map[string]time.Time
 	needsMessageMigration bool
+	storageDriver         string
+	mysqlDSN              string
+	// mysqlRowHashes caches the SHA-256 of every normalized row keyed by table
+	// and id. It lets the MySQL write path diff against in-memory state instead
+	// of re-reading every table with SELECT id,SHA2(payload,256) on each
+	// saveLocked, which on a large mailbox pool was the dominant write cost.
+	mysqlRowHashes map[string]map[string]string
 }
 
 type DeleteUserResult struct {
@@ -32,11 +40,29 @@ type DeleteUserResult struct {
 }
 
 func NewFileStore(path string) (*FileStore, error) {
+	return newFileStore(path, "sqlite", "")
+}
+
+// NewConfiguredFileStore selects the persistence backend from configuration.
+// SQLite remains the default; MySQL is enabled explicitly through
+// storage_driver=mysql and mysql_dsn.
+func NewConfiguredFileStore(cfg Config) (*FileStore, error) {
+	driver := strings.ToLower(strings.TrimSpace(cfg.StorageDriver))
+	if driver == "" {
+		driver = "sqlite"
+	}
+	return newFileStore(cfg.DataPath, driver, cfg.MySQLDSN)
+}
+
+func newFileStore(path, driver, dsn string) (*FileStore, error) {
 	if path == "" {
 		path = filepath.Join("data", "state.json")
 	}
-	s := &FileStore{path: path, dbPath: strings.TrimSuffix(path, filepath.Ext(path)) + ".db", state: State{NextID: 1}, persistedMessages: make(map[string]string)}
-	if err := s.openSQLite(); err != nil {
+	s := &FileStore{path: path, dbPath: strings.TrimSuffix(path, filepath.Ext(path)) + ".db", storageDriver: driver, mysqlDSN: dsn, state: State{NextID: 1}, persistedMessages: make(map[string]string), imapCursorPersistedAt: make(map[string]time.Time), mysqlRowHashes: make(map[string]map[string]string)}
+	if driver != "sqlite" && driver != "mysql" {
+		return nil, fmt.Errorf("unsupported storage driver %q", driver)
+	}
+	if err := s.openStorage(); err != nil {
 		return nil, err
 	}
 	if err := s.load(); err != nil {
@@ -81,22 +107,22 @@ func (s *FileStore) load() error {
 }
 
 func (s *FileStore) Snapshot() State {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return cloneState(s.state)
 }
 
 func (s *FileStore) SnapshotForOwner(ownerID string) State {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return filterStateByOwnerLocked(s.state, strings.TrimSpace(ownerID))
 }
 
 // SnapshotForMailboxList keeps mailbox queries small by omitting messages and
 // unrelated collections. The list endpoint only needs account/session data.
 func (s *FileStore) SnapshotForMailboxList(ownerID string) State {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	ownerID = strings.TrimSpace(ownerID)
 	in := s.state
 	out := State{
@@ -136,12 +162,48 @@ func (s *FileStore) SnapshotForMailboxList(ownerID string) State {
 	return out
 }
 
+// SnapshotForMailboxListMetadata omits mailbox and message payloads. MySQL
+// paginated list queries only need these small collections for display names.
+func (s *FileStore) SnapshotForMailboxListMetadata(ownerID string) State {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ownerID = strings.TrimSpace(ownerID)
+	in := s.state
+	out := State{
+		Users:          append([]User(nil), in.Users...),
+		Accounts:       append([]Account(nil), in.Accounts...),
+		ICloudSessions: make([]ICloudSession, 0, len(in.ICloudSessions)),
+	}
+	if ownerID != "" {
+		users := out.Users[:0]
+		for _, user := range out.Users {
+			if constantTimeEqual(user.ID, ownerID) {
+				users = append(users, user)
+			}
+		}
+		out.Users = users
+		accounts := out.Accounts[:0]
+		for _, account := range out.Accounts {
+			if constantTimeEqual(account.OwnerID, ownerID) {
+				accounts = append(accounts, account)
+			}
+		}
+		out.Accounts = accounts
+	}
+	for i := range in.ICloudSessions {
+		if ownerID == "" || constantTimeEqual(in.ICloudSessions[i].OwnerID, ownerID) {
+			out.ICloudSessions = append(out.ICloudSessions, cloneICloudSession(in.ICloudSessions[i]))
+		}
+	}
+	return out
+}
+
 // SnapshotForManage avoids cloning full message bodies for the compact admin
 // dashboard. The dashboard needs counts and metadata, not the potentially
 // very large HTML/plaintext payloads.
 func (s *FileStore) SnapshotForManage() State {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	in := s.state
 	out := State{
 		Users: append([]User(nil), in.Users...), Accounts: append([]Account(nil), in.Accounts...),
@@ -207,8 +269,8 @@ func (s *FileStore) MarkMailboxesAsAliases(ownerID, parentID string, ids []strin
 // CountsForOwner returns lightweight dashboard counters without cloning the
 // full state (message bodies can be large and /api/status is polled often).
 func (s *FileStore) CountsForOwner(ownerID string) (accounts, mailboxes, messages int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	ownerID = strings.TrimSpace(ownerID)
 	for _, account := range s.state.Accounts {
 		if ownerID == "" || constantTimeEqual(account.OwnerID, ownerID) {
@@ -252,8 +314,8 @@ func (s *FileStore) SaveCreateSettingsForOwner(ownerID string, settings CreateSe
 }
 
 func (s *FileStore) Users() []User {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return append([]User(nil), s.state.Users...)
 }
 
@@ -535,6 +597,38 @@ func (s *FileStore) ProxyPoolNodeForAccount(ownerID, accountID, appleID string) 
 	return ""
 }
 
+// DefaultProxyPoolNode returns the first available node in the owner's enabled
+// proxy pool. When an account has no explicit binding, the pool falls back to
+// this node so "import a subscription" is enough for all accounts to route
+// through the pool without requiring a per-account bind.
+func (s *FileStore) DefaultProxyPoolNode(ownerID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID = strings.TrimSpace(ownerID)
+	for _, config := range s.state.UserProxyConfigs {
+		if !constantTimeEqual(config.OwnerID, ownerID) || !config.PoolEnabled {
+			continue
+		}
+		for _, node := range config.PoolNodes {
+			name := strings.TrimSpace(node.Name)
+			if name == "" {
+				continue
+			}
+			// Prefer a node that tested as available; fall back to any named node
+			// so an un-speed-tested pool still routes somewhere.
+			if node.Available {
+				return name
+			}
+		}
+		for _, node := range config.PoolNodes {
+			if name := strings.TrimSpace(node.Name); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
 func (s *FileStore) SaveProxyPoolNodeResult(ownerID, nodeName string, result ProxyPoolNode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -558,6 +652,62 @@ func (s *FileStore) SaveProxyPoolNodeResult(ownerID, nodeName string, result Pro
 		return errCode("proxy_pool_node_missing", "代理池节点不存在", false)
 	}
 	return errCode("proxy_pool_missing", "代理池配置不存在", false)
+}
+
+// DeleteUserProxyPool clears the owner's proxy pool config and unbinds every
+// account that still points at one of its nodes. Account proxy bindings are
+// namespaced by owner, so this never touches another user's accounts.
+func (s *FileStore) DeleteUserProxyPool(ownerID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return 0, errCode("owner_required", "缺少用户标识", false)
+	}
+	bound := 0
+	for i := range s.state.UserProxyConfigs {
+		if !constantTimeEqual(s.state.UserProxyConfigs[i].OwnerID, ownerID) {
+			continue
+		}
+		nodes := s.state.UserProxyConfigs[i].PoolNodes
+		s.state.UserProxyConfigs[i].PoolEnabled = false
+		s.state.UserProxyConfigs[i].PoolSourceType = ""
+		s.state.UserProxyConfigs[i].PoolSourceCipher = ""
+		s.state.UserProxyConfigs[i].PoolSourceMasked = ""
+		s.state.UserProxyConfigs[i].PoolYAMLCipher = ""
+		s.state.UserProxyConfigs[i].PoolNodes = nil
+		s.state.UserProxyConfigs[i].PoolStatus = "代理池已删除"
+		s.state.UserProxyConfigs[i].PoolLastError = ""
+		s.state.UserProxyConfigs[i].PoolUpdatedAt = time.Now()
+		// Unbind any account of this owner that referenced a pool node.
+		wanted := make(map[string]struct{}, len(nodes))
+		for _, node := range nodes {
+			wanted[node.Name] = struct{}{}
+		}
+		for j := range s.state.Accounts {
+			account := &s.state.Accounts[j]
+			if !constantTimeEqual(account.OwnerID, ownerID) {
+				continue
+			}
+			if _, ok := wanted[strings.TrimSpace(account.ProxyPoolNode)]; ok {
+				account.ProxyPoolNode = ""
+				account.UpdatedAt = time.Now()
+				bound++
+			}
+		}
+		for j := range s.state.ICloudSessions {
+			session := &s.state.ICloudSessions[j]
+			if !constantTimeEqual(session.OwnerID, ownerID) {
+				continue
+			}
+			if _, ok := wanted[strings.TrimSpace(session.ProxyNodeName)]; ok {
+				session.ProxyNodeTag = ""
+				session.ProxyNodeName = ""
+			}
+		}
+		return bound, s.saveLocked()
+	}
+	return 0, errCode("proxy_pool_missing", "代理池配置不存在", false)
 }
 
 func (s *FileStore) CreateUser(username, password string) (User, error) {
@@ -691,7 +841,7 @@ func (s *FileStore) CreateInvites(name, createdBy string, count, maxUses, validD
 		if count > 1 {
 			inviteName = fmt.Sprintf("%s-%03d", name, index+1)
 		}
-		invite := InviteCode{ID: s.nextIDLocked("inv"), CodeHash: sessionTokenHash(raw), Code: raw, Name: inviteName, CreatedBy: createdBy, Role: "user", MaxUses: maxUses, ValidDays: validDays, Enabled: true, CreatedAt: now}
+		invite := InviteCode{ID: s.nextIDLocked("inv"), CodeHash: sessionTokenHash(raw), Code: raw, Name: inviteName, BatchName: name, CreatedBy: createdBy, Role: "user", MaxUses: maxUses, ValidDays: validDays, Enabled: true, CreatedAt: now}
 		s.state.Invites = append(s.state.Invites, invite)
 		invites = append(invites, invite)
 		codes = append(codes, raw)
@@ -816,10 +966,12 @@ func (s *FileStore) AddAuditEvent(event AuditEvent) {
 	event.ID = s.nextIDLocked("aud")
 	event.CreatedAt = time.Now()
 	s.state.AuditEvents = append(s.state.AuditEvents, event)
+	var removed []AuditEvent
 	if len(s.state.AuditEvents) > 1000 {
+		removed = append([]AuditEvent(nil), s.state.AuditEvents[:len(s.state.AuditEvents)-1000]...)
 		s.state.AuditEvents = append([]AuditEvent(nil), s.state.AuditEvents[len(s.state.AuditEvents)-1000:]...)
 	}
-	_ = s.saveLocked()
+	_ = s.saveAuditEventRowLocked(event, removed)
 }
 
 func (s *FileStore) AuthenticateUser(username, password string) (User, error) {
@@ -894,8 +1046,8 @@ func (s *FileStore) VerifyUserPassword(userID, password string) bool {
 }
 
 func (s *FileStore) UserByID(id string) (User, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.userByIDLocked(id)
 }
 
@@ -1211,6 +1363,9 @@ func (s *FileStore) Path() string {
 func (s *FileStore) SetPath(path string) (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.storageDriver == "mysql" {
+		return State{}, errCode("mysql_path_fixed", "MySQL 模式的数据源由 mysql_dsn 配置，不能通过数据目录切换", false)
+	}
 
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -1525,18 +1680,28 @@ func (s *FileStore) SaveICloudSessionForOwner(ownerID string, session ICloudSess
 					s.touchICloudAccountLocked(ownerID, merged.AccountID, merged)
 				}
 				s.pruneDuplicateIMAPOnlySessionsLocked(ownerID, merged, i)
-				return s.saveLocked()
+				return s.saveAccountAndICloudSessionRowLocked(s.accountByIDLocked(merged.AccountID), merged)
 			}
 		}
 		s.state.ICloudSessions = append(s.state.ICloudSessions, session)
 		s.pruneDuplicateIMAPOnlySessionsLocked(ownerID, session, len(s.state.ICloudSessions)-1)
-		return s.saveLocked()
+		return s.saveAccountAndICloudSessionRowLocked(s.accountByIDLocked(session.AccountID), session)
 	}
 	if s.state.ICloudSession != nil && sameICloudSessionIdentity(*s.state.ICloudSession, session) {
 		session = mergeICloudSession(*s.state.ICloudSession, session)
 	}
 	s.state.ICloudSession = &session
 	return s.saveLocked()
+}
+
+func (s *FileStore) accountByIDLocked(id string) Account {
+	id = strings.TrimSpace(id)
+	for _, account := range s.state.Accounts {
+		if account.ID == id {
+			return account
+		}
+	}
+	return Account{}
 }
 
 func (s *FileStore) validateICloudAccountIdentityLocked(ownerID, accountID string, session ICloudSession, requireExisting bool) error {
@@ -1573,9 +1738,26 @@ func (s *FileStore) ICloudSessionForOwner(ownerID string) (ICloudSession, bool) 
 	return sessions[0], true
 }
 
+// AllICloudSessions returns only login-session state. Background health and
+// keepalive scans must not clone the complete mailbox/message archive merely
+// to enumerate the small session collection.
+func (s *FileStore) AllICloudSessions() []ICloudSession {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ICloudSession, 0, len(s.state.ICloudSessions)+1)
+	if s.state.ICloudSession != nil {
+		out = append(out, cloneICloudSession(*s.state.ICloudSession))
+	}
+	for _, session := range s.state.ICloudSessions {
+		out = append(out, cloneICloudSession(session))
+	}
+	return out
+}
+
 func (s *FileStore) ICloudSessionsForOwner(ownerID string) []ICloudSession {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	ownerID = strings.TrimSpace(ownerID)
 	if ownerID != "" {
@@ -1686,8 +1868,8 @@ func (s *FileStore) SetICloudSessionProxy(ownerID, accountID, nodeTag, nodeName 
 }
 
 func (s *FileStore) FindAccountByID(id string) (Account, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	id = strings.TrimSpace(id)
 	for _, account := range s.state.Accounts {
@@ -1976,6 +2158,11 @@ func (s *FileStore) SetICloudIMAPSyncCursor(ownerID, accountID, stateKey string,
 	if syncedAt.IsZero() {
 		syncedAt = time.Now()
 	}
+	if s.imapCursorPersistedAt == nil {
+		s.imapCursorPersistedAt = make(map[string]time.Time)
+	}
+	persistKey := ""
+	shouldPersist := false
 	updateSession := func(session *ICloudSession) bool {
 		if session == nil {
 			return false
@@ -1993,25 +2180,41 @@ func (s *FileStore) SetICloudIMAPSyncCursor(ownerID, accountID, stateKey string,
 			if accountID == "" && stateKey != "" && imapStateKey(state) != stateKey {
 				continue
 			}
+			actualStateKey := imapStateKey(state)
+			persistKey = strings.TrimSpace(session.OwnerID) + "\x00" + strings.TrimSpace(session.AccountID) + "\x00" + actualStateKey
+			nextUID := strings.TrimSpace(lastUID)
+			shouldPersist = s.imapCursorPersistedAt[persistKey].IsZero() || (nextUID != "" && nextUID != strings.TrimSpace(state.IMAPLastSyncUID))
 			session.LoginStates[i].IMAPLastSyncAt = syncedAt
-			if strings.TrimSpace(lastUID) != "" {
-				session.LoginStates[i].IMAPLastSyncUID = strings.TrimSpace(lastUID)
+			if nextUID != "" {
+				session.LoginStates[i].IMAPLastSyncUID = nextUID
 			}
 			return true
 		}
 		return false
 	}
 	if ownerID == "" && s.state.ICloudSession != nil && updateSession(s.state.ICloudSession) {
-		return cloneICloudSession(*s.state.ICloudSession), s.saveLocked()
+		updated := cloneICloudSession(*s.state.ICloudSession)
+		if !shouldPersist {
+			return updated, nil
+		}
+		if err := s.saveLocked(); err != nil {
+			return ICloudSession{}, err
+		}
+		s.imapCursorPersistedAt[persistKey] = time.Now()
+		return updated, nil
 	}
 	for i := range s.state.ICloudSessions {
 		original := cloneICloudSession(s.state.ICloudSessions[i])
 		if updateSession(&s.state.ICloudSessions[i]) {
 			updated := cloneICloudSession(s.state.ICloudSessions[i])
+			if !shouldPersist {
+				return updated, nil
+			}
 			if err := s.saveICloudSessionRowLocked(updated); err != nil {
 				s.state.ICloudSessions[i] = original
 				return ICloudSession{}, err
 			}
+			s.imapCursorPersistedAt[persistKey] = time.Now()
 			return updated, nil
 		}
 	}
@@ -2066,18 +2269,21 @@ func (s *FileStore) DeleteMailbox(id string) error {
 	}
 	s.state.Mailboxes = append(s.state.Mailboxes[:idx], s.state.Mailboxes[idx+1:]...)
 	filtered := s.state.Messages[:0]
+	removedMessages := make([]Message, 0)
 	for _, msg := range s.state.Messages {
 		if msg.MailboxID != id {
 			filtered = append(filtered, msg)
+		} else {
+			removedMessages = append(removedMessages, msg)
 		}
 	}
 	s.state.Messages = filtered
-	return s.saveLocked()
+	return s.deleteMailboxRowsLocked(id, removedMessages)
 }
 
 func (s *FileStore) FindMailboxByID(id string) (Mailbox, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	idx := s.mailboxIndexLocked(id)
 	if idx < 0 {
@@ -2087,8 +2293,8 @@ func (s *FileStore) FindMailboxByID(id string) (Mailbox, bool) {
 }
 
 func (s *FileStore) FindMailboxByEmail(email string) (Mailbox, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	for _, mailbox := range s.state.Mailboxes {
 		if strings.EqualFold(mailbox.Email, email) {
@@ -2099,8 +2305,8 @@ func (s *FileStore) FindMailboxByEmail(email string) (Mailbox, bool) {
 }
 
 func (s *FileStore) MessagesForMailbox(mailboxID string) []Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var out []Message
 	for _, msg := range s.state.Messages {
@@ -2163,8 +2369,8 @@ func (s *FileStore) RedemptionPoolByToken(token string) (RedemptionPool, bool) {
 }
 
 func (s *FileStore) MailboxRedemptionLocked(mailboxID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	mailboxID = strings.TrimSpace(mailboxID)
 	for _, mailbox := range s.state.Mailboxes {
 		if mailbox.ID == mailboxID && mailbox.RedemptionLocked {
@@ -2768,6 +2974,11 @@ func (s *FileStore) PruneMessages(retentionDays, maxPerMailbox int) (int, error)
 }
 
 func (s *FileStore) VacuumDatabase() error {
+	if s.storageDriver == "mysql" {
+		// InnoDB manages free pages internally; avoid a blocking OPTIMIZE TABLE
+		// across the full production dataset from the HTTP maintenance path.
+		return nil
+	}
 	db, err := s.sqliteConnection()
 	if err != nil {
 		return err

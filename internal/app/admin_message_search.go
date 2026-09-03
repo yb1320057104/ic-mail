@@ -89,7 +89,7 @@ func (s *FileStore) ensureMessageSearchIndexLocked() error {
 	}
 	defer db.Close()
 	var version string
-	err = db.QueryRow(`SELECT value FROM state_meta WHERE key='message_search_version'`).Scan(&version)
+	err = db.QueryRow("SELECT value FROM state_meta WHERE `key`='message_search_version'").Scan(&version)
 	if err == nil && version == adminMessageSearchIndexVersion {
 		return nil
 	}
@@ -105,8 +105,11 @@ func (s *FileStore) ensureMessageSearchIndexLocked() error {
 		_ = tx.Rollback()
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO state_meta(key,value) VALUES('message_search_version',?)
-		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, "building:"+adminMessageSearchIndexVersion); err != nil {
+	q := "INSERT INTO state_meta(`key`,value) VALUES('message_search_version',?) ON CONFLICT(`key`) DO UPDATE SET value=excluded.value"
+	if s.storageDriver == "mysql" {
+		q = "INSERT INTO state_meta(`key`,value) VALUES('message_search_version',?) ON DUPLICATE KEY UPDATE value=VALUES(value)"
+	}
+	if _, err = tx.Exec(q, "building:"+adminMessageSearchIndexVersion); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -148,8 +151,11 @@ func (s *FileStore) rebuildMessageSearchIndex(messages []Message) error {
 			return err
 		}
 	}
-	_, err = db.Exec(`INSERT INTO state_meta(key,value) VALUES('message_search_version',?)
-		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, adminMessageSearchIndexVersion)
+	q := "INSERT INTO state_meta(`key`,value) VALUES('message_search_version',?) ON CONFLICT(`key`) DO UPDATE SET value=excluded.value"
+	if s.storageDriver == "mysql" {
+		q = "INSERT INTO state_meta(`key`,value) VALUES('message_search_version',?) ON DUPLICATE KEY UPDATE value=VALUES(value)"
+	}
+	_, err = db.Exec(q, adminMessageSearchIndexVersion)
 	return err
 }
 
@@ -181,6 +187,17 @@ func ftsSearchableKeyword(keyword string) bool {
 	return len([]rune(strings.TrimSpace(keyword))) >= 3
 }
 
+// receivedUnixExpr returns the SQL expression for the message_search_v3
+// received_unix column. SQLite stores it as text and needs a CAST before
+// numeric comparison/sorting; MySQL stores it as BIGINT natively and rejects
+// the SQLite "AS INTEGER" cast syntax.
+func (s *FileStore) receivedUnixExpr() string {
+	if s.storageDriver == "mysql" {
+		return "ms.received_unix"
+	}
+	return "CAST(ms.received_unix AS INTEGER)"
+}
+
 func (s *FileStore) AdminSearchIMAPMessages(ctx context.Context, query AdminMessageSearchQuery, eligibleMailboxIDs map[string]struct{}) (AdminMessageSearchResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -209,12 +226,22 @@ func (s *FileStore) AdminSearchIMAPMessages(ctx context.Context, query AdminMess
 		ftsQuery = normalizeFTSQuery(query.Keyword)
 		shortKeyword = ""
 	}
+	if s.storageDriver == "mysql" && ftsQuery != "" {
+		// MySQL fallback: the search table is intentionally portable, so use
+		// indexed metadata filters plus a parameterized text predicate.
+		shortKeyword = strings.ToLower(strings.TrimSpace(query.Keyword))
+		ftsQuery = ""
+	}
 	for result.Scanned < maxScanned && matched < wantedEnd {
 		args := []any{"imap"}
 		where := []string{"ms.source=?"}
 		if ftsQuery != "" {
 			where = append(where, "message_search_v3 MATCH ?")
 			args = append(args, ftsQuery)
+		} else if s.storageDriver == "mysql" && shortKeyword != "" {
+			like := "%" + shortKeyword + "%"
+			where = append(where, "(LOWER(ms.subject) LIKE ? OR LOWER(ms.sender) LIKE ? OR LOWER(ms.body) LIKE ? OR LOWER(ms.cjk) LIKE ?)")
+			args = append(args, like, like, like, like)
 		}
 		if query.OwnerID != "" && query.OwnerID != "all" {
 			where = append(where, "ms.owner_id=?")
@@ -225,16 +252,16 @@ func (s *FileStore) AdminSearchIMAPMessages(ctx context.Context, query AdminMess
 			args = append(args, query.MailboxID)
 		}
 		if !query.After.IsZero() {
-			where = append(where, "CAST(ms.received_unix AS INTEGER)>=?")
+			where = append(where, s.receivedUnixExpr()+">=?")
 			args = append(args, query.After.Unix())
 		}
 		if !query.Before.IsZero() {
-			where = append(where, "CAST(ms.received_unix AS INTEGER)<=?")
+			where = append(where, s.receivedUnixExpr()+"<=?")
 			args = append(args, query.Before.Unix())
 		}
 		args = append(args, batchSize, offset)
 		statement := `SELECT m.payload,ms.mailbox_id FROM message_search_v3 ms JOIN messages m ON m.id=ms.message_id WHERE ` +
-			strings.Join(where, " AND ") + ` ORDER BY CAST(ms.received_unix AS INTEGER) DESC LIMIT ? OFFSET ?`
+			strings.Join(where, " AND ") + ` ORDER BY ` + s.receivedUnixExpr() + ` DESC LIMIT ? OFFSET ?`
 		rows, queryErr := db.QueryContext(ctx, statement, args...)
 		if queryErr != nil {
 			return result, queryErr

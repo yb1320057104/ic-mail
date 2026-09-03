@@ -4301,10 +4301,26 @@ func TestMailboxCodeQueryReturnsQuicklyWhileBackgroundSyncContinues(t *testing.T
 			if msg.RemoteID != "remote-fast" {
 				t.Fatalf("message remote id = %q, want remote-fast", msg.RemoteID)
 			}
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("background sync did not store code, messages=%+v", store.MessagesForMailbox(mailbox.ID))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Message persistence completes before the poller records its metric and
+	// exits. Wait for that final cleanup so TempDir teardown cannot race the
+	// background goroutine opening the store database.
+	ownerKey := mailboxSyncOwnerKey(ownerID)
+	for {
+		server.mailboxCodeMu.Lock()
+		_, running := server.mailboxCodePollers[ownerKey]
+		server.mailboxCodeMu.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background code poller did not exit")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -5221,6 +5237,9 @@ func TestMailWatcherQQLoginBackoffAndFallbackInterval(t *testing.T) {
 	}
 	if got := mailWatcherFallbackSyncInterval(3 * time.Second); got != time.Minute {
 		t.Fatalf("fallback sync interval = %s, want 1m", got)
+	}
+	if got := mailWatcherReconcileInterval(3 * time.Second); got != 30*time.Second {
+		t.Fatalf("worker reconcile interval = %s, want 30s", got)
 	}
 }
 
@@ -6457,6 +6476,145 @@ func TestHighFrequencyMailboxWritesPersistWithoutFullStateSave(t *testing.T) {
 	gotState, ok := iCloudIMAPLoginState(gotSession)
 	if !ok || gotState.IMAPLastSyncUID != "9001" || !gotState.IMAPLastSyncAt.Equal(receivedAt) {
 		t.Fatalf("persisted imap cursor = %+v, ok=%v", gotState, ok)
+	}
+}
+
+func TestAuditEventPersistsWithoutRewritingMailboxRows(t *testing.T) {
+	store := newTestStore(t)
+	mailbox, err := store.AddMailboxForOwner("owner-audit-row", "", "审计隔离", "audit-row@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.sqliteConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before string
+	if err := db.QueryRow(`SELECT updated_at FROM mailboxes WHERE id=?`, mailbox.ID).Scan(&before); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	store.AddAuditEvent(AuditEvent{ActorID: "owner-audit-row", Event: "test", Method: "GET", Path: "/api/mailboxes", Status: 200, Success: true})
+	db, err = store.sqliteConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var after string
+	if err := db.QueryRow(`SELECT updated_at FROM mailboxes WHERE id=?`, mailbox.ID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("audit event rewrote mailbox row: before=%q after=%q", before, after)
+	}
+	var auditCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_events`).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 || len(store.Snapshot().AuditEvents) != 1 {
+		t.Fatalf("audit count db=%d memory=%d", auditCount, len(store.Snapshot().AuditEvents))
+	}
+}
+
+func TestUnchangedIMAPCursorHeartbeatDoesNotRewriteSession(t *testing.T) {
+	store := newTestStore(t)
+	ownerID, accountID := "owner-cursor-row", "account-cursor-row"
+	if err := store.SaveICloudSessionForOwner(ownerID, testIMAPSession(ownerID, accountID, "cursor-row@icloud.com")); err != nil {
+		t.Fatal(err)
+	}
+	firstAt := time.Now().Add(-time.Minute)
+	if _, err := store.SetICloudIMAPSyncCursor(ownerID, accountID, "", firstAt, "321"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.sqliteConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowID := ownerID + ":" + accountID
+	var before string
+	if err = db.QueryRow(`SELECT updated_at FROM icloud_sessions WHERE id=?`, rowID).Scan(&before); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	secondAt := time.Now()
+	updated, err := store.SetICloudIMAPSyncCursor(ownerID, accountID, "", secondAt, "321")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok := iCloudIMAPLoginState(updated)
+	if !ok || !state.IMAPLastSyncAt.Equal(secondAt) {
+		t.Fatalf("in-memory cursor heartbeat was not updated: %+v", state)
+	}
+	db, err = store.sqliteConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var after string
+	if err = db.QueryRow(`SELECT updated_at FROM icloud_sessions WHERE id=?`, rowID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("unchanged cursor heartbeat rewrote session row: before=%q after=%q", before, after)
+	}
+}
+
+func TestDeleteMailboxPersistsOnlyDeletedRows(t *testing.T) {
+	store := newTestStore(t)
+	deleted, err := store.AddMailboxForOwner("owner-delete-row", "", "delete", "delete-row@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := store.AddMailboxForOwner("owner-delete-row", "", "keep", "keep-row@icloud.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := store.AddMessage(deleted.ID, "delete message", "sender@example.com", "code 123456", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.sqliteConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keptBefore string
+	if err = db.QueryRow(`SELECT updated_at FROM mailboxes WHERE id=?`, kept.ID).Scan(&keptBefore); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	if err = store.DeleteMailbox(deleted.ID); err != nil {
+		t.Fatal(err)
+	}
+	db, err = store.sqliteConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var keptAfter string
+	if err = db.QueryRow(`SELECT updated_at FROM mailboxes WHERE id=?`, kept.ID).Scan(&keptAfter); err != nil {
+		t.Fatal(err)
+	}
+	if keptBefore != keptAfter {
+		t.Fatalf("delete rewrote unrelated mailbox row: before=%q after=%q", keptBefore, keptAfter)
+	}
+	for table, id := range map[string]string{"mailboxes": deleted.ID, "messages": message.ID, "message_search_v3": message.ID} {
+		column := "id"
+		if table == "message_search_v3" {
+			column = "message_id"
+		}
+		var count int
+		if err = db.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE `+column+`=?`, id).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s still contains deleted row %s", table, id)
+		}
 	}
 }
 

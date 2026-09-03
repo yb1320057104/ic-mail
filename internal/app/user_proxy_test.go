@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -156,5 +157,46 @@ func TestParseProxyCheckResponses(t *testing.T) {
 	trace := "fl=1\nh=example.com\nip=2001:db8::1\nts=1\n"
 	if got := parseCloudflareProxyIP(trace); got != "2001:db8::1" {
 		t.Fatalf("cloudflare ip = %q", got)
+	}
+}
+
+func TestAppleRequireProxyBlocksDirectFallback(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{ConfigPath: "test", AppleRequireProxy: true}, store, discardLogger())
+	server := handler.(*Server)
+
+	// A user with no proxy configured at all must be blocked, not direct.
+	_, node, err := server.proxyURLForAccount(context.Background(), "owner-no-proxy", "acc-1")
+	if err == nil {
+		t.Fatalf("expected error for unbound account, got node=%+v", node)
+	}
+	if !isCodedError(err, "proxy_required") {
+		t.Fatalf("expected proxy_required, got %v", err)
+	}
+
+	// A user with a bound pool node but pool disabled/absent must still error.
+	_ = node
+}
+
+func TestAppleRequireProxyAllowsFixedProxy(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{ConfigPath: "test", AppleRequireProxy: true, AutoLoginSecret: "test-secret"}, store, discardLogger())
+	server := handler.(*Server)
+
+	owner := "owner-fixed"
+	// Encrypt a fixed proxy URL into the user's config.
+	cipher, err := encryptAutoSecret("test-secret", "http://8.8.8.8:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUserProxyConfig(UserProxyConfig{OwnerID: owner, Enabled: true, URLCipher: cipher}); err != nil {
+		t.Fatal(err)
+	}
+	raw, node, err := server.proxyURLForAccount(context.Background(), owner, "acc-1")
+	if err != nil {
+		t.Fatalf("fixed proxy should be allowed: %v", err)
+	}
+	if raw == "" {
+		t.Fatalf("expected a proxy URL, got empty; node=%+v", node)
 	}
 }

@@ -10,7 +10,9 @@ func (s *FileStore) SaveTaskRun(task operationTask) error {
 		return err
 	}
 	defer db.Close()
-	_, err = db.Exec(`INSERT INTO task_runs(id,kind,status,progress,message,started_at,finished_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,progress=excluded.progress,message=excluded.message,finished_at=excluded.finished_at`, task.ID, task.Kind, task.Status, 100, task.Message, task.StartedAt, task.FinishedAt)
+	q := `INSERT INTO task_runs(id,kind,status,progress,message,started_at,finished_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,progress=excluded.progress,message=excluded.message,finished_at=excluded.finished_at`
+	if s.storageDriver == "mysql" { q = `INSERT INTO task_runs(id,kind,status,progress,message,started_at,finished_at) VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE status=VALUES(status),progress=VALUES(progress),message=VALUES(message),finished_at=VALUES(finished_at)` }
+	_, err = db.Exec(q, task.ID, task.Kind, task.Status, 100, task.Message, task.StartedAt, task.FinishedAt)
 	return err
 }
 

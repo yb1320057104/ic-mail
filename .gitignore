@@ -48,3 +48,15 @@ coverage.out
 .vs/
 Thumbs.db
 Desktop.ini
+
+# Local caches / temp artifacts
+.cache/
+.codex-gocache/
+.gocache-fix/
+.gocache-test/
+.gomodcache-fix/
+.deploy-admin-guard/
+.deploy-imap-recovery/
+.deploy-test/
+*.tgz
+*.tar.gz

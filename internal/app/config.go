@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,10 +11,14 @@ import (
 )
 
 type Config struct {
-	ConfigPath                   string `json:"-"`
-	Host                         string `json:"host"`
-	Port                         int    `json:"port"`
-	DataPath                     string `json:"data_path"`
+	ConfigPath string `json:"-"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	DataPath   string `json:"data_path"`
+	// StorageDriver selects the persistence backend. SQLite remains the default;
+	// mysql is opt-in until the data migration has been verified.
+	StorageDriver                string `json:"storage_driver"`
+	MySQLDSN                     string `json:"mysql_dsn"`
 	APIKey                       string `json:"api_key"`
 	PublicBaseURL                string `json:"public_base_url"`
 	ICloudDefaultHost            string `json:"icloud_default_host"`
@@ -21,6 +26,7 @@ type Config struct {
 	AppleAccountAPIKey           string `json:"apple_account_api_key"`
 	AppleAccountKeepAliveEnabled bool   `json:"apple_account_keep_alive_enabled"`
 	AppleAccountKeepAliveMS      int    `json:"apple_account_keep_alive_ms"`
+	AppleRequireProxy            bool   `json:"apple_require_proxy"`
 	MailWatcherEnabled           bool   `json:"mail_watcher_enabled"`
 	MailWatcherPollMS            int    `json:"mail_watcher_poll_ms"`
 	MailWatcherFetchLimit        int    `json:"mail_watcher_fetch_limit"`
@@ -52,13 +58,16 @@ func LoadConfig(path string) (Config, error) {
 		Host:                         "127.0.0.1",
 		Port:                         8787,
 		DataPath:                     filepath.Join("data", "state.json"),
+		StorageDriver:                firstNonEmptyString(strings.TrimSpace(os.Getenv("IPM_STORAGE_DRIVER")), "sqlite"),
+		MySQLDSN:                     strings.TrimSpace(os.Getenv("IPM_MYSQL_DSN")),
 		APIKey:                       strings.TrimSpace(os.Getenv("IPM_API_KEY")),
 		PublicBaseURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("IPM_PUBLIC_BASE_URL")), "/"),
 		ICloudDefaultHost:            "www.icloud.com.cn",
 		ICloudClientID:               defaultAppleOAuthClientID,
 		AppleAccountAPIKey:           strings.TrimSpace(os.Getenv("IPM_APPLE_ACCOUNT_API_KEY")),
 		AppleAccountKeepAliveEnabled: envBool("APPLE_ACCOUNT_KEEP_ALIVE_ENABLED", true),
-		AppleAccountKeepAliveMS:      envPositiveInt("APPLE_ACCOUNT_KEEP_ALIVE_MS", 240000),
+		AppleAccountKeepAliveMS:      envPositiveInt("APPLE_ACCOUNT_KEEP_ALIVE_MS", 600000),
+		AppleRequireProxy:            envBool("APPLE_REQUIRE_PROXY", false),
 		MailWatcherEnabled:           envBool("MAIL_WATCHER_ENABLED", true),
 		MailWatcherPollMS:            envPositiveInt("MAIL_WATCHER_POLL_MS", 3000),
 		MailWatcherFetchLimit:        envPositiveInt("MAIL_WATCHER_FETCH_LIMIT", 8),
@@ -110,6 +119,15 @@ func LoadConfig(path string) (Config, error) {
 	if fromFile.DataPath != "" {
 		cfg.DataPath = fromFile.DataPath
 	}
+	if strings.TrimSpace(fromFile.StorageDriver) != "" {
+		cfg.StorageDriver = strings.ToLower(strings.TrimSpace(fromFile.StorageDriver))
+	}
+	if cfg.StorageDriver != "sqlite" && cfg.StorageDriver != "mysql" {
+		return Config{}, fmt.Errorf("unsupported storage_driver %q (want sqlite or mysql)", cfg.StorageDriver)
+	}
+	if strings.TrimSpace(fromFile.MySQLDSN) != "" {
+		cfg.MySQLDSN = strings.TrimSpace(fromFile.MySQLDSN)
+	}
 	if strings.TrimSpace(fromFile.APIKey) != "" {
 		cfg.APIKey = strings.TrimSpace(fromFile.APIKey)
 	}
@@ -134,6 +152,13 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if fromFile.AppleAccountKeepAliveMS > 0 {
 		cfg.AppleAccountKeepAliveMS = fromFile.AppleAccountKeepAliveMS
+	}
+	if rawValue, ok := raw["apple_require_proxy"]; ok {
+		var enabled bool
+		if err := json.Unmarshal(rawValue, &enabled); err != nil {
+			return Config{}, err
+		}
+		cfg.AppleRequireProxy = enabled
 	}
 	if rawValue, ok := raw["mail_watcher_enabled"]; ok {
 		var enabled bool

@@ -63,7 +63,11 @@ func NewICloudClientWithHTTPClient(client *http.Client) *ICloudClient {
 
 const mailboxSyncCursorOverlap = 2 * time.Minute
 const appleAccountManageRefreshSkew = 0 * time.Second
-const appleAccountKeepAliveDefaultInterval = 4 * time.Minute
+// appleAccountKeepAliveDefaultInterval is the floor for the Apple Account
+// management-state keep-alive. A 4-minute cadence across dozens of accounts on
+// datacenter IPs triggered Apple risk control and caused sessions to be revoked
+// (HTTP 401 / empty body). A longer cadence lowers the burst rate.
+const appleAccountKeepAliveDefaultInterval = 10 * time.Minute
 const appleAccountKeepAliveTimeout = 45 * time.Second
 
 var appleAccountManageBaseURL = "https://appleid.apple.com"

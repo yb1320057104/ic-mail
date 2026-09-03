@@ -126,3 +126,177 @@ func TestParseProxyPoolAllowsPublicShapedDomainWithoutLocalDNS(t *testing.T) {
 		t.Fatalf("unexpected nodes: %+v", nodes)
 	}
 }
+
+func TestParseProxyPlainList(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		wantCount int
+		wantType  string
+		wantUser  string
+	}{
+		{"host_port", "1.2.3.4:8080", 1, "http", ""},
+		{"host_port_user_pass", "1.2.3.4:8080:user:pass", 1, "http", "user"},
+		{"user_pass_at_host_port", "user:pass@1.2.3.4:8080", 1, "http", "user"},
+		{"http_url", "http://user:pass@example.com:8080", 1, "http", "user"},
+		{"socks5_url", "socks5://user:pass@example.com:1080", 1, "socks5", "user"},
+		{"multiple_lines", "1.1.1.1:8080\n2.2.2.2:8081:u:p\nhttp://u:p@3.3.3.3:8082", 3, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clean, nodes, err := parseAndSanitizeProxyPoolSource([]byte(tc.input))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(nodes) != tc.wantCount {
+				t.Fatalf("nodes=%d want %d (%+v)", len(nodes), tc.wantCount, nodes)
+			}
+			if tc.wantType != "" && nodes[0].Type != tc.wantType {
+				t.Fatalf("type=%s want %s", nodes[0].Type, tc.wantType)
+			}
+			var doc map[string]any
+			if err := yaml.Unmarshal(clean, &doc); err != nil {
+				t.Fatal(err)
+			}
+			proxies := doc["proxies"].([]any)
+			if tc.wantUser != "" {
+				p := proxies[0].(map[string]any)
+				if got := p["username"]; got != tc.wantUser {
+					t.Fatalf("username=%v want %s", got, tc.wantUser)
+				}
+			}
+		})
+	}
+}
+
+func TestParseProxyPlainListRejectsPrivateHost(t *testing.T) {
+	_, _, err := parseAndSanitizeProxyPoolSource([]byte("127.0.0.1:8080"))
+	if err == nil {
+		t.Fatal("expected error for private host")
+	}
+}
+
+func TestDeleteUserProxyPoolUnbindsOnlyOwnerAccounts(t *testing.T) {
+	store := newTestStore(t)
+	// Two users, each with a proxy pool config and a bound account.
+	ownerA := "user-a"
+	ownerB := "user-b"
+	poolA := UserProxyConfig{OwnerID: ownerA, PoolEnabled: true, PoolYAMLCipher: "cipher-a", PoolNodes: []ProxyPoolNode{{Name: "node-a1", Type: "http"}}}
+	poolB := UserProxyConfig{OwnerID: ownerB, PoolEnabled: true, PoolYAMLCipher: "cipher-b", PoolNodes: []ProxyPoolNode{{Name: "node-b1", Type: "http"}}}
+	if err := store.SaveUserProxyConfig(poolA); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUserProxyConfig(poolB); err != nil {
+		t.Fatal(err)
+	}
+	accA, err := store.AddAccountForOwner(ownerA, "a", "a@icloud.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accB, err := store.AddAccountForOwner(ownerB, "b", "b@icloud.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAccountProxyPoolNode(ownerA, accA.ID, "node-a1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAccountProxyPoolNode(ownerB, accB.ID, "node-b1"); err != nil {
+		t.Fatal(err)
+	}
+
+	bound, err := store.DeleteUserProxyPool(ownerA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound != 1 {
+		t.Fatalf("unbound=%d want 1", bound)
+	}
+	// owner A's pool cleared, account unbound.
+	cfgA, _ := store.UserProxyConfig(ownerA)
+	if cfgA.PoolEnabled || len(cfgA.PoolNodes) != 0 || cfgA.PoolYAMLCipher != "" {
+		t.Fatalf("owner A pool not cleared: %+v", cfgA)
+	}
+	if got := store.ProxyPoolNodeForAccount(ownerA, accA.ID, ""); got != "" {
+		t.Fatalf("owner A account still bound: %q", got)
+	}
+	// owner B's pool and binding untouched.
+	cfgB, _ := store.UserProxyConfig(ownerB)
+	if !cfgB.PoolEnabled || len(cfgB.PoolNodes) != 1 || cfgB.PoolYAMLCipher != "cipher-b" {
+		t.Fatalf("owner B pool was touched: %+v", cfgB)
+	}
+	if got := store.ProxyPoolNodeForAccount(ownerB, accB.ID, ""); got != "node-b1" {
+		t.Fatalf("owner B account binding changed: %q", got)
+	}
+}
+
+func TestBindProxyPoolCreatesAccountPlaceholderBeforeLogin(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{ConfigPath: "test", AutoLoginSecret: "test-secret"}, store, discardLogger())
+	server := handler.(*Server)
+
+	// Owner imports a proxy pool with one node.
+	cipher, _ := encryptAutoSecret("test-secret", "proxies:\n  - name: node-1\n    type: http\n    server: 8.8.8.8\n    port: 8080\n")
+	if err := store.SaveUserProxyConfig(UserProxyConfig{OwnerID: "owner", PoolEnabled: true, PoolYAMLCipher: cipher, PoolNodes: []ProxyPoolNode{{Name: "node-1", Type: "http"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bind a proxy node with only an Apple ID, no account_id yet.
+	owner := "owner"
+	appleID := "new-user@icloud.com"
+	// Simulate the handler path by calling AddAccountForOwner then SaveAccountProxyPoolNode.
+	account, err := store.AddAccountForOwner(owner, "", appleID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAccountProxyPoolNode(owner, account.ID, "node-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.ProxyPoolNodeForAccount(owner, account.ID, ""); got != "node-1" {
+		t.Fatalf("account proxy node = %q want node-1", got)
+	}
+
+	// The account exists before login, so the require-proxy gate can find it.
+	if !server.accountHasProxy(owner, account.ID) {
+		t.Fatalf("accountHasProxy should be true after binding")
+	}
+}
+
+func TestAccountHasProxyTrueWithEnabledPoolNoExplicitBind(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewServer(Config{ConfigPath: "test", AutoLoginSecret: "test-secret", AppleRequireProxy: true}, store, discardLogger())
+	server := handler.(*Server)
+
+	owner := "owner-pool"
+	// Enabled pool with nodes, but the account has no explicit binding.
+	if err := store.SaveUserProxyConfig(UserProxyConfig{
+		OwnerID: owner, PoolEnabled: true,
+		PoolYAMLCipher: "cipher",
+		PoolNodes:      []ProxyPoolNode{{Name: "node-1", Type: "http", Available: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.AddAccountForOwner(owner, "", "u@icloud.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !server.accountHasProxy(owner, account.ID) {
+		t.Fatalf("accountHasProxy should be true when an enabled pool exists, even without explicit bind")
+	}
+}
+
+func TestDefaultProxyPoolNodePrefersAvailable(t *testing.T) {
+	store := newTestStore(t)
+	owner := "owner-def"
+	if err := store.SaveUserProxyConfig(UserProxyConfig{
+		OwnerID: owner, PoolEnabled: true,
+		PoolNodes: []ProxyPoolNode{
+			{Name: "bad", Type: "http", Available: false},
+			{Name: "good", Type: "http", Available: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.DefaultProxyPoolNode(owner); got != "good" {
+		t.Fatalf("DefaultProxyPoolNode = %q want good", got)
+	}
+}

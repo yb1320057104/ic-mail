@@ -50,6 +50,7 @@ var mailboxVisualSyncResponseWait = 1500 * time.Millisecond
 var iCloudMailboxListAccountTimeout = 25 * time.Second
 var mailWatcherPollInterval = 3 * time.Second
 var mailWatcherFallbackSyncMinInterval = time.Minute
+var mailWatcherReconcileMinInterval = 30 * time.Second
 var mailWatcherActiveTTL = 20 * time.Minute
 var imapLoginHealthCheckInterval = 10 * time.Minute
 var iCloudWebKeepAliveInterval = 10 * time.Minute
@@ -423,11 +424,8 @@ func (s *Server) StartIMAPLoginHealthCheck(ctx context.Context) {
 }
 
 func (s *Server) checkAllIMAPLoginStates(ctx context.Context) {
-	state := s.store.Snapshot()
-	sessions := append([]ICloudSession(nil), state.ICloudSessions...)
-	if state.ICloudSession != nil {
-		sessions = append(sessions, *state.ICloudSession)
-	}
+	sessions := s.store.AllICloudSessions()
+	now := time.Now()
 	for _, session := range sessions {
 		if ctx.Err() != nil {
 			return
@@ -436,10 +434,27 @@ func (s *Server) checkAllIMAPLoginStates(ctx context.Context) {
 		if !ok {
 			continue
 		}
+		// When apple_require_proxy is on, only Apple/iCloud IMAP accounts need a
+		// proxy. Third-party IMAP providers (QQ, 163, Gmail, …) dial directly and
+		// must not be blocked by the require-proxy rule.
+		if s.cfg.AppleRequireProxy && isICloudIMAPHost(imapState.IMAPHost) && !s.accountHasProxy(session.OwnerID, session.AccountID) {
+			continue
+		}
+		// A credential rejected by iCloud (AUTHENTICATIONFAILED) will not recover
+		// on its own: the account must re-authorize. Back off hard instead of
+		// retrying on the normal 10-minute cadence, which both wastes CPU and
+		// makes Apple's risk scoring more likely to keep the account locked.
+		if !imapState.IMAPNextCheckAt.IsZero() && now.Before(imapState.IMAPNextCheckAt) {
+			continue
+		}
 		checkedAt := time.Now()
 		metricStarted := time.Now()
 		checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		proxyURL, _, proxyErr := s.proxyURLForAccount(checkCtx, session.OwnerID, session.AccountID)
+		// Third-party IMAP always dials directly; do not fetch a proxy URL for it.
+		proxyURL, _, proxyErr := "", ProxyPoolNode{}, error(nil)
+		if isICloudIMAPHost(imapState.IMAPHost) {
+			proxyURL, _, proxyErr = s.proxyURLForAccount(checkCtx, session.OwnerID, session.AccountID)
+		}
 		var err error
 		if proxyErr != nil {
 			err = proxyErr
@@ -457,8 +472,10 @@ func (s *Server) checkAllIMAPLoginStates(ctx context.Context) {
 		imapState.LastCheckOK = err == nil
 		if err != nil {
 			imapState.LastStatusMessage = "取码登录异常：" + err.Error()
+			imapState.IMAPNextCheckAt = s.imapHealthRetryAt(err, checkedAt)
 		} else {
 			imapState.LastStatusMessage = "取码登录正常"
+			imapState.IMAPNextCheckAt = time.Time{}
 		}
 		session = withICloudIMAPLoginState(session, imapState)
 		session.LastCheckedAt = checkedAt
@@ -470,6 +487,42 @@ func (s *Server) checkAllIMAPLoginStates(ctx context.Context) {
 			s.logger.Warn("自动取码登录检测保存失败", "owner", s.ownerName(session.OwnerID), "account_id", session.AccountID, "err", saveErr)
 		}
 	}
+}
+
+// imapHealthRetryAt returns when the next IMAP health check should run for a
+// given failure. Credential rejections back off far longer than transient
+// network/proxy failures because they cannot recover without re-authorization.
+func (s *Server) imapHealthRetryAt(err error, now time.Time) time.Time {
+	if imapCredentialRejected(err) {
+		// App-Specific Password was revoked or rejected. Recheck rarely; the
+		// account owner must sign back in and generate a new password.
+		return now.Add(6 * time.Hour)
+	}
+	if imapTransientFailure(err) {
+		// Network, proxy or upstream throttle: give it a few minutes, with a
+		// small jitter so the whole fleet does not retry at the same instant.
+		return now.Add(imapTransientRetryDelay(err))
+	}
+	return now.Add(imapLoginHealthCheckInterval)
+}
+
+// imapTransientRetryDelay returns a jittered delay for transient IMAP failures.
+func imapTransientRetryDelay(err error) time.Duration {
+	base := 5 * time.Minute
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "http 429") || strings.Contains(message, "http 503") || strings.Contains(message, "login frequency") || strings.Contains(message, "too many login") {
+		base = 15 * time.Minute
+	}
+	jitter := time.Duration(hashStringForJitter(err.Error())%120) * time.Second
+	return base + jitter
+}
+
+// hashStringForJitter returns a deterministic 32-bit hash of a string for use
+// in jitter offsets. It must not be used for anything security-sensitive.
+func hashStringForJitter(value string) uint32 {
+	h := fnv.New32a()
+	_, _ = io.WriteString(h, value)
+	return h.Sum32()
 }
 
 func (s *Server) StopMailWatcher() {
@@ -589,6 +642,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/user/proxy-pool/status", s.handleSetProxyPoolStatus)
 	s.mux.HandleFunc("POST /api/user/proxy-pool/bind", s.handleBindAccountProxyPool)
 	s.mux.HandleFunc("POST /api/user/proxy-pool/test", s.handleTestAccountProxyPool)
+	s.mux.HandleFunc("DELETE /api/user/proxy-pool", s.handleDeleteProxyPool)
 	// Compatibility endpoints keep the GitHub proxy-management page while all
 	// storage and execution remain isolated in the local per-user proxy pool.
 	s.mux.HandleFunc("GET /api/proxy-pool/nodes", s.handleProxyPoolNodesCompat)
@@ -596,6 +650,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/proxy-pool/bind", s.handleBindAccountProxyPool)
 	s.mux.HandleFunc("POST /api/proxy-pool/test", s.handleStartProxyPoolTestCompat)
 	s.mux.HandleFunc("GET /api/proxy-pool/test-status", s.handleProxyPoolTestStatusCompat)
+	s.mux.HandleFunc("DELETE /api/proxy-pool", s.handleDeleteProxyPool)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/create", s.handleCreateICloudMailbox)
 	s.mux.HandleFunc("GET /api/icloud/mailboxes/alias-job", s.handleAliasCreateJobStatus)
 	s.mux.HandleFunc("POST /api/icloud/mailboxes/sync", s.handleSyncICloudMailboxes)
@@ -1371,7 +1426,7 @@ func (s *Server) handleExportInvites(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="invite-codes.txt"`)
 	for _, invite := range state.Invites {
-		if batch != "" && invite.Name != batch {
+		if batch != "" && invite.BatchName != batch {
 			continue
 		}
 		_, _ = io.WriteString(w, strings.TrimSpace(invite.Code)+"\n")
@@ -2107,7 +2162,7 @@ func (s *Server) handleManageData(w http.ResponseWriter, r *http.Request) {
 		"runtime_metrics": metrics,
 		"icloud_session":  s.publicSessionForRequest(r),
 		"icloud_sessions": publicSessions,
-		"invites":         publicInvites(state.Invites, s.store, s.isAdminRequest(r)),
+		"invites":         publicInvitesWithState(state.Invites, s.store, s.isAdminRequest(r), state),
 		"invite_uses":     state.InviteUses,
 		"audit_events":    recentAuditEvents(state.AuditEvents, 100),
 		"announcements":   announcements,
@@ -2185,12 +2240,19 @@ func (s *Server) handleMarkAnnouncementRead(w http.ResponseWriter, r *http.Reque
 }
 
 func publicInvite(invite InviteCode, store *FileStore) map[string]any {
+	return publicInviteWithLookup(invite, store, store.Snapshot())
+}
+
+// publicInviteWithLookup renders an invite without re-snapshotting the whole
+// store. The manage page renders every invite on every load, so a per-invite
+// Snapshot() deep-copy of the mailbox/message archive dominated admin latency.
+func publicInviteWithLookup(invite InviteCode, store *FileStore, state State) map[string]any {
 	creator := invite.CreatedBy
 	if user, ok := store.UserByID(invite.CreatedBy); ok {
 		creator = user.Username
 	}
 	registeredUser, redeemedAt := "", time.Time{}
-	for _, use := range store.Snapshot().InviteUses {
+	for _, use := range state.InviteUses {
 		if use.InviteID != invite.ID {
 			continue
 		}
@@ -2200,16 +2262,26 @@ func publicInvite(invite InviteCode, store *FileStore) map[string]any {
 		}
 		break
 	}
-	return map[string]any{"id": invite.ID, "code": invite.Code, "name": invite.Name, "created_by": creator, "role": invite.Role, "max_uses": invite.MaxUses, "used_count": invite.UsedCount, "valid_days": invite.ValidDays, "registered": invite.UsedCount > 0, "registered_user": registeredUser, "redeemed_at": formatTime(redeemedAt), "expires_at": formatTime(invite.ExpiresAt), "enabled": invite.Enabled, "created_at": formatTime(invite.CreatedAt)}
+	return map[string]any{"id": invite.ID, "code": invite.Code, "name": invite.Name, "batch_name": invite.BatchName, "created_by": creator, "role": invite.Role, "max_uses": invite.MaxUses, "used_count": invite.UsedCount, "valid_days": invite.ValidDays, "registered": invite.UsedCount > 0, "registered_user": registeredUser, "redeemed_at": formatTime(redeemedAt), "expires_at": formatTime(invite.ExpiresAt), "enabled": invite.Enabled, "created_at": formatTime(invite.CreatedAt)}
 }
 
 func publicInvites(invites []InviteCode, store *FileStore, admin bool) []map[string]any {
 	if !admin {
 		return nil
 	}
+	state := store.Snapshot()
+	return publicInvitesWithState(invites, store, admin, state)
+}
+
+// publicInvitesWithState renders invites reusing an already-snapshotted state
+// so the manage page does not deep-copy the archive once per invite.
+func publicInvitesWithState(invites []InviteCode, store *FileStore, admin bool, state State) []map[string]any {
+	if !admin {
+		return nil
+	}
 	out := make([]map[string]any, 0, len(invites))
 	for _, invite := range invites {
-		out = append(out, publicInvite(invite, store))
+		out = append(out, publicInviteWithLookup(invite, store, state))
 	}
 	return out
 }
@@ -2766,7 +2838,14 @@ func (s *Server) handleSaveICloudIMAPLogin(w http.ResponseWriter, r *http.Reques
 	}
 
 	var checkErr error
-	proxyURL, _, proxyErr := s.proxyURLForAccount(r.Context(), ownerID, accountID)
+	// Third-party IMAP providers dial directly; only iCloud's own IMAP uses the
+	// account proxy. Do not fetch a proxy URL for third-party hosts, otherwise
+	// their connection attempts get routed through the overseas proxy and fail.
+	proxyURL := ""
+	var proxyErr error
+	if isICloudIMAPHost(imapHost) {
+		proxyURL, _, proxyErr = s.proxyURLForAccount(r.Context(), ownerID, accountID)
+	}
 	if proxyErr != nil {
 		writeError(w, http.StatusBadGateway, proxyErr)
 		return
@@ -3677,13 +3756,62 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
-	state := s.store.SnapshotForMailboxList(scopedOwnerID(r, s.store))
+	ownerID := scopedOwnerID(r, s.store)
+	admin := s.isAdminRequest(r)
+	values := r.URL.Query()
+	page, pageSize, paged := mailboxListPagination(r)
+	if paged {
+		fastResult, used, err := s.store.listMailboxesPageMySQL(r.Context(), mysqlMailboxListQuery{
+			ScopedOwnerID: ownerID,
+			OwnerFilter:   values.Get("owner_id"),
+			Admin:         admin,
+			AccountKey:    firstNonEmpty(values.Get("account_key"), values.Get("account_id")),
+			Keyword:       firstNonEmpty(values.Get("search"), values.Get("q")),
+			Status:        values.Get("status"),
+			APIStatus:     values.Get("api_status"),
+			ICloudStatus:  values.Get("icloud_status"),
+			ExportStatus:  values.Get("export_status"),
+			MailboxType:   values.Get("mailbox_type"),
+			MinReceive:    parseBoundedPositiveInt(values.Get("min_receive"), 0, 0, 1_000_000),
+			MaxReceive:    parseBoundedPositiveInt(values.Get("max_receive"), 1_000_000, 0, 1_000_000),
+			Page:          page,
+			PageSize:      pageSize,
+			ReceiveStatus: values.Get("receive_code_status"),
+		})
+		if used && err == nil {
+			metadata := s.store.SnapshotForMailboxListMetadata(ownerID)
+			accountsByID := mailboxAccountMap(metadata.Accounts)
+			groups := publicMailboxGroupsFromCounts(fastResult.GroupCounts, accountsByID)
+			out := make([]publicMailbox, 0, len(fastResult.Mailboxes))
+			for _, mailbox := range fastResult.Mailboxes {
+				out = append(out, s.publicMailbox(r, mailbox))
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"success":   true,
+				"mailboxes": out,
+				"groups":    groups,
+				"pagination": publicPagination{
+					Page:       page,
+					PageSize:   pageSize,
+					Total:      fastResult.Total,
+					TotalAll:   fastResult.TotalAll,
+					TotalPages: totalPages(fastResult.Total, pageSize),
+				},
+			})
+			return
+		}
+		if err != nil && s.logger != nil {
+			s.logger.Warn("mysql mailbox list fast path failed; using memory fallback", "err", err)
+		}
+	}
+
+	state := s.store.SnapshotForMailboxList(ownerID)
 	accountsByID := mailboxAccountMap(state.Accounts)
 	ownerNames := make(map[string]string, len(state.Users))
 	for _, user := range state.Users {
 		ownerNames[user.ID] = user.Username
 	}
-	base := filterMailboxesByOwner(state.Mailboxes, strings.TrimSpace(r.URL.Query().Get("owner_id")), scopedOwnerID(r, s.store), s.isAdminRequest(r))
+	base := filterMailboxesByOwner(state.Mailboxes, strings.TrimSpace(r.URL.Query().Get("owner_id")), ownerID, admin)
 	groupValues := cloneURLValues(r.URL.Query())
 	groupValues.Del("account_key")
 	groupValues.Del("account_id")
@@ -3694,7 +3822,6 @@ func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 	filtered = s.filterMailboxesByReceiveCode(filtered, r.URL.Query().Get("receive_code_status"))
 	sortMailboxesForList(filtered, accountsByID)
 
-	page, pageSize, paged := mailboxListPagination(r)
 	pageRows := filtered
 	if paged {
 		pageRows = paginateMailboxes(filtered, page, pageSize)
@@ -3716,6 +3843,27 @@ func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func publicMailboxGroupsFromCounts(counts map[string]int, accountsByID map[string]Account) []publicMailboxGroup {
+	groups := make([]publicMailboxGroup, 0, len(counts))
+	for key, count := range counts {
+		accountID := strings.TrimSpace(key)
+		if accountID == "unbound" {
+			accountID = ""
+		}
+		mailbox := Mailbox{AccountID: accountID}
+		groups = append(groups, publicMailboxGroup{
+			Key:       firstNonEmpty(accountID, "unbound"),
+			Title:     mailboxListAccountTitle(mailbox, accountsByID),
+			AccountID: accountID,
+			Count:     count,
+		})
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		return strings.ToLower(groups[i].Title) < strings.ToLower(groups[j].Title)
+	})
+	return groups
 }
 
 func cloneURLValues(values url.Values) url.Values {
@@ -5383,7 +5531,7 @@ func (s *Server) runMailWatcher(ctx context.Context) {
 	if interval <= 0 {
 		interval = mailWatcherPollInterval
 	}
-	workerTicker := time.NewTicker(interval)
+	workerTicker := time.NewTicker(mailWatcherReconcileInterval(interval))
 	defer workerTicker.Stop()
 	fallbackTicker := time.NewTicker(mailWatcherFallbackSyncInterval(interval))
 	defer fallbackTicker.Stop()
@@ -5400,6 +5548,19 @@ func (s *Server) runMailWatcher(ctx context.Context) {
 			s.syncMailWatcherRound(ctx, false)
 		}
 	}
+}
+
+// The configured poll interval controls how quickly an explicitly woken
+// watcher reacts, but rebuilding all IMAP groups every few seconds is wasteful:
+// live workers already wait in IMAP IDLE and pokeMailWatcher handles demand.
+func mailWatcherReconcileInterval(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		configured = mailWatcherPollInterval
+	}
+	if configured < mailWatcherReconcileMinInterval {
+		return mailWatcherReconcileMinInterval
+	}
+	return configured
 }
 
 func mailWatcherFallbackSyncInterval(configured time.Duration) time.Duration {
@@ -5532,14 +5693,14 @@ func (s *Server) saveICloudWebKeepAliveState(session ICloudSession, state LoginS
 }
 
 func (s *Server) iCloudWebKeepAliveSessions() []ICloudSession {
-	state := s.store.Snapshot()
-	out := make([]ICloudSession, 0, len(state.ICloudSessions)+1)
-	if state.ICloudSession != nil && iCloudWebLoginSaved(*state.ICloudSession) {
-		out = append(out, cloneICloudSession(*state.ICloudSession))
-	}
-	for _, session := range state.ICloudSessions {
+	sessions := s.store.AllICloudSessions()
+	out := make([]ICloudSession, 0, len(sessions))
+	for _, session := range sessions {
 		if iCloudWebLoginSaved(session) {
-			out = append(out, cloneICloudSession(session))
+			if s.cfg.AppleRequireProxy && !s.accountHasProxy(session.OwnerID, session.AccountID) {
+				continue
+			}
+			out = append(out, session)
 		}
 	}
 	return out
@@ -5697,7 +5858,11 @@ func appleAccountKeepAliveRetry(err error, failures int, now time.Time) (string,
 		return "Apple 服务暂时不可用，登录态未判定失效", now.Add(delays[index] + jitter)
 	}
 	if isCodedError(err, "apple_account_auth_failed") || isCodedError(err, "apple_account_session_missing") {
-		return "登录态已失效，等待低频复检", now.Add(30 * time.Minute)
+		// The management session was revoked or the scnt/cookie pair is stale.
+		// Retrying with a dead credential only feeds Apple's risk scoring, so
+		// back off far longer than a transient failure. Auto-login (if bound) or
+		// a manual re-login is what actually recovers this account.
+		return "登录态已失效，等待重新登录或低频复检", now.Add(2 * time.Hour)
 	}
 	if isCodedError(err, "apple_account_hme_limit") {
 		return "Apple 接口限流，稍后重试", now.Add(15 * time.Minute)
@@ -5736,16 +5901,16 @@ func keepAliveChineseError(err error) string {
 }
 
 func (s *Server) appleAccountKeepAliveSessions() []ICloudSession {
-	state := s.store.Snapshot()
-	out := make([]ICloudSession, 0, len(state.ICloudSessions)+1)
-	if state.ICloudSession != nil && appleAccountKeepAliveEligible(*state.ICloudSession) {
-		out = append(out, cloneICloudSession(*state.ICloudSession))
-	}
-	for _, session := range state.ICloudSessions {
+	sessions := s.store.AllICloudSessions()
+	out := make([]ICloudSession, 0, len(sessions))
+	for _, session := range sessions {
 		if !appleAccountKeepAliveEligible(session) {
 			continue
 		}
-		out = append(out, cloneICloudSession(session))
+		if s.cfg.AppleRequireProxy && !s.accountHasProxy(session.OwnerID, session.AccountID) {
+			continue
+		}
+		out = append(out, session)
 	}
 	return out
 }
@@ -5872,6 +6037,11 @@ func nextMailWatcherIdleBackoff(err error, previous time.Duration) time.Duration
 	if strings.Contains(message, "login frequency limited") || strings.Contains(message, "登录频率") || strings.Contains(message, "too many login") {
 		return 5 * time.Minute
 	}
+	if imapCredentialRejected(err) {
+		// The App-Specific Password is permanently rejected; retrying every
+		// minute only feeds Apple's risk scoring and wastes an IMAP login.
+		return 30 * time.Minute
+	}
 	if strings.Contains(message, "imap_login_failed") || strings.Contains(message, "login fail") || strings.Contains(message, "登录失败") {
 		return time.Minute
 	}
@@ -5973,12 +6143,24 @@ func (s *Server) mailWatcherGroups() []mailboxWatcherOwnerGroup {
 	state := s.store.SnapshotForMailboxList("")
 	activeIDs := s.activeMailWatcherMailboxIDs(time.Now())
 	byOwner := make(map[string][]Mailbox)
+	resolvers := make(map[string]imapSessionResolver)
 	for _, mailbox := range state.Mailboxes {
 		if !mailbox.APIActive || !mailbox.ICloudActive || mailbox.Status == StatusDisabled {
 			continue
 		}
 		ownerID := strings.TrimSpace(mailbox.OwnerID)
-		if _, ok := s.imapStateForMailbox(ownerID, mailbox); !ok {
+		resolver, ok := resolvers[ownerID]
+		if !ok {
+			resolver = s.imapSessionResolverForOwner(ownerID)
+			resolvers[ownerID] = resolver
+		}
+		session, imapState, ok := resolver.sessionForMailbox(mailbox)
+		if !ok {
+			continue
+		}
+		// require_proxy only gates Apple/iCloud IMAP; third-party IMAP dials
+		// directly and must not be skipped.
+		if s.cfg.AppleRequireProxy && isICloudIMAPHost(imapState.IMAPHost) && !s.accountHasProxy(ownerID, strings.TrimSpace(session.AccountID)) {
 			continue
 		}
 		byOwner[ownerID] = append(byOwner[ownerID], mailbox)
@@ -6013,20 +6195,40 @@ func (s *Server) mailWatcherIMAPGroups() []mailboxWatcherIMAPGroup {
 		mailboxes  []Mailbox
 	}
 	buckets := make(map[string]*bucket)
+	resolvers := make(map[string]imapSessionResolver)
+	type proxyResolution struct {
+		url string
+		err error
+	}
+	proxyByAccount := make(map[string]proxyResolution)
 	for _, mailbox := range state.Mailboxes {
 		if !mailbox.APIActive || !mailbox.ICloudActive || mailbox.Status == StatusDisabled {
 			continue
 		}
 		ownerID := strings.TrimSpace(mailbox.OwnerID)
-		session, imapState, ok := s.imapSessionResolverForOwner(ownerID).sessionForMailbox(mailbox)
+		resolver, ok := resolvers[ownerID]
+		if !ok {
+			resolver = s.imapSessionResolverForOwner(ownerID)
+			resolvers[ownerID] = resolver
+		}
+		session, imapState, ok := resolver.sessionForMailbox(mailbox)
 		if !ok {
 			continue
 		}
-		proxyURL, _, proxyErr := s.proxyURLForAccount(context.Background(), ownerID, session.AccountID)
-		if proxyErr != nil {
+		proxyKey := ownerID + "\x00" + strings.TrimSpace(session.AccountID)
+		proxy, found := proxyByAccount[proxyKey]
+		if !found {
+			// Third-party IMAP dials directly; only iCloud's own IMAP fetches a
+			// proxy URL. A require_proxy rule never applies to third-party hosts.
+			if isICloudIMAPHost(imapState.IMAPHost) {
+				proxy.url, _, proxy.err = s.proxyURLForAccount(context.Background(), ownerID, session.AccountID)
+			}
+			proxyByAccount[proxyKey] = proxy
+		}
+		if proxy.err != nil {
 			continue
 		}
-		imapState.ProxyURL = proxyURL
+		imapState.ProxyURL = proxy.url
 		key := ownerID + "|" + imapStateKey(imapState) + "|" + imapState.ProxyURL
 		item := buckets[key]
 		if item == nil {

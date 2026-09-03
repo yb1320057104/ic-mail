@@ -18,6 +18,9 @@ type BackupInfo struct {
 func (s *FileStore) backupDir() string { return filepath.Join(filepath.Dir(s.dbPath), "backups") }
 
 func (s *FileStore) CreateBackup(label string) (BackupInfo, error) {
+	if s.storageDriver == "mysql" {
+		return BackupInfo{}, errCode("mysql_backup_external", "MySQL 模式请使用数据库服务器备份；SQLite 回滚备份仍保留在服务器 data/backups 目录", false)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.saveSQLiteLocked(); err != nil {
@@ -96,6 +99,9 @@ func (s *FileStore) BackupPath(name string) (string, error) {
 }
 
 func (s *FileStore) RestoreBackup(name string) error {
+	if s.storageDriver == "mysql" {
+		return errCode("mysql_restore_external", "MySQL 模式不支持从 SQLite 备份在线恢复；请先切换 storage_driver=sqlite 再恢复", false)
+	}
 	path, err := s.BackupPath(name)
 	if err != nil {
 		return err

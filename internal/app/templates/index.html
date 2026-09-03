@@ -1544,8 +1544,8 @@
             </section>
             <section class="session-tool-card" style="grid-column:1/-1">
               <h3>账号代理池</h3>
-              <p>由每个用户独立的本地 Mihomo 实例运行节点。可粘贴订阅链接或导入 Clash/Mihomo YAML，并异步检测出口 IP、TLS 与延迟。</p>
-              <div class="field-grid" style="padding:12px 0 0"><label class="full">订阅链接<input id="proxySubscriptionURL" placeholder="https://example.com/subscription"></label><label class="full">Clash / Mihomo YAML<textarea id="proxyYAML" rows="5" placeholder="proxies:&#10;  - name: 节点名称&#10;    type: hysteria2&#10;    server: ..."></textarea></label><div class="full toolbar" style="padding:0"><button class="primary" type="button" onclick="importProxyPool()">导入并测速</button><button id="proxyPoolTestButton" type="button" onclick="testProxyPool()">全部节点测速</button><button type="button" onclick="loadProxyPoolNodes()">刷新代理池</button><span id="proxyPoolStatus" class="muted">正在读取代理池…</span></div></div>
+              <p>由每个用户独立的本地 Mihomo 实例运行节点。可粘贴订阅链接、Clash/Mihomo YAML，或海外动态住宅代理的纯文本列表（每行一个 <code>IP:端口:用户名:密码</code>）。</p>
+              <div class="field-grid" style="padding:12px 0 0"><label class="full">订阅链接<input id="proxySubscriptionURL" placeholder="https://example.com/subscription"></label><label class="full">Clash / Mihomo YAML<textarea id="proxyYAML" rows="5" placeholder="proxies:&#10;  - name: 节点名称&#10;    type: hysteria2&#10;    server: ..."></textarea></label><label class="full">海外动态代理列表（每行一个）<textarea id="proxyPlainList" rows="4" placeholder="http://用户名:密码@主机:端口&#10;主机:端口:用户名:密码&#10;socks5://用户名:密码@主机:端口"></textarea></label><div class="full toolbar" style="padding:0"><button class="primary" type="button" onclick="importProxyPool()">导入并测速</button><button id="proxyPoolTestButton" type="button" onclick="testProxyPool()">全部节点测速</button><button type="button" onclick="loadProxyPoolNodes()">刷新代理池</button><button class="danger" type="button" onclick="deleteProxyPool()">删除代理池</button><span id="proxyPoolStatus" class="muted">正在读取代理池…</span></div></div>
               <div class="table-wrap"><table><thead><tr><th>节点</th><th>端口</th><th>状态</th><th>延迟</th><th>已绑定账号</th></tr></thead><tbody id="proxyPoolRows"><tr><td colspan="5" class="muted">暂无节点</td></tr></tbody></table></div>
             </section>
           </div>
@@ -4239,9 +4239,20 @@
     }
 
     async function importProxyPool() {
-      const url=$('proxySubscriptionURL').value.trim(), yaml=$('proxyYAML').value.trim(); if(!url&&!yaml){$('proxyPoolStatus').textContent='请输入订阅链接或 YAML 内容';return;}
+      const url=$('proxySubscriptionURL').value.trim(), yaml=$('proxyYAML').value.trim(), plain=$('proxyPlainList').value.trim(); if(!url&&!yaml&&!plain){$('proxyPoolStatus').textContent='请输入订阅链接、YAML 或代理列表内容';return;}
       $('proxyPoolStatus').textContent='正在解析、测速并生成代理节点，请稍候…';
-      try{const data=await api('/api/proxy-pool/import',{method:'POST',loadingText:'正在导入代理池...',body:JSON.stringify({url,yaml,tag_prefix:'icloud'})});$('proxyPoolStatus').textContent=data.message||'代理导入任务已启动';setTimeout(loadProxyPoolNodes,3000);}catch(err){$('proxyPoolStatus').textContent='导入失败：'+err.message;}
+      try{const data=await api('/api/proxy-pool/import',{method:'POST',loadingText:'正在导入代理池...',body:JSON.stringify({url,yaml,plain,tag_prefix:'icloud'})});$('proxyPoolStatus').textContent=data.message||'代理导入任务已启动';setTimeout(loadProxyPoolNodes,3000);}catch(err){$('proxyPoolStatus').textContent='导入失败：'+err.message;}
+    }
+
+    async function deleteProxyPool() {
+      if(!confirm('确认删除当前账号的代理池吗？所有代理节点和账号绑定都会一并清除，账号将回退到固定代理或直连。'))return;
+      $('proxyPoolStatus').textContent='正在删除代理池…';
+      try{
+        const data=await api('/api/proxy-pool',{method:'DELETE',loadingText:'正在删除代理池...'});
+        $('proxyPoolStatus').textContent=data.message||'代理池已删除';
+        $('proxySubscriptionURL').value='';$('proxyYAML').value='';$('proxyPlainList').value='';
+        setTimeout(loadProxyPoolNodes,800);
+      }catch(err){$('proxyPoolStatus').textContent='删除失败：'+err.message;}
     }
 
     async function testProxyPool() {
@@ -4269,8 +4280,18 @@
     }
 
     async function bindAccountProxy() {
-      const session=activeICloudSessionForBinding(); if(!session||!session.account_id){$('accountProxyStatus').textContent='请先保存登录态账号';return;}
-      try{const d=await api('/api/proxy-pool/bind',{method:'POST',loadingText:'正在保存账号代理...',body:JSON.stringify({account_id:session.account_id,node_tag:$('accountProxyNode').value})});$('accountProxyStatus').textContent=d.message;await refresh();await loadProxyPoolNodes();}catch(err){$('accountProxyStatus').textContent='保存失败：'+err.message;}
+      const session=activeICloudSessionForBinding();
+      const appleId=($('protocolAppleId')||{}).value || (session && session.apple_id) || '';
+      const accountId=session && session.account_id ? session.account_id : '';
+      // 新增账号模式下还没有 account_id（登录成功后才创建），但用户可以先
+      // 绑定代理节点再登录。此时用填写的 Apple ID 让后端先建一个空账号占位。
+      if(!accountId && !appleId){$('accountProxyStatus').textContent='请先填写 Apple ID 或保存登录态账号';return;}
+      try{
+        const d=await api('/api/proxy-pool/bind',{method:'POST',loadingText:'正在保存账号代理...',body:JSON.stringify({account_id:accountId,apple_id:appleId,node_tag:$('accountProxyNode').value})});
+        $('accountProxyStatus').textContent=d.message;
+        if(d.account_id){ activeICloudSessionKey=d.account_id; }
+        await refresh();await loadProxyPoolNodes();
+      }catch(err){$('accountProxyStatus').textContent='保存失败：'+err.message;}
     }
 
     async function saveFixedProxy() {

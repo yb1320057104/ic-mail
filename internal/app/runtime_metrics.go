@@ -54,7 +54,9 @@ func (s *FileStore) RecordRuntimeMetric(kind string, ok bool, duration time.Dura
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO runtime_metrics(kind,total,success,failure,duration_ms,max_duration_ms,last_duration_ms,last_ok,last_message,last_at) VALUES(?,1,?,?,?, ?,?,?,?,?) ON CONFLICT(kind) DO UPDATE SET total=total+1,success=success+excluded.success,failure=failure+excluded.failure,duration_ms=duration_ms+excluded.duration_ms,max_duration_ms=max(max_duration_ms,excluded.max_duration_ms),last_duration_ms=excluded.last_duration_ms,last_ok=excluded.last_ok,last_message=excluded.last_message,last_at=excluded.last_at`, kind, success, failure, ms, ms, ms, lastOK, message, now); err != nil {
+	q := `INSERT INTO runtime_metrics(kind,total,success,failure,duration_ms,max_duration_ms,last_duration_ms,last_ok,last_message,last_at) VALUES(?,1,?,?,?, ?,?,?,?,?) ON CONFLICT(kind) DO UPDATE SET total=total+1,success=success+excluded.success,failure=failure+excluded.failure,duration_ms=duration_ms+excluded.duration_ms,max_duration_ms=max(max_duration_ms,excluded.max_duration_ms),last_duration_ms=excluded.last_duration_ms,last_ok=excluded.last_ok,last_message=excluded.last_message,last_at=excluded.last_at`
+	if s.storageDriver == "mysql" { q = `INSERT INTO runtime_metrics(kind,total,success,failure,duration_ms,max_duration_ms,last_duration_ms,last_ok,last_message,last_at) VALUES(?,1,?,?,?, ?,?,?,?,?) ON DUPLICATE KEY UPDATE total=total+1,success=success+VALUES(success),failure=failure+VALUES(failure),duration_ms=duration_ms+VALUES(duration_ms),max_duration_ms=GREATEST(max_duration_ms,VALUES(max_duration_ms)),last_duration_ms=VALUES(last_duration_ms),last_ok=VALUES(last_ok),last_message=VALUES(last_message),last_at=VALUES(last_at)` }
+	if _, err = tx.Exec(q, kind, success, failure, ms, ms, ms, lastOK, message, now); err != nil {
 		_ = tx.Rollback()
 		return err
 	}

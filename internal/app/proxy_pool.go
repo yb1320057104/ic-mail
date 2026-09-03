@@ -139,7 +139,180 @@ func parseAndSanitizeProxyPoolSource(raw []byte) ([]byte, []ProxyPoolNode, error
 	if decoded, ok := decodeProxySubscriptionBase64(trimmed); ok && looksLikeProxyShareList(string(decoded)) {
 		return sanitizeProxyShareList(string(decoded))
 	}
+	if looksLikeProxyPlainList(trimmed) {
+		return sanitizeProxyPlainList(trimmed)
+	}
 	return parseAndSanitizeProxyPoolYAML([]byte(trimmed))
+}
+
+// looksLikeProxyPlainList reports whether raw text is a plain proxy list (one
+// HTTP/SOCKS5 proxy per line) rather than a Mihomo YAML document.
+func looksLikeProxyPlainList(raw string) bool {
+	if strings.Contains(raw, "proxies:") {
+		return false
+	}
+	for _, line := range strings.FieldsFunc(raw, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return looksLikePlainProxyLine(line)
+	}
+	return false
+}
+
+func looksLikePlainProxyLine(line string) bool {
+	if strings.Contains(line, "://") {
+		u, err := url.Parse(line)
+		if err != nil {
+			return false
+		}
+		return u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "socks5"
+	}
+	// host:port, host:port:user:pass, or user:pass@host:port
+	if idx := strings.LastIndex(line, "@"); idx >= 0 {
+		line = line[idx+1:]
+	}
+	parts := strings.Split(line, ":")
+	if len(parts) < 2 {
+		return false
+	}
+	host := strings.Trim(parts[0], "[]")
+	if host == "" || host == "0.0.0.0" {
+		return false
+	}
+	port, err := strconv.Atoi(parts[1])
+	return err == nil && port >= 1 && port <= 65535
+}
+
+// sanitizeProxyPlainList parses a plain text list of HTTP/SOCKS5 proxies.
+// Accepted per-line forms (scheme defaults to http):
+//
+//	host:port
+//	host:port:username:password
+//	username:password@host:port
+//	http://username:password@host:port
+//	socks5://username:password@host:port
+func sanitizeProxyPlainList(raw string) ([]byte, []ProxyPoolNode, error) {
+	lines := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\r' || r == '\n'
+	})
+	proxies := make([]map[string]any, 0, len(lines))
+	names := make(map[string]int)
+	for lineNo, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		proxy, err := proxyMapFromPlainLine(line)
+		if err != nil {
+			return nil, nil, errCode("proxy_pool_plain_node", fmt.Sprintf("第 %d 个代理格式错误：%v", lineNo+1, err), false)
+		}
+		name := strings.TrimSpace(fmt.Sprint(proxy["name"]))
+		names[name]++
+		if names[name] > 1 {
+			proxy["name"] = fmt.Sprintf("%s #%d", name, names[name])
+		}
+		proxies = append(proxies, proxy)
+	}
+	if len(proxies) == 0 {
+		return nil, nil, errCode("proxy_pool_empty", "列表中没有可识别的代理节点", false)
+	}
+	document, err := yaml.Marshal(proxyPoolDocument{Proxies: proxies})
+	if err != nil {
+		return nil, nil, err
+	}
+	return parseAndSanitizeProxyPoolYAML(document)
+}
+
+func proxyMapFromPlainLine(raw string) (map[string]any, error) {
+	line := strings.TrimSpace(raw)
+	if line == "" {
+		return nil, errors.New("空行")
+	}
+	scheme := "http"
+	rest := line
+	if idx := strings.Index(rest, "://"); idx >= 0 {
+		scheme = strings.ToLower(rest[:idx])
+		rest = rest[idx+3:]
+	}
+	switch scheme {
+	case "http", "https", "socks5":
+	default:
+		return nil, fmt.Errorf("暂不支持 %s 代理协议", scheme)
+	}
+
+	var host, portText, username, password string
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
+		cred := rest[:at]
+		host, portText = splitProxyHostPort(rest[at+1:])
+		username, password = splitProxyCredentials(cred)
+	} else {
+		parts := strings.Split(rest, ":")
+		switch {
+		case len(parts) == 2:
+			host, portText = parts[0], parts[1]
+		case len(parts) == 4:
+			host, portText = parts[0], parts[1]
+			username, password = parts[2], parts[3]
+		case len(parts) > 4:
+			host, portText = parts[0], parts[1]
+			username = parts[2]
+			password = strings.Join(parts[3:], ":")
+		default:
+			return nil, errors.New("无法解析主机端口")
+		}
+	}
+	if host == "" {
+		return nil, errors.New("主机为空")
+	}
+	if err := validatePublicProxyHost(host); err != nil {
+		return nil, errors.New("主机不能指向本机或内网")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return nil, errors.New("端口无效")
+	}
+	if scheme == "https" {
+		scheme = "http"
+	}
+	name := fmt.Sprintf("%s-%s-%d", scheme, host, port)
+	if username != "" {
+		name = username + "@" + host
+	}
+	proxy := map[string]any{"name": name, "type": scheme, "server": strings.Trim(host, "[]"), "port": port}
+	if username != "" {
+		proxy["username"] = username
+	}
+	if password != "" {
+		proxy["password"] = password
+	}
+	if scheme == "socks5" {
+		proxy["udp"] = true
+	}
+	return proxy, nil
+}
+
+func splitProxyHostPort(value string) (string, string) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err == nil {
+		return strings.Trim(host, "[]"), port
+	}
+	if idx := strings.LastIndex(value, ":"); idx > 0 {
+		return strings.Trim(value[:idx], "[]"), value[idx+1:]
+	}
+	return value, ""
+}
+
+func splitProxyCredentials(value string) (string, string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", ""
+	}
+	if idx := strings.Index(value, ":"); idx >= 0 {
+		return value[:idx], value[idx+1:]
+	}
+	return value, ""
 }
 
 func decodeProxySubscriptionBase64(raw string) ([]byte, bool) {
@@ -164,7 +337,10 @@ func decodeProxySubscriptionBase64(raw string) ([]byte, bool) {
 
 func looksLikeProxyShareList(raw string) bool {
 	lower := strings.ToLower(strings.TrimSpace(raw))
-	for _, scheme := range []string{"vless://", "vmess://", "trojan://", "http://", "https://", "socks5://", "ss://", "hysteria2://", "hy2://", "tuic://"} {
+	// http/https/socks5 are handled by the plain-list parser (which also accepts
+	// them in URL form), so they are deliberately absent here. Keeping them here
+	// would misroute a mixed plain list to the share-link parser.
+	for _, scheme := range []string{"vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "hy2://", "tuic://"} {
 		if strings.HasPrefix(lower, scheme) || strings.Contains(lower, "\n"+scheme) || strings.Contains(lower, "\r"+scheme) {
 			return true
 		}
@@ -565,7 +741,14 @@ func fetchProxySubscription(ctx context.Context, rawURL string) ([]byte, error) 
 func (p *proxyPoolRuntime) client(ownerID, accountID, appleID string) (*http.Client, bool, error) {
 	node := p.store.ProxyPoolNodeForAccount(ownerID, accountID, appleID)
 	if node == "" {
-		return nil, false, nil
+		// No explicit per-account binding. Fall back to the owner's enabled pool
+		// default node so an imported subscription routes every account without
+		// requiring a manual bind. selected stays true so the caller does not
+		// drop through to direct.
+		node = p.store.DefaultProxyPoolNode(ownerID)
+		if node == "" {
+			return nil, false, nil
+		}
 	}
 	port, err := p.ensure(ownerID, node)
 	if err != nil {
@@ -749,6 +932,7 @@ func (s *Server) handleImportProxyPool(w http.ResponseWriter, r *http.Request) {
 		Enabled    bool   `json:"enabled"`
 		URL        string `json:"url"`
 		YAML       string `json:"yaml"`
+		Plain      string `json:"plain"`
 		// Kept for compatibility with the GitHub frontend; local node names
 		// remain the names from the imported Mihomo document.
 		TagPrefix string `json:"tag_prefix"`
@@ -767,20 +951,23 @@ func (s *Server) handleImportProxyPool(w http.ResponseWriter, r *http.Request) {
 	if source == "" && strings.TrimSpace(payload.YAML) != "" {
 		typ, source, payload.Enabled = "yaml", strings.TrimSpace(payload.YAML), true
 	}
+	if source == "" && strings.TrimSpace(payload.Plain) != "" {
+		typ, source, payload.Enabled = "plain", strings.TrimSpace(payload.Plain), true
+	}
 	if source == "" && strings.TrimSpace(payload.URL) != "" {
 		typ, source, payload.Enabled = "subscription", strings.TrimSpace(payload.URL), true
 	}
 	var data []byte
 	var err error
 	switch typ {
-	case "yaml":
+	case "yaml", "plain":
 		data = []byte(source)
 	case "subscription":
 		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 		defer cancel()
 		data, err = fetchProxySubscription(ctx, source)
 	default:
-		err = errCode("proxy_pool_source_type", "请选择 YAML 或订阅链接", false)
+		err = errCode("proxy_pool_source_type", "请选择 YAML、纯文本代理列表或订阅链接", false)
 	}
 	if err != nil {
 		writeError(w, 400, err)
@@ -813,6 +1000,8 @@ func (s *Server) handleImportProxyPool(w http.ResponseWriter, r *http.Request) {
 	c.PoolUpdatedAt = time.Now()
 	if typ == "subscription" {
 		c.PoolSourceMasked = maskSubscriptionURL(source)
+	} else if typ == "plain" {
+		c.PoolSourceMasked = "纯文本代理列表（内容已加密）"
 	} else {
 		c.PoolSourceMasked = "手动 YAML（内容已加密）"
 	}
@@ -880,6 +1069,23 @@ func (s *Server) handleRefreshProxyPool(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]any{"success": true, "message": fmt.Sprintf("订阅已刷新，共 %d 个节点", len(nodes)), "nodes": nodes})
 }
 
+func (s *Server) handleDeleteProxyPool(w http.ResponseWriter, r *http.Request) {
+	owner := requestOwnerID(r, s.store)
+	if owner == "" {
+		writeError(w, http.StatusUnauthorized, errCode("auth_required", "请先登录", false))
+		return
+	}
+	bound, err := s.store.DeleteUserProxyPool(owner)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.proxyPool != nil {
+		s.proxyPool.restart(owner)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "代理池已删除", "unbound_accounts": bound})
+}
+
 func (s *Server) handleSetProxyPoolStatus(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Enabled bool `json:"enabled"`
@@ -919,6 +1125,7 @@ func (s *Server) handleSetProxyPoolStatus(w http.ResponseWriter, r *http.Request
 func (s *Server) handleBindAccountProxyPool(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		AccountID string `json:"account_id"`
+		AppleID   string `json:"apple_id"`
 		Node      string `json:"node"`
 		NodeTag   string `json:"node_tag"`
 	}
@@ -930,8 +1137,24 @@ func (s *Server) handleBindAccountProxyPool(w http.ResponseWriter, r *http.Reque
 	if strings.TrimSpace(payload.Node) == "" {
 		payload.Node = payload.NodeTag
 	}
-	if strings.TrimSpace(payload.AccountID) == "" {
-		writeError(w, 400, errCode("account_required", "请选择 Apple 账号", false))
+	accountID := strings.TrimSpace(payload.AccountID)
+	appleID := strings.TrimSpace(payload.AppleID)
+	// When a user binds a proxy before completing login, account_id is empty
+	// (accounts are only created after a successful login). Accept an Apple ID
+	// here and create the account placeholder first, so the require-proxy rule
+	// no longer blocks the subsequent login with a "please save a login first"
+	// error. This is the missing step that made login and proxy binding mutually
+	// exclusive under apple_require_proxy.
+	if accountID == "" && appleID != "" {
+		account, err := s.store.AddAccountForOwner(owner, "", appleID, "")
+		if err != nil {
+			writeError(w, 500, err)
+			return
+		}
+		accountID = account.ID
+	}
+	if accountID == "" {
+		writeError(w, 400, errCode("account_required", "请选择 Apple 账号或填写 Apple ID", false))
 		return
 	}
 	if strings.TrimSpace(payload.Node) != "" {
@@ -950,11 +1173,11 @@ func (s *Server) handleBindAccountProxyPool(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	if err := s.store.SaveAccountProxyPoolNode(owner, payload.AccountID, payload.Node); err != nil {
+	if err := s.store.SaveAccountProxyPoolNode(owner, accountID, payload.Node); err != nil {
 		writeError(w, 404, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"success": true, "message": firstNonEmpty(map[bool]string{true: "账号已改回原有固定代理/直连", false: "账号已绑定固定代理池节点"}[strings.TrimSpace(payload.Node) == ""], "代理设置已保存")})
+	writeJSON(w, 200, map[string]any{"success": true, "account_id": accountID, "message": firstNonEmpty(map[bool]string{true: "账号已改回原有固定代理/直连", false: "账号已绑定固定代理池节点"}[strings.TrimSpace(payload.Node) == ""], "代理设置已保存")})
 }
 
 type proxyPoolNodeTestResult struct {
